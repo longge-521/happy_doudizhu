@@ -29,3 +29,21 @@ class UploadedFileORM(Base):
     created_at = Column(DateTime, default=datetime.datetime.now, comment="创建时间")
 
 
+class AuditLogORM(Base):
+    __tablename__ = "audit_log"
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True, comment="主键ID")
+    operator = Column(String(100), nullable=True, index=True, comment="操作人/账号")
+    action = Column(String(100), nullable=False, index=True, comment="操作动作")
+    resource_type = Column(String(100), nullable=True, comment="操作资源类型")
+    resource_id = Column(String(100), nullable=True, comment="操作资源ID")
+    ip_address = Column(String(50), nullable=True, comment="操作者IP")
+    user_agent = Column(String(500), nullable=True, comment="浏览器User-Agent")
+    status = Column(String(20), nullable=False, index=True, comment="执行状态：success/failed")
+    details = Column(Text, nullable=True, comment="详细内容(JSON字符串或错误堆栈)")
+    request_params = Column(Text, nullable=True, comment="请求参数/传参")
+    execution_time = Column(Float, nullable=True, comment="执行耗时(毫秒)")
+    method = Column(String(20), nullable=True, comment="请求方式：GET/POST等")
+    created_at = Column(DateTime, default=datetime.datetime.now, index=True, comment="记录创建时间")
+
+
+

@@ -6,8 +6,8 @@ T_Domain = TypeVar('T_Domain')
 T_ORM = TypeVar('T_ORM')
 
 logger = logging.getLogger("hmp_ws_service")
-
 class GenericSQLRepository(Generic[T_Domain, T_ORM]):
+
     """SQLAlchemy 泛型仓储基类，封装基础的 CRUD 操作，不进行 commit"""
 
     def __init__(self, db: Session, orm_model: Type[T_ORM], domain_model: Type[T_Domain]):

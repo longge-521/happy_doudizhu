@@ -36,11 +36,12 @@ from app.infrastructure.database.session import init_db
 from app.infrastructure.storage.local_storage_adapter import LocalStorageAdapter
 from app.infrastructure.mq.rabbitmq_adapter import RabbitMQAdapter
 from app.application.upload.upload_app_service import UploadAppService
-from app.interfaces.websocket.ws_routes import ConnectionManager
+from app.interfaces.websocket.ws_routes import WSConnectionManager
 
 # 引入路由适配器
 from app.interfaces.api.message_routes import router as message_router
 from app.interfaces.api.upload_routes import router as upload_router
+from app.interfaces.api.audit_log_routes import router as audit_log_router
 from app.interfaces.web.index_route import router as index_router
 from app.interfaces.websocket.ws_routes import router as ws_router
 
@@ -55,6 +56,7 @@ app.include_router(index_router)
 app.include_router(message_router)
 app.include_router(upload_router)
 app.include_router(ws_router)
+app.include_router(audit_log_router)
 
 
 async def on_mq_message_received(app_instance: FastAPI, data: dict):
@@ -76,7 +78,7 @@ async def on_mq_message_received(app_instance: FastAPI, data: dict):
         }
     }
 
-    manager: ConnectionManager = app_instance.state.websocket_manager
+    manager: WSConnectionManager = app_instance.state.websocket_manager
     if receiver in manager.active_connections:
         await manager.send_personal_message(
             json.dumps(push_payload, ensure_ascii=False), receiver
@@ -149,7 +151,7 @@ async def lifespan(app_instance: FastAPI):
         logger.error(f"Failed to initialize MySQL tables: {e}")
 
     # 2. 依赖注入装配 (IoC)
-    websocket_manager = ConnectionManager()
+    websocket_manager = WSConnectionManager()
     storage_adapter = LocalStorageAdapter()
     upload_service = UploadAppService(storage_adapter)
     mq_adapter = RabbitMQAdapter()

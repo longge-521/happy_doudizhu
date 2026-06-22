@@ -32,7 +32,7 @@ function switchPanel(panelName) {
     
     // 改变导航栏状态
     document.querySelectorAll('.menu-item').forEach(item => item.classList.remove('active'));
-    const indexMap = { 'ws': 0, 'messages': 1, 'upload': 2 };
+    const indexMap = { 'ws': 0, 'messages': 1, 'upload': 2, 'audit': 3 };
     document.querySelectorAll('.menu-item')[indexMap[panelName]].classList.add('active');
 
     // 改变面板显示
@@ -40,7 +40,8 @@ function switchPanel(panelName) {
     const titleMap = {
         'ws': 'WebSocket 调试',
         'messages': '站内信系统',
-        'upload': '大文件上传'
+        'upload': '大文件上传',
+        'audit': '审计日志'
     };
     document.getElementById('currentPanelTitle').textContent = titleMap[panelName];
 
@@ -52,6 +53,9 @@ function switchPanel(panelName) {
     } else if (panelName === 'upload') {
         document.getElementById('panelUpload').classList.add('active');
         loadUploadedFiles();
+    } else if (panelName === 'audit') {
+        document.getElementById('panelAudit').classList.add('active');
+        loadAuditLogs(1);
     }
 }
 
@@ -929,6 +933,140 @@ function deleteUploadedFile(fileId, filename) {
     });
 }
 
+
+// 审计日志全局状态
+let currentAuditPage = 1;
+const auditPageLimit = 10;
+
+// 加载审计日志列表数据
+function loadAuditLogs(page = 1) {
+    currentAuditPage = page;
+    const operator = document.getElementById('auditOperatorFilter').value.trim();
+    const action = document.getElementById('auditActionFilter').value;
+    const status = document.getElementById('auditStatusFilter').value;
+    
+    let query = `?page=${page}&limit=${auditPageLimit}`;
+    if (operator) query += `&operator=${encodeURIComponent(operator)}`;
+    if (action) query += `&action=${encodeURIComponent(action)}`;
+    if (status) query += `&status=${encodeURIComponent(status)}`;
+    if (token) query += `&token=${encodeURIComponent(token)}`;
+    
+    const tbody = document.getElementById('auditLogListBody');
+    if (!tbody) return;
+    
+    tbody.innerHTML = `<tr><td colspan="12" style="text-align: center; padding: 20px;">正在加载中...</td></tr>`;
+    
+    fetch(`/api/audit-logs${query}`, {
+        headers: token ? { 'Authorization': 'Bearer ' + token } : {}
+    })
+    .then(res => {
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        return res.json();
+    })
+    .then(res => {
+        tbody.innerHTML = '';
+        const data = res.data || [];
+        const total = res.total || 0;
+        
+        if (data.length === 0) {
+            tbody.innerHTML = `
+                <tr>
+                    <td colspan="12" style="text-align: center; padding: 20px; color: var(--text-muted);">
+                        暂无符合条件的审计日志
+                    </td>
+                </tr>
+            `;
+            document.getElementById('auditPaginationInfo').textContent = `共 0 条记录，当前第 1/1 页`;
+            document.getElementById('auditPrevPageBtn').disabled = true;
+            document.getElementById('auditNextPageBtn').disabled = true;
+            return;
+        }
+        
+        data.forEach(log => {
+            const tr = document.createElement('tr');
+            tr.style.borderBottom = '1px solid var(--card-border)';
+            
+            const statusStyle = log.status === 'success' 
+                ? 'color: var(--success); font-weight: 500;' 
+                : 'color: var(--danger); font-weight: 500;';
+                
+            let methodStyle = 'background: rgba(16, 185, 129, 0.15); color: var(--success);';
+            if (log.method === 'POST') methodStyle = 'background: rgba(59, 130, 246, 0.15); color: var(--primary);';
+            if (log.method === 'DELETE') methodStyle = 'background: rgba(239, 68, 68, 0.15); color: var(--danger);';
+            if (log.method === 'PUT' || log.method === 'PATCH') methodStyle = 'background: rgba(245, 158, 11, 0.15); color: #f59e0b;';
+
+            tr.innerHTML = `
+                <td style="padding: 10px 8px; color: var(--text-muted);">${log.id}</td>
+                <td style="padding: 10px 8px; color: var(--text-muted);">${log.created_at}</td>
+                <td style="padding: 10px 8px; font-weight: 500; color: var(--text-main);">${escapeHtml(log.operator || '--')}</td>
+                <td style="padding: 10px 8px;"><span style="padding: 4px 8px; border-radius: 6px; font-size: 11px; font-weight: 600; ${methodStyle}">${log.method || '--'}</span></td>
+                <td style="padding: 10px 8px; font-family: monospace; font-size:12px; color: #60a5fa;">${log.action}</td>
+                <td style="padding: 10px 8px; color: var(--text-muted);">${log.resource_type || '--'}</td>
+                <td style="padding: 10px 8px; color: var(--text-muted);">${log.resource_id || '--'}</td>
+                <td style="padding: 10px 8px; color: var(--text-muted); max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${escapeHtml(JSON.stringify(log.request_params || {}))}">${escapeHtml(log.request_params ? JSON.stringify(log.request_params).substring(0, 25) + '...' : '--')}</td>
+                <td style="padding: 10px 8px; color: var(--text-muted);">${log.ip_address || '--'}</td>
+                <td style="padding: 10px 8px; color: #34d399; font-weight: 500;">${log.execution_time != null ? log.execution_time + ' ms' : '--'}</td>
+                <td style="padding: 10px 8px; ${statusStyle}">${log.status}</td>
+                <td style="padding: 10px 8px;">
+                    <button class="btn-secondary" style="padding: 4px 10px; font-size: 11px; border-radius: 6px; display: inline-flex; align-items: center; gap: 4px;" onclick="showAuditDetail('${escapeHtml(log.details || '{}')}')">
+                        <i data-lucide="eye" style="width: 12px; height: 12px;"></i>
+                        <span>详情</span>
+                    </button>
+                </td>
+            `;
+            tbody.appendChild(tr);
+        });
+        
+        // 分页控制
+        const totalPages = Math.ceil(total / auditPageLimit) || 1;
+        document.getElementById('auditPaginationInfo').textContent = `共 ${total} 条记录，当前第 ${currentAuditPage}/${totalPages} 页`;
+        document.getElementById('auditPrevPageBtn').disabled = currentAuditPage <= 1;
+        document.getElementById('auditNextPageBtn').disabled = currentAuditPage >= totalPages;
+        
+        lucide.createIcons();
+    })
+    .catch(err => {
+        console.error("加载审计日志失败:", err);
+        tbody.innerHTML = `
+            <tr>
+                <td colspan="12" style="text-align: center; padding: 20px; color: var(--danger);">
+                    加载审计日志失败，请检查服务连接或 API Token
+                </td>
+            </tr>
+        `;
+    });
+}
+
+function resetAuditFilters() {
+    document.getElementById('auditOperatorFilter').value = '';
+    document.getElementById('auditActionFilter').value = '';
+    document.getElementById('auditStatusFilter').value = '';
+    loadAuditLogs(1);
+}
+
+function changeAuditPage(direction) {
+    loadAuditLogs(currentAuditPage + direction);
+}
+
+function showAuditDetail(detailsStr) {
+    const modal = document.getElementById('auditDetailModal');
+    const pre = document.getElementById('auditDetailPre');
+    if (!modal || !pre) return;
+    
+    try {
+        const parsed = JSON.parse(detailsStr);
+        pre.textContent = JSON.stringify(parsed, null, 2);
+    } catch (e) {
+        pre.textContent = detailsStr;
+    }
+    modal.style.display = 'flex';
+    lucide.createIcons();
+}
+
+function closeAuditDetailModal() {
+    const modal = document.getElementById('auditDetailModal');
+    if (modal) modal.style.display = 'none';
+}
 
 // 页面加载完成后自动触发一次 WebSocket 连接
 window.addEventListener('DOMContentLoaded', () => {

@@ -35,6 +35,10 @@
                     <i data-lucide="upload-cloud" style="width: 18px; height: 18px;"></i>
                     大文件上传
                 </li>
+                <li class="menu-item" onclick="switchPanel('audit')">
+                    <i data-lucide="shield-alert" style="width: 18px; height: 18px;"></i>
+                    审计日志
+                </li>
             </ul>
         </aside>
 
@@ -189,6 +193,82 @@
                     </div>
                 </div>
             </div>
+
+            <!-- 面板 4：审计日志 -->
+            <div id="panelAudit" class="panel">
+                <!-- 筛选工具栏 -->
+                <div class="card form-row" style="display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end;">
+                    <div class="input-group" style="flex: 1; min-width: 150px;">
+                        <label for="auditOperatorFilter">操作人:</label>
+                        <input type="text" id="auditOperatorFilter" placeholder="输入操作人/账号">
+                    </div>
+                    <div class="input-group" style="flex: 1; min-width: 150px;">
+                        <label for="auditActionFilter">操作动作:</label>
+                        <select id="auditActionFilter" style="background: rgba(17, 24, 39, 0.5); border: 1px solid var(--card-border); color: var(--text-main); padding: 8px; border-radius: 8px;">
+                            <option value="">全部动作</option>
+                            <option value="SEND_MESSAGE">发送消息 (SEND_MESSAGE)</option>
+                            <option value="READ_MESSAGE">阅读消息 (READ_MESSAGE)</option>
+                            <option value="READ_ALL_MESSAGES">一键已读 (READ_ALL_MESSAGES)</option>
+                            <option value="UPLOAD_FILE">文件上传 (UPLOAD_FILE)</option>
+                            <option value="DELETE_FILE">文件删除 (DELETE_FILE)</option>
+                        </select>
+                    </div>
+                    <div class="input-group" style="flex: 1; min-width: 120px;">
+                        <label for="auditStatusFilter">执行状态:</label>
+                        <select id="auditStatusFilter" style="background: rgba(17, 24, 39, 0.5); border: 1px solid var(--card-border); color: var(--text-main); padding: 8px; border-radius: 8px;">
+                            <option value="">全部状态</option>
+                            <option value="success">成功 (success)</option>
+                            <option value="failed">失败 (failed)</option>
+                        </select>
+                    </div>
+                    <div style="display: flex; gap: 8px; height: 38px;">
+                        <button onclick="loadAuditLogs(1)" class="btn-primary" style="padding: 0 16px;">
+                            <i data-lucide="search" style="width: 14px; height: 14px;"></i>
+                            <span>查询</span>
+                        </button>
+                        <button onclick="resetAuditFilters()" class="btn-secondary" style="padding: 0 16px;">
+                            <i data-lucide="rotate-ccw" style="width: 14px; height: 14px;"></i>
+                            <span>重置</span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- 表格展示卡片 -->
+                <div class="card" style="margin-top: 20px; display: flex; flex-direction: column; gap: 16px;">
+                    <div class="table-container" style="overflow-x: auto;">
+                        <table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 13px;">
+                            <thead>
+                                <tr style="border-bottom: 1px solid var(--card-border); color: var(--text-muted);">
+                                    <th style="padding: 10px 8px;">ID</th>
+                                    <th style="padding: 10px 8px;">操作时间</th>
+                                    <th style="padding: 10px 8px;">操作人</th>
+                                    <th style="padding: 10px 8px;">请求方式</th>
+                                    <th style="padding: 10px 8px;">操作动作</th>
+                                    <th style="padding: 10px 8px;">资源类型</th>
+                                    <th style="padding: 10px 8px;">资源 ID</th>
+                                    <th style="padding: 10px 8px;">请求参数</th>
+                                    <th style="padding: 10px 8px;">IP 地址</th>
+                                    <th style="padding: 10px 8px;">耗时</th>
+                                    <th style="padding: 10px 8px;">状态</th>
+                                    <th style="padding: 10px 8px;">操作</th>
+                                </tr>
+                            </thead>
+                            <tbody id="auditLogListBody">
+                                <!-- 动态插入审计日志列表 -->
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <!-- 分页栏 -->
+                    <div style="display: flex; justify-content: space-between; align-items: center; padding-top: 10px; border-top: 1px solid var(--card-border);">
+                        <span id="auditPaginationInfo" style="font-size: 13px; color: var(--text-muted);">共 0 条记录，当前第 1/1 页</span>
+                        <div style="display: flex; gap: 8px;">
+                            <button id="auditPrevPageBtn" onclick="changeAuditPage(-1)" class="btn-secondary" style="padding: 6px 12px; font-size: 12px; border-radius: 8px;" disabled>上一页</button>
+                            <button id="auditNextPageBtn" onclick="changeAuditPage(1)" class="btn-secondary" style="padding: 6px 12px; font-size: 12px; border-radius: 8px;" disabled>下一页</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
         </main>
     </div>
 
@@ -232,6 +312,24 @@
         </div>
     </div>
 
-    <script src="/static/js/console.js?v=202606202052" defer></script>
+    <!-- 审计日志详情弹窗 -->
+    <div id="auditDetailModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0, 0, 0, 0.6); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); justify-content: center; align-items: center; z-index: 10000; animation: fadeIn 0.2s ease;">
+        <div class="card" style="width: 90%; max-width: 600px; background: rgba(17, 24, 39, 0.95); border: 1px solid var(--card-border); border-radius: 16px; padding: 24px; display: flex; flex-direction: column; gap: 20px; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);">
+            <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--card-border); padding-bottom: 10px;">
+                <h3 style="font-size: 16px; font-weight: 600; color: var(--text-main);">审计日志详细载荷</h3>
+                <button onclick="closeAuditDetailModal()" style="background: none; border: none; color: var(--text-muted); cursor: pointer; display: flex; align-items: center; justify-content: center;">
+                    <i data-lucide="x" style="width: 18px; height: 18px;"></i>
+                </button>
+            </div>
+            <div style="max-height: 400px; overflow-y: auto; background: rgba(0, 0, 0, 0.3); border-radius: 8px; padding: 12px; border: 1px solid var(--card-border);">
+                <pre id="auditDetailPre" style="font-family: monospace; font-size: 12px; color: #34d399; white-space: pre-wrap; word-break: break-all; margin: 0;"></pre>
+            </div>
+            <div style="display: flex; justify-content: flex-end;">
+                <button onclick="closeAuditDetailModal()" class="btn-primary" style="padding: 8px 16px; font-size: 13px; border-radius: 8px;">关闭</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/console.js?v=202606230132" defer></script>
 </body>
 </html>

@@ -7,9 +7,15 @@ from app.application.message.message_app_service import MessageAppService
 from app.infrastructure.auth import verify_token
 from app.infrastructure.database import SQLMessageRepository
 from app.infrastructure.database.session import get_db
+from app.infrastructure.audit_route import AuditLogRoute
 
 logger = logging.getLogger("hmp_ws_service")
-router = APIRouter(prefix="/api/messages", tags=["Messages"], dependencies=[Depends(verify_token)])
+router = APIRouter(
+    prefix="/api/messages",
+    tags=["Messages"],
+    dependencies=[Depends(verify_token)],
+    route_class=AuditLogRoute
+)
 
 from pydantic import BaseModel, Field
 
@@ -26,22 +32,18 @@ def get_message_service(request: Request,
     return MessageAppService(repo, request.app.state.mq_adapter)
 
 
-@router.post("/send")
+@router.post("/send", summary="SEND_MESSAGE", description="site_message")
 async def send_message_api(request_data: MessageSendRequest,
                            service: MessageAppService = Depends(get_message_service)):
-    try:
-        msg = await service.send_message(
-            request_data.sender,
-            request_data.receiver,
-            request_data.content
-        )
-        return {"status": "success", "message": f"站内信已入库 (id={msg.id})", "id": msg.id}
-    except Exception as e:
-        logger.error(f"Failed to send site message API: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to send site message: {e}")
+    msg = await service.send_message(
+        request_data.sender,
+        request_data.receiver,
+        request_data.content
+    )
+    return {"status": "success", "message": f"站内信已入库 (id={msg.id})", "id": msg.id}
 
 
-@router.get("")
+@router.get("", summary="QUERY_MESSAGES", description="site_message")
 async def get_messages_api(receiver: str = Query(...), status: str = Query("all"),
                            service: MessageAppService = Depends(get_message_service)):
     try:
@@ -64,26 +66,17 @@ async def get_messages_api(receiver: str = Query(...), status: str = Query("all"
         raise HTTPException(status_code=500, detail="Failed to fetch site messages")
 
 
-@router.post("/{message_id}/read")
-async def mark_as_read_api(message_id: int, service: MessageAppService = Depends(get_message_service)):
-    try:
-        success = await service.mark_as_read(message_id)
-        if not success:
-            raise HTTPException(status_code=404, detail="Message not found")
-        return {"status": "success", "message": f"Message {message_id} marked as read"}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to update message status API: {e}")
-        raise HTTPException(status_code=500, detail="Failed to update message status")
+@router.post("/{message_id}/read", summary="READ_MESSAGE", description="site_message")
+async def mark_as_read_api(message_id: int,
+                           service: MessageAppService = Depends(get_message_service)):
+    success = await service.mark_as_read(message_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Message not found")
+    return {"status": "success", "message": f"Message {message_id} marked as read"}
 
 
-@router.post("/read-all")
+@router.post("/read-all", summary="READ_ALL_MESSAGES", description="site_message")
 async def mark_all_as_read_api(receiver: str = Query(...),
                                service: MessageAppService = Depends(get_message_service)):
-    try:
-        await service.mark_all_as_read(receiver)
-        return {"status": "success", "message": f"All messages for {receiver} marked as read"}
-    except Exception as e:
-        logger.error(f"Failed to mark all messages as read API: {e}")
-        raise HTTPException(status_code=500, detail="Failed to mark all messages as read")
+    await service.mark_all_as_read(receiver)
+    return {"status": "success", "message": f"All messages for {receiver} marked as read"}

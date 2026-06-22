@@ -5,8 +5,9 @@ import asyncio
 from fastapi import WebSocket, WebSocketDisconnect
 from app.application.message.message_app_service import MessageAppService
 from app.application.upload.upload_app_service import UploadAppService
-from app.interfaces.websocket.ws_routes import ConnectionManager, _is_safe_upload_id
+from app.interfaces.websocket.ws_routes import WSConnectionManager, _is_safe_upload_id
 from app.infrastructure.database.session import transactional_session
+from app.application.audit_log.audit_log_app_service import AuditLogAppService
 
 logger = logging.getLogger("hmp_ws_service")
 
@@ -17,7 +18,7 @@ class WebSocketHandler:
         self,
         websocket: WebSocket,
         client_id: str,
-        manager: ConnectionManager,
+        manager: WSConnectionManager,
         msg_service: MessageAppService,
         upload_service: UploadAppService,
     ):
@@ -27,6 +28,18 @@ class WebSocketHandler:
         self.msg_service = msg_service
         self.upload_service = upload_service
         self.current_upload_id = None
+        
+        # 提取客户端连接 IP 和 User-Agent 信息用于审计日志
+        self.client_ip = websocket.client.host if websocket.client else None
+        forwarded_for = websocket.headers.get("x-forwarded-for")
+        if forwarded_for:
+            self.client_ip = forwarded_for.split(",")[0].strip()
+        else:
+            real_ip = websocket.headers.get("x-real-ip")
+            if real_ip:
+                self.client_ip = real_ip
+        self.user_agent = websocket.headers.get("user-agent")
+        self.audit_service = AuditLogAppService()
 
     async def run(self):
         """长连接事件循环，接收文本/二进制数据包并分发处理。"""
@@ -85,6 +98,17 @@ class WebSocketHandler:
                             temp_service = MessageAppService(repo, self.msg_service.mq_adapter)
                             msg = await temp_service.send_message(sender=self.client_id, receiver=receiver, content=content)
                         
+                        # 记录成功审计日志
+                        await self.audit_service.record_ws_log(
+                            client_ip=self.client_ip,
+                            user_agent=self.user_agent,
+                            action="SEND_MESSAGE",
+                            resource_type="site_message",
+                            resource_id=str(msg.id) if msg else None,
+                            status="success",
+                            operator=self.client_id
+                        )
+                        
                         await self.websocket.send_text(json.dumps({
                             "type": "site_message_ack",
                             "status": "success",
@@ -93,6 +117,16 @@ class WebSocketHandler:
                         }, ensure_ascii=False))
                     except Exception as e:
                         logger.error(f"WS site_message failed: {e}")
+                        # 记录失败审计日志
+                        await self.audit_service.record_ws_log(
+                            client_ip=self.client_ip,
+                            user_agent=self.user_agent,
+                            action="SEND_MESSAGE",
+                            resource_type="site_message",
+                            status="failed",
+                            details=str(e),
+                            operator=self.client_id
+                        )
                         await self.websocket.send_text(json.dumps({
                             "type": "site_message_ack",
                             "status": "error",
@@ -187,6 +221,7 @@ class WebSocketHandler:
                     # 将上传记录写入数据库中
                     from app.infrastructure.database import SQLUploadedFileRepository
                     from app.domain.upload.entities import UploadedFile
+                    uploaded_file = None
                     with transactional_session() as db:
                         repo = SQLUploadedFileRepository(db)
                         uploaded_file = UploadedFile(
@@ -195,6 +230,18 @@ class WebSocketHandler:
                             file_size_mb=file_size_mb
                         )
                         repo.save(uploaded_file)
+                    
+                    # 记录成功审计日志
+                    await self.audit_service.record_ws_log(
+                        client_ip=self.client_ip,
+                        user_agent=self.user_agent,
+                        action="UPLOAD_FILE",
+                        resource_type="uploaded_file",
+                        resource_id=str(uploaded_file.id) if uploaded_file else None,
+                        status="success",
+                        details=f"Filename: {safe_name}, Size: {file_size_mb} MB",
+                        operator=self.client_id
+                    )
                     
                     await self.websocket.send_text(json.dumps({
                         "type": "upload_merge_ack",
@@ -206,6 +253,16 @@ class WebSocketHandler:
                     logger.info(f"File merged via WS successfully: {safe_name} -> {file_path}")
                 except Exception as e:
                     logger.error(f"Error merging file chunks via WS for {filename}: {e}")
+                    # 记录失败审计日志
+                    await self.audit_service.record_ws_log(
+                        client_ip=self.client_ip,
+                        user_agent=self.user_agent,
+                        action="UPLOAD_FILE",
+                        resource_type="uploaded_file",
+                        status="failed",
+                        details=str(e),
+                        operator=self.client_id
+                    )
                     await self.websocket.send_text(json.dumps({
                         "type": "upload_merge_ack",
                         "upload_id": upload_id,

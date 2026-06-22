@@ -17,9 +17,26 @@ DATABASE_URL = f"mysql+pymysql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB
 engine = create_engine(DATABASE_URL, pool_recycle=3600, pool_pre_ping=True)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
+from sqlalchemy import inspect, text
+
 def init_db():
-    """初始化数据库表（如果不存在的话）"""
+    """初始化数据库表（如果不存在的话）并自愈补齐新字段"""
     Base.metadata.create_all(bind=engine)
+    
+    # 动态检测并扩容缺失字段，保证平滑升级而免受数据库结构不一致引发的崩溃
+    try:
+        inspector = inspect(engine)
+        columns = [col["name"] for col in inspector.get_columns("audit_log")]
+        with engine.begin() as conn:
+            if "request_params" not in columns:
+                conn.execute(text("ALTER TABLE audit_log ADD COLUMN request_params TEXT NULL COMMENT '请求参数/传参'"))
+            if "execution_time" not in columns:
+                conn.execute(text("ALTER TABLE audit_log ADD COLUMN execution_time FLOAT NULL COMMENT '执行耗时(毫秒)'"))
+            if "method" not in columns:
+                conn.execute(text("ALTER TABLE audit_log ADD COLUMN method VARCHAR(20) NULL COMMENT '请求方式：GET/POST等'"))
+    except Exception as e:
+        import logging
+        logging.getLogger("hmp_ws_service").warning(f"Database schema self-healing warning: {e}")
 
 from contextlib import contextmanager
 

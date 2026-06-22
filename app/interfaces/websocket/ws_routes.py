@@ -15,7 +15,7 @@ def _is_safe_upload_id(upload_id: str) -> bool:
         return False
     return bool(re.match(r"^[a-zA-Z0-9_\-\.]+$", upload_id)) and 5 <= len(upload_id) <= 150
 
-class ConnectionManager:
+class WSConnectionManager:
     """管理活跃的 WebSocket 长连接与广播/推送事件，支持同账号多标签页并存。"""
     
     def __init__(self):
@@ -58,7 +58,7 @@ class ConnectionManager:
                     logger.error(f"Error broadcasting message to '{client_id}' on socket {id(ws)}, disconnecting: {e}")
                     self.disconnect(client_id, ws)
 
-def get_websocket_manager(websocket: WebSocket) -> ConnectionManager:
+def get_websocket_manager(websocket: WebSocket) -> WSConnectionManager:
     return websocket.app.state.websocket_manager
 
 def get_message_service(websocket: WebSocket) -> MessageAppService:
@@ -72,7 +72,7 @@ def get_upload_service(websocket: WebSocket) -> UploadAppService:
 async def websocket_endpoint(
     websocket: WebSocket,
     client_id: str,
-    manager: ConnectionManager = Depends(get_websocket_manager),
+    manager: WSConnectionManager = Depends(get_websocket_manager),
     msg_service: MessageAppService = Depends(get_message_service),
     upload_service: UploadAppService = Depends(get_upload_service)
 ):
@@ -91,7 +91,7 @@ async def websocket_endpoint(
 @router.websocket("/hmp_ws_service/repository/mirror/v2.0")
 async def repository_mirror_ws_endpoint(
     websocket: WebSocket,
-    manager: ConnectionManager = Depends(get_websocket_manager)
+    manager: WSConnectionManager = Depends(get_websocket_manager)
 ):
     """物理机系统连接的镜像仓库端点，用于心跳与状态维持。"""
     client_id = f"mirror_client_{int(time.time())}"
