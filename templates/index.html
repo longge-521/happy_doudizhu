@@ -9,7 +9,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Noto+Sans+SC:wght@300;400;500;700&display=swap" rel="stylesheet">
     <!-- 引入 Lucide 图标 -->
     <script src="/static/libs/lucide.min.js"></script>
-    <link rel="stylesheet" href="/static/css/styles.css?v=202606230240">
+    <link rel="stylesheet" href="/static/css/styles.css?v=202606230245">
 </head>
 <body>
     <div class="dashboard">
@@ -263,8 +263,12 @@
                     <div style="display: flex; justify-content: space-between; align-items: center; padding-top: 10px; border-top: 1px solid var(--card-border);">
                         <span id="auditPaginationInfo" style="font-size: 13px; color: var(--text-muted);">共 0 条记录，当前第 1/1 页</span>
                         <div style="display: flex; gap: 8px;">
-                            <button id="auditPrevPageBtn" onclick="changeAuditPage(-1)" class="btn-secondary" style="padding: 6px 12px; font-size: 12px; border-radius: 8px;" disabled>上一页</button>
-                            <button id="auditNextPageBtn" onclick="changeAuditPage(1)" class="btn-secondary" style="padding: 6px 12px; font-size: 12px; border-radius: 8px;" disabled>下一页</button>
+                            <button id="auditPrevPageBtn" onclick="changeAuditPage(-1)" class="btn-secondary" style="padding: 8px 14px; border-radius: 8px;" disabled>
+                                <i data-lucide="chevron-left" style="width: 16px; height: 16px;"></i>
+                            </button>
+                            <button id="auditNextPageBtn" onclick="changeAuditPage(1)" class="btn-secondary" style="padding: 8px 14px; border-radius: 8px;" disabled>
+                                <i data-lucide="chevron-right" style="width: 16px; height: 16px;"></i>
+                            </button>
                         </div>
                     </div>
                 </div>
@@ -330,6 +334,6 @@
         </div>
     </div>
 
-    <script src="/static/js/console.js?v=202606230240" defer></script>
+    <script src="/static/js/console.js?v=202606230245" defer></script>
 </body>
 </html>
