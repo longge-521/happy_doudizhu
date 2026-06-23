@@ -40,8 +40,19 @@ from app.interfaces.api.upload_routes import router as upload_router
 from app.interfaces.api.audit_log_routes import router as audit_log_router
 from app.interfaces.web.index_route import router as index_router
 from app.interfaces.websocket.ws_routes import router as ws_router
+from app.interfaces.websocket.game_routes import router as game_ws_router
 
 app = FastAPI(title="HMP WS Service (DDD)")
+
+# CORS 中间件 (支持 Vue 前端跨域访问)
+from fastapi.middleware.cors import CORSMiddleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # 挂载静态文件目录
 from fastapi.staticfiles import StaticFiles
@@ -55,6 +66,7 @@ app.include_router(message_router)
 app.include_router(upload_router)
 app.include_router(ws_router)
 app.include_router(audit_log_router)
+app.include_router(game_ws_router)
 
 
 async def on_mq_message_received(app_instance: FastAPI, data: dict):
@@ -154,11 +166,22 @@ async def lifespan(app_instance: FastAPI):
     upload_service = UploadAppService(storage_adapter)
     mq_adapter = RabbitMQAdapter()
 
+    from app.interfaces.websocket.game_routes import GameWSConnectionManager
+    from app.application.game.game_app_service import GameAppService
+    from app.infrastructure.redis_game_repository import RedisGameRepository
+    from app.infrastructure.redis_client import redis_client
+
+    game_ws_manager = GameWSConnectionManager()
+    game_repo = RedisGameRepository(redis_client)
+    game_service = GameAppService(game_repo)
+
     # 状态保留于 FastAPI app.state
     app_instance.state.websocket_manager = websocket_manager
     app_instance.state.storage_adapter = storage_adapter
     app_instance.state.upload_service = upload_service
     app_instance.state.mq_adapter = mq_adapter
+    app_instance.state.game_ws_manager = game_ws_manager
+    app_instance.state.game_service = game_service
 
     # 启动时清理超时的孤儿临时上传目录
     upload_service.cleanup_stale_uploads(timeout_hours=2.0)
