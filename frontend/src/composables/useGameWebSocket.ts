@@ -98,6 +98,8 @@ export function useGameWebSocket() {
         gameStore.gamePhase = 'CALLING'
         gameStore.myHand = data.hand
         gameStore.currentTurn = data.current_turn
+        gameStore.playerActions = {}
+        gameStore.playerPlayedCards = {}
         if (data.players) {
           gameStore.players = data.players.map((p: any) => ({
             id: p.id, nickname: p.nickname, isAi: p.is_ai,
@@ -107,29 +109,62 @@ export function useGameWebSocket() {
         }
         break
       case 'call_made':
+        if (data.room_state) gameStore.updateFromRoomState(data.room_state)
+        gameStore.playerActions[data.player] = `${data.score}分`
+        break
       case 'call_skipped':
+        if (data.room_state) gameStore.updateFromRoomState(data.room_state)
+        gameStore.playerActions[data.player] = '不叫'
+        break
       case 'landlord_decided':
+        if (data.room_state) gameStore.updateFromRoomState(data.room_state)
+        gameStore.gamePhase = 'PLAYING'
+        gameStore.landlord = data.landlord
+        gameStore.bottomCards = data.bottom_cards || []
+        gameStore.multiplier = data.multiplier || 1
+        gameStore.playerActions = {} // 清空叫分提示
+        break
       case 'redeal':
+        if (data.room_state) gameStore.updateFromRoomState(data.room_state)
+        gameStore.playerActions = {}
+        gameStore.playerPlayedCards = {}
+        break
       case 'cards_played':
+        if (data.room_state) gameStore.updateFromRoomState(data.room_state)
+        gameStore.playerActions[data.player] = ''
+        gameStore.playerPlayedCards[data.player] = data.cards
+        break
       case 'turn_passed':
+        if (data.room_state) gameStore.updateFromRoomState(data.room_state)
+        gameStore.playerActions[data.player] = '不出'
+        gameStore.playerPlayedCards[data.player] = []
+        break
       case 'game_over':
-        if (data.room_state) {
-          gameStore.updateFromRoomState(data.room_state)
+        if (data.room_state) gameStore.updateFromRoomState(data.room_state)
+        gameStore.gamePhase = 'SETTLING'
+        gameStore.settlement = {
+          winner: data.winner,
+          winnerSide: data.winner_side,
+          scores: data.scores,
+          multiplier: data.multiplier,
         }
-        if (event === 'landlord_decided') {
-          gameStore.gamePhase = 'PLAYING'
-          gameStore.landlord = data.landlord
-          gameStore.bottomCards = data.bottom_cards || []
-          gameStore.multiplier = data.multiplier || 1
-        }
-        if (event === 'game_over') {
-          gameStore.gamePhase = 'SETTLING'
-          gameStore.settlement = {
-            winner: data.winner,
-            winnerSide: data.winner_side,
-            scores: data.scores,
-            multiplier: data.multiplier,
-          }
+        break
+      case 'chat_msg':
+        {
+          const presets = [
+            "快点吧，等得我花都谢了！",
+            "合作愉快，合作愉快！",
+            "大牌在后头，千万别放他！",
+            "不要走，决战到天亮！",
+            "你是地主派来的卧底吧？"
+          ]
+          const msg = presets[data.msg_id] || '...'
+          gameStore.playerActions[data.player] = msg
+          setTimeout(() => {
+            if (gameStore.playerActions[data.player] === msg) {
+              gameStore.playerActions[data.player] = ''
+            }
+          }, 3000)
         }
         break
       case 'reconnected':

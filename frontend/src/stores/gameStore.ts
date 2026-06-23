@@ -35,6 +35,8 @@ export const useGameStore = defineStore('game', () => {
   const landlord = ref('')
   const settlement = ref<any>(null)
   const errorMsg = ref('')
+  const playerActions = ref<Record<string, string>>({})
+  const playerPlayedCards = ref<Record<string, number[]>>({})
 
   const isMyTurn = computed(() => {
     const playerStore = usePlayerStore()
@@ -88,12 +90,14 @@ export const useGameStore = defineStore('game', () => {
     landlord.value = ''
     settlement.value = null
     errorMsg.value = ''
+    playerActions.value = {}
+    playerPlayedCards.value = {}
   }
 
   return {
     wsConnected, roomId, gamePhase, players, myHand, selectedCards,
     bottomCards, lastPlay, currentTurn, turnTimeout, multiplier,
-    landlord, settlement, errorMsg, isMyTurn,
+    landlord, settlement, errorMsg, isMyTurn, playerActions, playerPlayedCards,
     toggleCard, clearSelection, updateFromRoomState, reset,
   }
 })
