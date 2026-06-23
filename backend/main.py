@@ -41,6 +41,7 @@ from app.interfaces.api.audit_log_routes import router as audit_log_router
 from app.interfaces.web.index_route import router as index_router
 from app.interfaces.websocket.ws_routes import router as ws_router
 from app.interfaces.websocket.game_routes import router as game_ws_router
+from app.interfaces.api.game_routes import router as game_api_router
 
 app = FastAPI(title="HMP WS Service (DDD)")
 
@@ -67,6 +68,7 @@ app.include_router(upload_router)
 app.include_router(ws_router)
 app.include_router(audit_log_router)
 app.include_router(game_ws_router)
+app.include_router(game_api_router)
 
 
 async def on_mq_message_received(app_instance: FastAPI, data: dict):
