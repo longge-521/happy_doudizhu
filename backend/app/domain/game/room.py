@@ -56,6 +56,9 @@ class GameRoom:
         self.multiplier: int = 1
         self.redeal_count: int = 0
         self.created_at: str = ""
+        self.base_score: int = 10
+        self.all_played_cards: List[int] = []
+        self.play_history: List[Dict[str, Any]] = []
 
         # 叫地主状态
         self._call_index: int = 0       # 当前叫地主的玩家索引
@@ -63,10 +66,11 @@ class GameRoom:
         self._first_caller_index: int = 0  # 首位叫牌者索引
 
     @classmethod
-    def create(cls, room_id: str, players: List[Player]) -> "GameRoom":
+    def create(cls, room_id: str, players: List[Player], base_score: int = 10) -> "GameRoom":
         room = cls()
         room.room_id = room_id
         room.players = players
+        room.base_score = base_score
         room.phase = GamePhase.DEALING
         room.created_at = time.strftime("%Y-%m-%dT%H:%M:%S")
         return room
@@ -91,6 +95,8 @@ class GameRoom:
         self.landlord = None
         self.last_play = LastPlay()
         self.pass_count = 0
+        self.all_played_cards = []
+        self.play_history = []
         self._call_index = 0
         self._call_scores = {}
         # 随机选择首位叫牌者 (使用第一个玩家索引)
@@ -219,6 +225,7 @@ class GameRoom:
         for cid in card_ids:
             new_hand.remove(cid)
         self.hands[player_id] = new_hand
+        self.all_played_cards.extend(card_ids)
 
         # 更新出牌记录
         self.last_play = LastPlay(
@@ -228,6 +235,7 @@ class GameRoom:
             card_play=play
         )
         self.pass_count = 0
+        self.play_history.append({"player": player_id, "cards": card_ids})
 
         # 检查是否出完
         if len(new_hand) == 0:
@@ -256,6 +264,7 @@ class GameRoom:
             return {"success": False, "error": "新一轮必须出牌"}
 
         self.pass_count += 1
+        self.play_history.append({"player": player_id, "cards": []})
 
         # 如果连续2人不出，最后出牌的人获得新一轮主导权
         if self.pass_count >= 2:
@@ -277,7 +286,7 @@ class GameRoom:
         is_landlord_win = (winner_id == self.landlord)
         winner_side = "landlord" if is_landlord_win else "farmer"
 
-        base_score = self.multiplier * 10
+        base_score = self.multiplier * self.base_score
         scores = {}
         for p in self.players:
             if p.id == self.landlord:
@@ -324,6 +333,9 @@ class GameRoom:
             "call_index": self._call_index,
             "call_scores": self._call_scores,
             "first_caller_index": self._first_caller_index,
+            "base_score": self.base_score,
+            "all_played_cards": self.all_played_cards,
+            "play_history": self.play_history,
         }
 
     @classmethod
@@ -357,6 +369,9 @@ class GameRoom:
         room._call_index = data.get("call_index", 0)
         room._call_scores = data.get("call_scores", {})
         room._first_caller_index = data.get("first_caller_index", 0)
+        room.base_score = data.get("base_score", 10)
+        room.all_played_cards = data.get("all_played_cards", [])
+        room.play_history = data.get("play_history", [])
         return room
 
     def get_player_view(self, player_id: str) -> dict:
@@ -386,6 +401,8 @@ class GameRoom:
             },
             "multiplier": self.multiplier,
             "landlord": self.landlord,
+            "base_score": self.base_score,
+            "all_played_cards": self.all_played_cards,
         }
         # 地主确定后才公开底牌
         if self.landlord:
