@@ -21,14 +21,61 @@ if not os.path.exists(LOG_DIR):
 log_path = os.path.join(LOG_DIR, "hmp_ws_service.log")
 
 # 使用 RotatingFileHandler 以支持日志文件轮转与自动清理，防范磁盘满溢
-logging.basicConfig(
-    level=logging.DEBUG,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        RotatingFileHandler(log_path, maxBytes=10*1024*1024, backupCount=5, encoding="utf-8"),
-        logging.StreamHandler()
-    ]
-)
+class ColorFormatter(logging.Formatter):
+    """自定义控制台彩色日志格式化器"""
+    GREY = "\x1b[38;21m"      # DEBUG
+    GREEN = "\x1b[32;21m"     # INFO
+    YELLOW = "\x1b[33;21m"    # WARNING
+    RED = "\x1b[31;21m"       # ERROR
+    BOLD_RED = "\x1b[31;1m"   # CRITICAL
+    RESET = "\x1b[0m"
+    
+    FORMAT_TEMPLATE = "%(asctime)s [%(levelname)s] [%(filename)s:%(lineno)d - %(funcName)s]: %(message)s"
+    
+    LEVEL_COLORS = {
+        logging.DEBUG: GREY,
+        logging.INFO: GREEN,
+        logging.WARNING: YELLOW,
+        logging.ERROR: RED,
+        logging.CRITICAL: BOLD_RED
+    }
+
+    def format(self, record):
+        color = self.LEVEL_COLORS.get(record.levelno, self.RESET)
+        log_fmt = color + self.FORMAT_TEMPLATE + self.RESET
+        formatter = logging.Formatter(log_fmt)
+        return formatter.format(record)
+
+LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "log")
+if not os.path.exists(LOG_DIR):
+    os.makedirs(LOG_DIR)
+
+log_path = os.path.join(LOG_DIR, "hmp_ws_service.log")
+
+# 声明文件日志 Formatter (无 ANSI 乱码纯文本)
+file_format = "%(asctime)s [%(levelname)s] [%(filename)s:%(lineno)d - %(funcName)s]: %(message)s"
+file_formatter = logging.Formatter(file_format)
+
+# 创建文件与控制台 Handlers
+file_handler = RotatingFileHandler(log_path, maxBytes=10*1024*1024, backupCount=5, encoding="utf-8")
+file_handler.setFormatter(file_formatter)
+file_handler.setLevel(logging.DEBUG)
+
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(ColorFormatter())
+console_handler.setLevel(logging.DEBUG)
+
+# 全局注入 Root Logger
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.DEBUG)
+
+# 清理默认 handlers 规避重复打印
+for h in root_logger.handlers[:]:
+    root_logger.removeHandler(h)
+
+root_logger.addHandler(file_handler)
+root_logger.addHandler(console_handler)
+
 logger = logging.getLogger("hmp_ws_service")
 
 # 屏蔽第三方 RabbitMQ 客户端底层繁杂的 Heartbeat 心跳及帧数据交互的 Debug 日志
