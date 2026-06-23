@@ -1,0 +1,205 @@
+/* frontend/src/assets/game.css */
+
+/* 棋牌桌布背景 felt 风格 */
+.game-table {
+  min-height: 100vh;
+  background: radial-gradient(circle at center, #1b5e20 0%, #0d2f11 100%);
+  color: #ffffff;
+  font-family: 'Outfit', 'Inter', system-ui, -apple-system, sans-serif;
+  overflow-x: hidden;
+  position: relative;
+}
+
+/* 玻璃态卡片效果用于大厅和面板 */
+.glass-panel {
+  background: rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 16px;
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3);
+}
+
+/* 扑克牌通用基础样式 */
+.poker-card {
+  aspect-ratio: 2.5 / 3.5;
+  border-radius: 8px;
+  background-color: #ffffff;
+  color: #1a1a1a;
+  position: relative;
+  user-select: none;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.25);
+  transition: transform 0.2s cubic-bezier(0.25, 0.8, 0.25, 1), box-shadow 0.2s ease;
+  display: inline-flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 8px;
+  border: 1px solid #e0e0e0;
+  cursor: pointer;
+}
+
+/* 悬浮微动画 */
+.poker-card:not(.no-hover):hover {
+  transform: translateY(-8px) scale(1.03);
+  box-shadow: 0 10px 20px rgba(0, 0, 0, 0.35);
+  z-index: 10;
+}
+
+/* 选中上移状态 */
+.poker-card.selected {
+  transform: translateY(-24px);
+  box-shadow: 0 12px 25px rgba(0, 0, 0, 0.4);
+  border-color: #ffd700; /* 金色边框凸显选中 */
+  z-index: 5;
+}
+
+/* 选中且悬浮状态 */
+.poker-card.selected:hover {
+  transform: translateY(-32px) scale(1.03);
+}
+
+/* 尺寸规格定义 */
+.poker-card.size-sm {
+  width: 60px;
+  height: 84px;
+  padding: 4px;
+  border-radius: 4px;
+}
+.poker-card.size-md {
+  width: 80px;
+  height: 112px;
+  padding: 6px;
+}
+.poker-card.size-lg {
+  width: 105px;
+  height: 147px;
+  padding: 8px;
+}
+
+/* 红色花色 */
+.poker-card.red {
+  color: #d32f2f;
+}
+
+/* 黑色花色 */
+.poker-card.black {
+  color: #1a1a1a;
+}
+
+/* 纸牌背面 pattern */
+.poker-card.face-down {
+  background: repeating-linear-gradient(
+    45deg,
+    #1565c0,
+    #1565c0 10px,
+    #0d47a1 10px,
+    #0d47a1 20px
+  );
+  border: 2px solid #ffffff;
+  box-shadow: 0 4px 8px rgba(0,0,0,0.3);
+  cursor: default;
+}
+.poker-card.face-down::after {
+  content: '';
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  right: 6px;
+  bottom: 6px;
+  border: 1px solid rgba(255,255,255,0.2);
+  border-radius: 4px;
+}
+
+/* 纸牌内部组件定位 */
+.poker-card .card-corner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  line-height: 1.1;
+}
+
+.poker-card .card-corner .card-rank {
+  font-weight: 800;
+  font-size: 1.25em;
+}
+
+.poker-card .card-corner .card-suit-mini {
+  font-size: 1em;
+}
+
+.poker-card .card-center {
+  align-self: center;
+  font-size: 2.2em;
+  line-height: 1;
+}
+
+/* 小尺寸卡牌适配 */
+.poker-card.size-sm .card-corner .card-rank {
+  font-size: 0.9em;
+}
+.poker-card.size-sm .card-corner .card-suit-mini {
+  font-size: 0.8em;
+}
+.poker-card.size-sm .card-center {
+  font-size: 1.3em;
+}
+
+/* 大王小王特殊版面布局 */
+.poker-card.is-joker {
+  justify-content: center;
+  align-items: center;
+  font-weight: 900;
+}
+.poker-card.is-joker .joker-text {
+  writing-mode: vertical-lr;
+  letter-spacing: 4px;
+  font-size: 1.3em;
+  text-transform: uppercase;
+}
+.poker-card.size-sm.is-joker .joker-text {
+  font-size: 0.8em;
+  letter-spacing: 1px;
+}
+
+/* 按钮微交互动效 */
+.btn-premium {
+  background: linear-gradient(135deg, #ffb300 0%, #ff8f00 100%);
+  color: #1a1a1a;
+  font-weight: 700;
+  border: none;
+  border-radius: 24px;
+  box-shadow: 0 4px 15px rgba(255, 143, 0, 0.4);
+  transition: all 0.2s ease;
+  cursor: pointer;
+}
+.btn-premium:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(255, 143, 0, 0.6);
+  background: linear-gradient(135deg, #ffe082 0%, #ffb300 100%);
+}
+.btn-premium:active {
+  transform: translateY(1px);
+}
+.btn-premium:disabled {
+  background: #bdbdbd;
+  box-shadow: none;
+  cursor: not-allowed;
+  color: #757575;
+}
+
+.btn-secondary-premium {
+  background: rgba(255, 255, 255, 0.15);
+  color: #ffffff;
+  font-weight: 700;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 24px;
+  transition: all 0.2s ease;
+  cursor: pointer;
+}
+.btn-secondary-premium:hover {
+  background: rgba(255, 255, 255, 0.25);
+  transform: translateY(-2px);
+}
+.btn-secondary-premium:active {
+  transform: translateY(1px);
+}
