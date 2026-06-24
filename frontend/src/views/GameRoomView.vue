@@ -383,8 +383,6 @@ function getSettleRemainingCards(playerId: string): number[] {
   return sortCardIds(hands)
 }
 
-const showRedealNotice = ref(false)
-
 // 监听 errorMsg，一旦有值，在 2.5 秒后自动淡出消失
 watch(
   () => gameStore.errorMsg,
@@ -402,9 +400,9 @@ watch(
   () => gameStore.gamePhase,
   (newPhase, oldPhase) => {
     if (newPhase === 'DEALING' && oldPhase === 'CALLING') {
-      showRedealNotice.value = true
+      gameStore.showRedealNotice = true
       setTimeout(() => {
-        showRedealNotice.value = false
+        gameStore.showRedealNotice = false
       }, 1800)
     }
   }
@@ -413,6 +411,20 @@ watch(
 
 <template>
   <div class="game-table room-modern-layout">
+    <!-- 大牌特效浮层 -->
+    <div class="poker-effects-layer" :class="{ 'shake-screen': gameStore.activeEffect === 'bomb' }">
+      <!-- 炸弹能量波 -->
+      <div v-if="gameStore.activeEffect === 'bomb'" class="effect-bomb-shockwave">
+        <div class="shockwave-ring"></div>
+        <div class="shockwave-ring delay"></div>
+      </div>
+      <!-- 飞机划过 -->
+      <div v-if="gameStore.activeEffect === 'plane'" class="effect-plane-flyby">
+        <div class="plane-silhouette">✈️</div>
+        <div class="plane-smoke"></div>
+      </div>
+    </div>
+
     <!-- 顶部状态栏 -->
     <header class="room-header">
       <div class="top-left-hud">
@@ -522,6 +534,7 @@ watch(
           <div
             v-else-if="gameStore.playerPlayedCards[seat.player.id] && gameStore.playerPlayedCards[seat.player.id]!.length > 0"
             class="played-cards-row"
+            :class="{ 'shimmer-active': gameStore.activeEffect === 'shimmer' && gameStore.lastPlay.player === seat.player.id }"
           >
             <PokerCard
               v-for="cId in gameStore.playerPlayedCards[seat.player.id]"
@@ -720,7 +733,7 @@ watch(
 
     <!-- 重新洗牌提示 -->
     <transition name="fade">
-      <div v-if="showRedealNotice" class="redeal-overlay glass-panel">
+      <div v-if="gameStore.showRedealNotice" class="redeal-overlay glass-panel">
         <div class="redeal-content">
           <span class="redeal-text">无人叫牌，正在重新洗牌中... <span class="redeal-spin-icon">🔄</span></span>
         </div>
@@ -1370,13 +1383,100 @@ watch(
   border-color: #80d8ff;
 }
 
+/* 特效容器与全屏震动 */
+.poker-effects-layer {
+  position: absolute;
+  top: 0; left: 0; width: 100%; height: 100%;
+  pointer-events: none;
+  z-index: 99;
+  overflow: hidden;
+}
+.poker-effects-layer.shake-screen {
+  animation: screen-shake 0.4s ease-out;
+}
+@keyframes screen-shake {
+  0%, 100% { transform: translate(0, 0); }
+  10%, 90% { transform: translate(-3px, 2px); }
+  30%, 70% { transform: translate(4px, -3px); }
+  50% { transform: translate(-5px, 4px); }
+}
+
+/* 炸弹冲击波圈 */
+.effect-bomb-shockwave {
+  position: absolute;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  width: 100px; height: 100px;
+}
+.shockwave-ring {
+  position: absolute;
+  width: 100%; height: 100%;
+  border-radius: 50%;
+  border: 4px solid rgba(255, 179, 0, 0.8);
+  box-shadow: 0 0 20px rgba(255, 87, 34, 0.6);
+  animation: ripple 0.8s cubic-bezier(0.1, 0.8, 0.3, 1) forwards;
+}
+.shockwave-ring.delay {
+  animation-delay: 0.2s;
+}
+@keyframes ripple {
+  0% { transform: scale(0.5); opacity: 1; }
+  100% { transform: scale(4); opacity: 0; border-width: 1px; }
+}
+
+/* 飞机特效 */
+.effect-plane-flyby {
+  position: absolute;
+  top: 30%;
+  width: 100%;
+  height: 60px;
+  display: flex;
+  align-items: center;
+  animation: plane-fly 1.2s cubic-bezier(0.25, 1, 0.5, 1) forwards;
+}
+.plane-silhouette {
+  font-size: 2.5rem;
+  transform: rotate(-15deg);
+  filter: drop-shadow(0 0 10px rgba(255,255,255,0.8));
+}
+.plane-smoke {
+  flex: 1;
+  height: 6px;
+  background: linear-gradient(to right, rgba(255,255,255,0) 0%, rgba(255,255,255,0.7) 100%);
+  margin-left: -15px;
+  border-radius: 3px;
+  box-shadow: 0 0 10px rgba(255,255,255,0.4);
+}
+@keyframes plane-fly {
+  from { left: -100px; opacity: 0; }
+  10% { opacity: 1; }
+  90% { opacity: 1; }
+  to { left: 110%; opacity: 0; }
+}
+
+/* 顺子金色流光扫过 */
 .played-cards-row {
+  position: relative;
+  overflow: hidden;
   display: flex;
   gap: 3px;
   background: rgba(0, 0, 0, 0.35);
   padding: 6px;
   border-radius: 6px;
   border: 1px solid rgba(255,255,255,0.08);
+}
+.poker-effects-layer + .played-cards-row::after,
+.shimmer-active::after {
+  content: '';
+  position: absolute;
+  top: 0; left: -100%; width: 50%; height: 100%;
+  background: linear-gradient(to right, rgba(255,255,255,0) 0%, rgba(255, 215, 0, 0.4) 50%, rgba(255,255,255,0) 100%);
+  transform: skewX(-25deg);
+  animation: shimmer-flow 1.0s ease-out;
+}
+@keyframes shimmer-flow {
+  from { left: -150%; }
+  to { left: 150%; }
 }
 
 /* 特效大字动作文本 */
