@@ -11,6 +11,16 @@ from app.domain.game.room import GamePhase
 logger = logging.getLogger("hmp_ws_service")
 
 
+BASE_SCORE_MIN_BEANS = {
+    20: 1000,     # 新手场底分 20，最低 1,000 豆
+    80: 3000,     # 初级场底分 80，最低 3,000 豆
+    300: 8000,    # 普通场底分 300，最低 8,000 豆
+    900: 25000,   # 中级场底分 900，最低 25,000 豆
+    2700: 80000,  # 高级场底分 2700，最低 80,000 豆
+    6000: 300000, # 顶级场底分 6000，最低 300,000 豆
+}
+
+
 class GameWebSocketHandler:
     """处理单个游戏 WebSocket 连接的所有事件"""
 
@@ -69,11 +79,29 @@ class GameWebSocketHandler:
 
         if action == "join_match":
             nickname = data.get("nickname", self.player_id)
-            result = await self.service.join_match(self.player_id, nickname)
+            base_score = data.get("base_score", 10)
+            
+            # 加入金币准入条件核查
+            from app.infrastructure.database.session import transactional_session
+            from app.infrastructure.database.game_repository import SQLGameRepository
+            
+            with transactional_session() as db:
+                repo = SQLGameRepository(db)
+                profile = repo.get_or_create_profile(self.player_id, nickname)
+                min_beans = BASE_SCORE_MIN_BEANS.get(base_score, 0)
+                if profile.beans < min_beans:
+                    await self._send({
+                        "event": "error",
+                        "msg": f"您的欢乐豆不足，该赛事最低需要 {min_beans} 欢乐豆"
+                    })
+                    return
+
+            result = await self.service.join_match(self.player_id, nickname, auto_ai=False, base_score=base_score)
             if result.get("error"):
                 await self._send({"event": "error", "msg": result["error"]})
             elif result.get("status") == "waiting":
                 await self._send({"event": "match_waiting", "count": result["queue_length"]})
+                asyncio.create_task(self._handle_delayed_ai_match(self.player_id, nickname, base_score))
             elif result.get("status") == "room_created":
                 await self._on_room_created(result)
 
@@ -245,6 +273,13 @@ class GameWebSocketHandler:
                     "remaining": result.get("remaining"),
                 }
                 await self._broadcast_room_event(room, event)
+            elif "next_caller" in result:
+                score = result.get("score", 0)
+                if score > 0:
+                    event = {"event": "call_made", "player": ai_id, "score": score}
+                else:
+                    event = {"event": "call_skipped", "player": ai_id}
+                await self._broadcast_room_event(room, event)
             elif result.get("next_turn"):
                 event = {"event": "turn_passed" if not result.get("cards_played") else "call_skipped", "player": ai_id}
                 await self._broadcast_room_event(room, event)
@@ -281,3 +316,10 @@ class GameWebSocketHandler:
         # 清理 Redis 房间
         player_ids = [p.id for p in room.players]
         await self.service.cleanup_room(room.room_id, player_ids)
+
+    async def _handle_delayed_ai_match(self, player_id: str, nickname: str, base_score: int):
+        """延迟 3 秒尝试匹配机器人"""
+        await asyncio.sleep(3)
+        result = await self.service.match_ai_for_player(player_id, nickname, base_score=base_score)
+        if result and result.get("status") == "room_created":
+            await self._on_room_created(result)

@@ -50,7 +50,7 @@ def test_game_websocket_join_and_cancel_match(monkeypatch, mock_game_service):
         resp = websocket.receive_json()
         assert resp["event"] == "match_waiting"
         assert resp["count"] == 1
-        mock_game_service.join_match.assert_called_once_with("player1", "Player One")
+        mock_game_service.join_match.assert_called_once_with("player1", "Player One", auto_ai=False, base_score=10)
 
         # 发送 cancel_match
         websocket.send_json({"action": "cancel_match"})
@@ -112,3 +112,26 @@ def test_game_websocket_actions(monkeypatch, mock_game_service):
         assert resp["event"] == "turn_passed"
         assert resp["player"] == "player1"
         mock_game_service.handle_pass.assert_called_once_with("player1")
+
+
+def test_game_websocket_join_match_insufficient_beans(monkeypatch, mock_game_service):
+    monkeypatch.setattr(auth, "API_TOKEN", "")
+    
+    # 模拟 Profile 欢乐豆仅 500
+    mock_profile = MagicMock()
+    mock_profile.beans = 500
+    
+    client = TestClient(app)
+    with patch("app.infrastructure.database.game_repository.SQLGameRepository") as mock_repo_class:
+        mock_repo = MagicMock()
+        mock_repo.get_or_create_profile.return_value = mock_profile
+        mock_repo_class.return_value = mock_repo
+        
+        with client.websocket_connect("/ws/game/player1") as websocket:
+            # 申请加入底分为 80 的初级场（需要最低 3000）
+            websocket.send_json({"action": "join_match", "nickname": "Player One", "base_score": 80})
+            resp = websocket.receive_json()
+            assert resp["event"] == "error"
+            assert "欢乐豆不足" in resp["msg"]
+            mock_game_service.join_match.assert_not_called()
+
