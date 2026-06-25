@@ -3,7 +3,7 @@
 import logging
 from typing import Optional, List
 from sqlalchemy.orm import Session
-from app.infrastructure.database.models import PlayerProfileORM, GameRecordORM
+from app.infrastructure.database.models import PlayerProfileORM, GameRecordORM, UserORM
 from app.domain.game.entities import PlayerProfile, GameRecord
 
 logger = logging.getLogger("hmp_ws_service")
@@ -13,6 +13,29 @@ class SQLGameRepository:
 
     def __init__(self, db: Session):
         self._db = db
+
+    def get_user_by_username(self, username: str) -> Optional[UserORM]:
+        return self._db.query(UserORM).filter_by(username=username).first()
+
+    def create_user_and_profile(self, username: str, password_hash: str, nickname: str) -> tuple:
+        import uuid
+        player_id = f"p_{uuid.uuid4().hex[:12]}"
+        user = UserORM(
+            username=username,
+            password=password_hash,
+            player_id=player_id
+        )
+        self._db.add(user)
+        profile = PlayerProfileORM(
+            player_id=player_id,
+            nickname=nickname,
+            beans=10000,
+            total_games=0,
+            wins=0
+        )
+        self._db.add(profile)
+        self._db.commit()
+        return user, profile
 
     def get_or_create_profile(self, player_id: str, nickname: str) -> PlayerProfile:
         orm = self._db.query(PlayerProfileORM).filter_by(player_id=player_id).first()
@@ -26,10 +49,15 @@ class SQLGameRepository:
             created_at=orm.created_at
         )
 
+    def update_beans(self, player_id: str, beans: int) -> None:
+        orm = self._db.query(PlayerProfileORM).filter_by(player_id=player_id).first()
+        if orm:
+            orm.beans = max(0, beans)
+
     def update_profile_stats(self, player_id: str, beans_delta: int, is_win: bool) -> None:
         orm = self._db.query(PlayerProfileORM).filter_by(player_id=player_id).first()
         if orm:
-            orm.beans += beans_delta
+            orm.beans = max(0, orm.beans + beans_delta)
             orm.total_games += 1
             if is_win:
                 orm.wins += 1

@@ -44,3 +44,20 @@
   - `frontend/src/stores/gameStore.ts`
   - `frontend/src/composables/useGameWebSocket.ts`
   - `frontend/src/views/GameRoomView.vue`
+
+## 5. 修复与优化 (Timer 遗留问题解决)
+为了解决 Task 2 评审报告中发现的 Critical 与 Important 问题，进行了以下修复：
+- **Critical (结算计时器覆盖问题)**：
+  - 在 `frontend/src/composables/useGameWebSocket.ts` 中定义了模块级的 `gameOverTimer`。
+  - 在 `disconnect()`、接收到 `game_start` 事件以及 `game_over` 事件的开头分别调用 `clearTimeout(gameOverTimer)`，以确保任何之前存在的 5 秒结算计时器被彻底清除。
+  - 在 `game_over` 处理逻辑中，将 5 秒后切回结算阶段 (`SETTLING`) 的定时器赋值给 `gameOverTimer`。
+  - 这样做能够彻底避免在新一局游戏开始、重连、或者意外在未到 5 秒时开启新局的情况下，旧的定时器仍然触发并把 `gamePhase` 强行改回 `SETTLING` 的问题。
+- **Important (特效计时器重叠问题)**：
+  - 在 `frontend/src/composables/useGameWebSocket.ts` 中定义了模块级的 `effectTimer`。
+  - 在 `cards_played` 出牌事件处理中，开始新的大牌渲染特效之前，首先判断并清理已有的 `effectTimer`（`clearTimeout(effectTimer)`）。
+  - 将新增的 1.5 秒动画重置计时器赋给 `effectTimer`。
+  - 这样做能够保障当短时间内有多次大牌特效连续播放时，旧的特效计时器不会提前触发，从而保证当前的大牌渲染特效能够维持完整的 1.5 秒播放生命周期，不会被前一个特效的淡出计时器过早清理。
+
+### 测试验证与 Git 提交
+- 本地执行 TypeScript 类型检查校验 `npm run type-check` 以确保没有引发类型异常。
+- 此次修复代码范围仅为 `frontend/src/composables/useGameWebSocket.ts`。

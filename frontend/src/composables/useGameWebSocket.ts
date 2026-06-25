@@ -10,6 +10,8 @@ let reconnectAttempt = 0
 let reconnectTimer: number | null = null
 let manuallyClosed = false
 let socketPlayerId = ''
+let gameOverTimer: number | null = null
+let effectTimer: number | null = null
 
 export function useGameWebSocket() {
   function connect() {
@@ -83,6 +85,10 @@ export function useGameWebSocket() {
       clearTimeout(reconnectTimer)
       reconnectTimer = null
     }
+    if (gameOverTimer) {
+      clearTimeout(gameOverTimer)
+      gameOverTimer = null
+    }
     if (ws) {
       ws.close()
       ws = null
@@ -126,6 +132,10 @@ export function useGameWebSocket() {
         gameStore.gamePhase = 'IDLE'
         break
       case 'game_start':
+        if (gameOverTimer) {
+          clearTimeout(gameOverTimer)
+          gameOverTimer = null
+        }
         gameStore.gamePhase = 'CALLING'
         if (data.room_id) gameStore.roomId = data.room_id
         gameStore.myHand = data.hand
@@ -176,15 +186,28 @@ export function useGameWebSocket() {
         gameStore.playerPlayedCards = { ...gameStore.playerPlayedCards, [data.player]: data.cards }
         const play = detectCardPlay(data.cards)
         if (play) {
+          if (effectTimer) {
+            clearTimeout(effectTimer)
+            effectTimer = null
+          }
           if (play.kind === 'bomb' || play.kind === 'rocket') {
             gameStore.activeEffect = 'bomb'
-            setTimeout(() => { gameStore.activeEffect = '' }, 1500)
+            effectTimer = window.setTimeout(() => {
+              gameStore.activeEffect = ''
+              effectTimer = null
+            }, 1500)
           } else if (play.kind === 'airplane' || play.kind === 'airplane_single' || play.kind === 'airplane_pair') {
             gameStore.activeEffect = 'plane'
-            setTimeout(() => { gameStore.activeEffect = '' }, 1500)
+            effectTimer = window.setTimeout(() => {
+              gameStore.activeEffect = ''
+              effectTimer = null
+            }, 1500)
           } else if (play.kind === 'straight' || play.kind === 'double_straight') {
             gameStore.activeEffect = 'shimmer'
-            setTimeout(() => { gameStore.activeEffect = '' }, 1500)
+            effectTimer = window.setTimeout(() => {
+              gameStore.activeEffect = ''
+              effectTimer = null
+            }, 1500)
           }
         }
         break
@@ -194,6 +217,10 @@ export function useGameWebSocket() {
         gameStore.playerPlayedCards = { ...gameStore.playerPlayedCards, [data.player]: [] }
         break
       case 'game_over':
+        if (gameOverTimer) {
+          clearTimeout(gameOverTimer)
+          gameOverTimer = null
+        }
         if (data.room_state) {
           data.room_state.phase = 'PLAYING'
           gameStore.updateFromRoomState(data.room_state)
@@ -218,11 +245,12 @@ export function useGameWebSocket() {
           gameStore.showWinnerBanner = true
         }, 3000)
 
-        setTimeout(() => {
+        gameOverTimer = window.setTimeout(() => {
           gameStore.showGameOverBanner = false
           gameStore.showWinnerBanner = false
           gameStore.showAllHands = false
           gameStore.gamePhase = 'SETTLING'
+          gameOverTimer = null
         }, 5000)
         break
       case 'chat_msg':
