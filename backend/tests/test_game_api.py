@@ -123,3 +123,85 @@ def test_get_leaderboard(mock_db):
         assert data[1]["beans"] == 30000
         assert data[1]["win_rate"] == 0.50
         mock_repo.get_leaderboard.assert_called_once_with(10)
+
+
+def test_register_user(mock_db):
+    client = TestClient(app)
+    mock_user = MagicMock()
+    mock_user.player_id = "player123"
+    mock_user.username = "testuser"
+    mock_profile = MagicMock()
+    mock_profile.nickname = "TestNick"
+
+    with patch("app.interfaces.api.game_routes.SQLGameRepository") as mock_repo_class:
+        mock_repo = MagicMock()
+        mock_repo.get_user_by_username.return_value = None
+        mock_repo.create_user_and_profile.return_value = (mock_user, mock_profile)
+        mock_repo_class.return_value = mock_repo
+
+        response = client.post("/api/game/auth/register", json={
+            "username": "testuser",
+            "password": "password123",
+            "nickname": "TestNick"
+        })
+        assert response.status_code == 200
+        data = response.json()
+        assert data["ok"] is True
+        assert data["player_id"] == "player123"
+        assert data["nickname"] == "TestNick"
+        assert data["username"] == "testuser"
+        mock_repo.get_user_by_username.assert_called_once_with("testuser")
+        mock_repo.create_user_and_profile.assert_called_once_with("testuser", "password123", "TestNick")
+
+
+def test_login_user(mock_db):
+    client = TestClient(app)
+    mock_user = MagicMock()
+    mock_user.player_id = "player123"
+    mock_user.username = "testuser"
+    mock_user.password = "password123"
+    mock_profile = PlayerProfile(
+        player_id="player123",
+        nickname="TestNick",
+        beans=12000,
+        total_games=10,
+        wins=6
+    )
+
+    with patch("app.interfaces.api.game_routes.SQLGameRepository") as mock_repo_class:
+        mock_repo = MagicMock()
+        mock_repo.get_user_by_username.return_value = mock_user
+        mock_repo.get_or_create_profile.return_value = mock_profile
+        mock_repo_class.return_value = mock_repo
+
+        response = client.post("/api/game/auth/login", json={
+            "username": "testuser",
+            "password": "password123"
+        })
+        assert response.status_code == 200
+        data = response.json()
+        assert data["ok"] is True
+        assert data["player_id"] == "player123"
+        assert data["nickname"] == "TestNick"
+        assert data["username"] == "testuser"
+        mock_repo.get_user_by_username.assert_called_once_with("testuser")
+
+
+def test_update_player_beans(mock_db):
+    client = TestClient(app)
+    with patch("app.interfaces.api.game_routes.SQLGameRepository") as mock_repo_class:
+        mock_repo = MagicMock()
+        mock_profile = MagicMock()
+        mock_profile.beans = 25000
+        mock_repo.get_or_create_profile.return_value = mock_profile
+        mock_repo_class.return_value = mock_repo
+        
+        # 测试成功设置欢乐豆
+        response = client.post("/api/game/profile/player123/beans", json={"beans": 25000})
+        assert response.status_code == 200
+        data = response.json()
+        assert data["ok"] is True
+        assert data["beans"] == 25000
+        mock_repo.update_beans.assert_called_once_with("player123", 25000)
+
+
