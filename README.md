@@ -1,169 +1,129 @@
-# HMP WS Service (DDD)
+# HMP WS Service — 欢乐斗地主 (Happy Dou Di Zhu)
 
-HMP WS Service 高性能异步长连接与大文件传输中心，是一套基于 **FastAPI + SQLAlchemy + RabbitMQ** 的高性能实时通信与文件服务。项目采用领域驱动设计（DDD）的分层架构，实现了安全的 WebSocket 长连接生命周期管理、RabbitMQ 扇出模式的多实例实时消息广播、MySQL 站内信系统以及基于二进制帧零拷贝与并发滑动窗口的流式大文件分片上传。
+本项目是在 HMP WS Service 基础上构建的、采用前后端彻底分离架构的“欢乐斗地主”网络对战系统。系统采用 **FastAPI + Vue 3** 作为底座，搭配 **Redis** 存储匹配队列与对局状态，以及 **MySQL** 落地存储战绩与玩家档案。
 
 ---
 
-## 🚀 核心功能
+## 🎨 游戏特色
 
-1. **WebSocket 长连接网关**
-   - **多标签页共存**：完美支持同一客户端 ID 下的多浏览器标签页/多连接管理，下线精确移除。
-   - **自动重连机制**：前端具备指数退避自动重连，服务端具备鲁棒垃圾回收。
-   - **安全令牌校验**：支持基于 Bearer Header 或 Query 参数的安全 Token 校验边界。
-2. **分布式站内信广播系统**
-   - **多实例分发**：支持 **RabbitMQ Fanout Exchange** 扇出广播。在集群/多实例水平扩展部署时，保证每个节点都能消费到消息并推送给其本地的在线用户。
-   - **非阻塞落库**：采用多线程隔离机制（`asyncio.to_thread`），高并发下数据库操作不阻塞 asyncio 主事件循环。
-3. **滑动窗口并发大文件分片上传**
-   - **二进制流式传输**：采用纯二进制 Websocket 帧配合零拷贝技术，保障内存与 CPU 的极致低负荷。
-   - **并发滑动窗口**：基于客户端并发发送控制（滑动窗口机制），兼顾测速、ETA 预估与上传取消防护。
-   - **路径穿越防御**：严格校验 `upload_id` 规范，对临时目录删除进行绝对物理路径防越权穿越保护。
-4. **全局无侵入式审计日志**
-   - **全局拦截**：基于 FastAPI APIRoute 拦截器自动对关键接口请求（方法、耗时、过滤敏感 Token 的参数等）进行统计与异步落库。
-5. **Redis 高频滑动防抖去重**
-   - **高频防抖**：提供基于 Redis 分布式锁与滑动过期时间的防抖机制，3 秒内同一操作指纹仅保留一次日志落库。支持自愈降级，确保 Redis 故障时不影响主线业务。
-6. **大屏全屏自适应与悬浮气泡预览**
-   - **全屏平铺**：优化大屏利用率，整体布局升级为 100vw * 100vh 满屏，各面板支持独立滚动。
-   - **参数气泡**：表格中过长的请求参数自动截断，鼠标悬浮时可通过 Tooltip 浮现展示多行高亮 JSON 参数预览，提升排查效率。
+1. **实时 WebSocket 对战网关**
+   - 独立的对局连接通道 `/ws/game/{player_id}`，全事件驱动交互。
+   - 自主研发的 `GameWSConnectionManager` 提供精细的多人会话广播与管道隔离。
+   - 强健的掉线重连机制（指数退避自动重连），玩家刷新页面或短暂断网能无缝返回原房间继续对局。
+
+2. **多套自研核心规则算法引擎**
+   - **扑克牌领域模型**：严格的编码与处理机制。
+   - **智能牌型检测引擎**：支持单张、对子、三张、三带一、三带二、单顺、双顺、飞机、四带二、炸弹、火箭等 14 种斗地主常规牌型的智能校验与牌型压制（`can_beat`）判定。
+   - **AI 智能策略机器人**：在对局匹配等待超时（10秒）时自动补齐空余席位；当真人玩家断线时提供极致逼真的 AI 自动接管托管。
+
+3. **双层持久化与排行榜系统**
+   - 匹配排队原子性地依托 Redis 列表管理。
+   - 游戏战绩记录与玩家属性（欢乐豆、局数、胜率）在终局清算时通过 SQLAlchemy ORM 原子写入 MySQL 中。
+   - 提供全局欢乐豆富豪排行榜展示。
+
+4. **快捷广播气泡聊天**
+   - 内置常用聊天短句广播（“快点吧”、“合作愉快”等），为座席气泡提供 3 秒自清理动画。
+
+---
+
+## 📂 项目结构
+
+```text
+hmp_ws_service/
+├── backend/            # 后端服务 (FastAPI + DDD 架构)
+│   ├── app/            # 领域/应用/基础设施/适配器分层
+│   ├── tests/          # pytest 单元测试与 mock 通道
+│   └── main.py         # 后端主程序入口
+└── frontend/           # 前端客户端 (Vue 3 + Vite SPA)
+    ├── src/            
+    │   ├── components/ # 扑克牌 (PokerCard)、手牌 (HandCards)、座位 (PlayerSeat) 等
+    │   ├── stores/     # Pinia 状态管理 (playerStore, gameStore)
+    │   └── views/      # 页面视图 (Login, Lobby, GameRoom)
+    └── vite.config.ts  # Vite 配置 (包含 WebSocket 与 API 路由代理)
+```
 
 ---
 
 ## 🛠️ 技术栈
 
-- **核心框架**：[FastAPI](https://fastapi.tiangolo.com/) (Python 3.10+)
-- **ORM / 数据库**：[SQLAlchemy 2.0](https://www.sqlalchemy.org/) + [PyMySQL](https://github.com/PyMySQL/PyMySQL) (MySQL 5.7+)
-- **版本迁移管理**：[Alembic](https://alembic.sqlalchemy.org/)
-- **消息队列**：[aio-pika](https://github.com/mosbrupture/aio-pika) (RabbitMQ 异步驱动)
-- **校验边界**：[Pydantic v2](https://docs.pydantic.dev/)
-- **测试保障**：[pytest](https://docs.pytest.org/) + [httpx](https://www.python-httpx.org/)
-- **缓存/防抖**：[Redis](https://redis.io/) (支持无感知优雅降级与密码配置)
+### 后端
+- **框架**: FastAPI (Python 3.10+)
+- **缓存 & 匹配**: Redis (aioredis 异步驱动)
+- **关系数据库**: MySQL 5.7+ / PostgreSQL (SQLAlchemy 2.0 ORM)
+- **测试框架**: pytest
+
+### 前端
+- **核心**: Vue 3 (Composition API) + TypeScript
+- **构建工具**: Vite 8.0+
+- **状态管理**: Pinia
+- **路由导航**: Vue Router 4
+- **测试框架**: Vitest + JSDOM
 
 ---
 
-## 📂 项目目录结构
+## 🚀 快速开始
 
-项目严格遵循 DDD (领域驱动设计) 分层规范进行划分，代码高内聚、低耦合：
+### 1. 后端启动
 
-```text
-hmp_ws_service/
-  ├── alembic/                  # Alembic 数据库版本演进迁移目录
-  ├── app/                      # DDD 业务代码目录
-  │    ├── domain/              # 领域层：领域对象（SiteMessage 实体）与仓储契约接口
-  │    ├── application/         # 应用层：负责业务流转与编排（Message/Upload 服务层）
-  │    ├── infrastructure/      # 基础设施层：数据源、MQ适配器、本地存储及鉴权
-  │    └── interfaces/          # 接口层：HTTP API 路由、Web 页面及 WebSocket 端点与 Handler
-  ├── static/                   # 独立出来的静态文件托管（CSS/JS/图标库）
-  ├── templates/                # HMP 控制台调试 HTML 模板
-  ├── tests/                    # 单元测试模块 (包含上传安全、Token鉴权和站内信测试)
-  ├── requirements.txt          # 运行、开发与测试统一依赖清单
-  ├── main.py                   # 服务主运行入口
-  ├── alembic.ini               # Alembic 配置文件
-  └── run.bat                   # Windows 下一键启动批处理脚本
-```
-
----
-
-## ⚙️ 环境配置
-
-在根目录下创建 `.env` 配置文件（或在操作系统环境变量中声明）：
-
-```ini
-# 监听端口
-PORT=18088
-
-# 数据库配置
-DB_HOST=127.0.0.1
-DB_PORT=3306
-DB_USER=root
-DB_PASSWORD=your_password
-DB_NAME=hmp_websocket
-
-# RabbitMQ 配置
-RABBITMQ_HOST=127.0.0.1
-RABBITMQ_PORT=5672
-RABBITMQ_USER=guest
-RABBITMQ_PASSWORD=guest
-
-# 安全令牌配置（若留空则不拦截，便于本地调试）
-API_TOKEN=secure-secret-token
-
-# Redis 缓存与防抖配置
-REDIS_HOST=127.0.0.1
-REDIS_PORT=6379
-REDIS_PASSWORD=your_redis_password
-REDIS_DB=0
-```
-
----
-
-## 🏃 启动与运行
-
-### 1. 安装项目依赖
-建议在 Python 虚拟环境中，运行以下命令一键安装所有运行与开发依赖：
-```bash
-pip install -r requirements.txt
-```
-
-### 2. 数据库迁移与初始化
-如果您的数据库之前已包含 `site_message` 表，Alembic 系统已为您配置了最新基线。只需在项目根目录下执行以下指令完成迁移更新：
-```bash
-alembic upgrade head
-```
-
-### 3. 运行服务
-您可以通过以下命令直接拉起服务：
-```bash
-python main.py
-```
-*在 Windows 环境下，您也可以直接双击根目录下的 `run.bat` 进行一键快速启动。*
-
-启动成功后，您可以通过以下地址访问服务：
-- **HMP WS Service 全功能控制台**：[http://127.0.0.1:18088/](http://127.0.0.1:18088/) （用于 WebSocket 通信自测、模拟站内信分发及大文件并发上传验证）
-- **Swagger 接口文档**：[http://127.0.0.1:18088/docs](http://127.0.0.1:18088/docs)
-
----
-
-## 🧪 运行单元测试
-
-项目中已包含完备的单元测试，已经通过 Mock 对 MySQL 及 RabbitMQ 连接进行解耦隔离，您可以直接在本地无污染运行：
-
-```bash
-pytest
-```
-
-测试覆盖了：
-- **路径与上传安全**：校验上传会话 ID 的合法性正则与文件名穿越防护行为。
-- **Token 鉴权机制**：验证在提供/不提供 `API_TOKEN` 时的 API 拦截行为与 Query Token 校验。
-- **站内信 API 约束**：检验站内信发送接口的字段校验、空字段检测与长度溢出拦截。
-
----
-
-## 🔄 数据库开发迁移规范 (Alembic)
-
-项目已经初始化了 Alembic 架构支持，在日常迭代中：
-
-1. **更新数据库模型**：当您在 [models.py](file:///d:/Project_2023/hmp_ws_service/app/infrastructure/database/models.py) 中更新了表结构（如修改了字段、增加了索引等）。
-2. **自动生成迁移脚本**：在根目录下执行：
+1. 进入后端目录：
    ```bash
-   alembic revision --autogenerate -m "变更说明文案"
+   cd backend
    ```
-   它会在 `alembic/versions/` 目录中生成带有时间戳的 `.py` 版本脚本。请确认脚本内自动生成的 DDL 逻辑（`upgrade` 和 `downgrade`）完全无误。
-3. **应用迁移**：
+2. 激活 Python 虚拟环境（如 conda 环境 `hmp_ai`）：
    ```bash
-   alembic upgrade head
+   conda activate hmp_ai
    ```
+3. 安装依赖：
+   ```bash
+   pip install -r requirements.txt
+   ```
+4. 配置 `.env` 环境变量，例如：
+   ```ini
+   PORT=18088
+   DB_HOST=127.0.0.1
+   DB_PORT=3306
+   DB_USER=root
+   DB_PASSWORD=your_password
+   DB_NAME=hmp_websocket
+   REDIS_HOST=127.0.0.1
+   REDIS_PORT=6379
+   ```
+5. 启动后端：
+   ```bash
+   python main.py
+   ```
+   服务将运行在 `http://127.0.0.1:18088`。
+
+### 2. 前端启动
+
+1. 进入前端目录：
+   ```bash
+   cd frontend
+   ```
+2. 安装依赖：
+   ```bash
+   npm install
+   ```
+3. 启动开发服务器：
+   ```bash
+   npm run dev
+   ```
+   前端服务将运行在 `http://localhost:5173`。打开浏览器访问即可开始游玩。
 
 ---
 
-## 📝 最近更新说明 (Recent Updates)
+## 🧪 单元测试
 
-系统于 2026 年 6 月进行了整体的“控制台全屏化重构”与“审计日志架构升级”，核心变动如下：
+### 后端测试
+进入后端目录，运行以下命令验证后端逻辑（包含领域状态机、AI、Redis、API 与 WebSocket 测试共 75 项）：
+```bash
+cd backend
+python -m pytest tests/ -v
+```
 
-1. **审计日志与 APIRoute 拦截器**：
-   - 引入了 `AuditLogRoute` 全局拦截器，无侵入式拦截关键路由，自动解析请求方法、路径、传参及耗时，异步执行入库。
-   - 数据库表安全扩容，新增 `request_params`（脱敏后传参）、`execution_time`（毫秒耗时）、`method`（请求方式）字段。
-2. **Redis 高频滑动防抖拦截器**：
-   - 采用 Redis 分布式锁进行防抖锁定，通过 3 秒滑动过期时间合并高频重复请求，显著减轻数据库日志读写压力。
-   - 具备自愈降级机制，若 Redis 服务异常会自动打印警告并降级为常规数据库落库，保障业务不中断。
-3. **控制台全屏自适应与体验优化**：
-   - 对前端进行了全平铺改造，禁止全局溢出，改为各面板独立溢出滚动，提高大屏空间利用率。
-   - 新增请求参数长文本截断与 CSS 悬浮气泡预览功能，悬停即可直观查看格式化的多行 JSON 传参。
+### 前端测试
+进入前端目录，运行以下命令验证前端单元测试：
+```bash
+cd frontend
+npm run test:unit
+```

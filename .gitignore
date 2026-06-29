@@ -7,3 +7,16 @@ temp_uploads/
 .env
 .claude/
 .agent/
+.agents/
+.superpowers/
+.pytest_cache/
+.vscode/
+
+# 后端运行残留
+backend/log/
+backend/uploads/
+backend/temp_uploads/
+
+# 前端构建与依赖残留
+frontend/dist/
+frontend/node_modules/

@@ -1,0 +1,310 @@
+/* frontend/src/assets/game.css */
+
+/* 棋牌桌布背景 felt 风格 */
+.game-table {
+  min-height: 100vh;
+  background: radial-gradient(circle at center, #1b5e20 0%, #0d2f11 100%);
+  color: #ffffff;
+  font-family: 'Outfit', 'Inter', system-ui, -apple-system, sans-serif;
+  overflow-x: hidden;
+  position: relative;
+}
+
+/* 玻璃态卡片效果用于大厅和面板 */
+.glass-panel {
+  background: rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 16px;
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3);
+}
+
+/* 扑克牌通用基础样式 */
+.poker-card {
+  aspect-ratio: 2.5 / 3.5;
+  border-radius: 8px;
+  background-color: #ffffff;
+  color: #1a1a1a;
+  position: relative;
+  user-select: none;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.25);
+  transition: transform 0.2s cubic-bezier(0.25, 0.8, 0.25, 1), box-shadow 0.2s ease;
+  display: inline-flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 8px;
+  border: 1px solid #e0e0e0;
+  cursor: pointer;
+}
+
+/* 悬浮微动画 */
+.poker-card:not(.no-hover):hover {
+  transform: translateY(-8px) scale(1.03);
+  box-shadow: 0 10px 20px rgba(0, 0, 0, 0.35);
+  z-index: 10;
+}
+
+/* 选中上移状态 */
+.poker-card.selected {
+  transform: translateY(-24px);
+  box-shadow: 0 12px 25px rgba(0, 0, 0, 0.4);
+  border-color: #ffd700; /* 金色边框凸显选中 */
+  z-index: 5;
+}
+
+/* 选中且悬浮状态 */
+.poker-card.selected:hover {
+  transform: translateY(-32px) scale(1.03);
+}
+
+.poker-card.hinted {
+  border-color: #ffca28;
+  box-shadow: 0 0 0 3px rgba(255, 202, 40, 0.35), 0 10px 22px rgba(0, 0, 0, 0.35);
+}
+
+/* 尺寸规格定义 */
+.poker-card.size-sm {
+  width: 60px;
+  height: 84px;
+  padding: 4px;
+  border-radius: 4px;
+}
+.poker-card.size-md {
+  width: 80px;
+  height: 112px;
+  padding: 6px;
+}
+.poker-card.size-lg {
+  width: 105px;
+  height: 147px;
+  padding: 8px;
+}
+.poker-card.size-lg .card-center {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  font-size: 3.8em;
+}
+
+/* 红色花色 */
+.poker-card.red {
+  color: #d32f2f;
+}
+
+/* 黑色花色 */
+.poker-card.black {
+  color: #1a1a1a;
+}
+
+/* 纸牌背面 pattern */
+.poker-card.face-down {
+  background: repeating-linear-gradient(
+    45deg,
+    #1565c0,
+    #1565c0 10px,
+    #0d47a1 10px,
+    #0d47a1 20px
+  );
+  border: 2px solid #ffffff;
+  box-shadow: 0 4px 8px rgba(0,0,0,0.3);
+  cursor: default;
+}
+.poker-card.face-down::after {
+  content: '';
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  right: 6px;
+  bottom: 6px;
+  border: 1px solid rgba(255,255,255,0.2);
+  border-radius: 4px;
+}
+
+/* 纸牌内部组件定位 */
+.poker-card .card-corner {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  line-height: 1.1;
+}
+
+.poker-card .card-corner .card-rank {
+  font-weight: 800;
+  font-size: 1.25em;
+}
+
+.poker-card .card-corner .card-suit-mini {
+  font-size: 1em;
+}
+
+.poker-card .card-center {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  font-size: 2.8em;
+  line-height: 1;
+}
+
+/* 小尺寸卡牌适配 */
+.poker-card.size-sm .card-corner .card-rank {
+  font-size: 0.9em;
+}
+.poker-card.size-sm .card-corner .card-suit-mini {
+  font-size: 0.8em;
+}
+.poker-card.size-sm .card-center {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  font-size: 1.6em;
+}
+
+/* 大王小王特殊版面布局 */
+.poker-card.is-joker {
+  justify-content: space-between;
+  align-items: stretch;
+  font-weight: 900;
+  overflow: hidden;
+  border-radius: 8px;
+}
+
+.poker-card.is-joker.red {
+  color: #e65100; /* 暖金色泽文字 */
+  background: linear-gradient(135deg, #fffdeb 0%, #fef3c7 40%, #fde68a 80%, #fcd34d 100%);
+  border: 1.5px solid #fbbf24;
+  box-shadow: 0 4px 12px rgba(251, 191, 36, 0.35);
+}
+
+.poker-card.is-joker.black {
+  color: #374151; /* 深灰色泽文字 */
+  background: linear-gradient(135deg, #f9fafb 0%, #f3f4f6 40%, #e5e7eb 80%, #d1d5db 100%);
+  border: 1.5px solid #9ca3af;
+  box-shadow: 0 4px 12px rgba(156, 163, 175, 0.25);
+}
+
+.joker-corner {
+  font-size: 0.85em;
+  line-height: 1.1;
+  font-weight: 900;
+  display: flex;
+  flex-direction: column;
+}
+
+.joker-corner.top {
+  align-self: flex-start;
+}
+
+.joker-corner.bottom {
+  align-self: flex-end;
+  transform: rotate(180deg);
+}
+
+.joker-center {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: space-around;
+  flex-grow: 1;
+  margin: 4px 0;
+  padding: 4px 2px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.45);
+  border: 1.5px solid rgba(255, 255, 255, 0.6);
+  box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.05);
+}
+
+.poker-card.is-joker.red .joker-center {
+  border-color: rgba(251, 191, 36, 0.4);
+  background: rgba(255, 255, 255, 0.6);
+}
+
+.poker-card.is-joker.black .joker-center {
+  border-color: rgba(156, 163, 175, 0.4);
+  background: rgba(255, 255, 255, 0.6);
+}
+
+.joker-emoji {
+  font-size: 1.5em;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.15));
+  line-height: 1;
+}
+
+.joker-symbol {
+  writing-mode: vertical-rl;
+  letter-spacing: 2px;
+  font-size: 0.85em;
+  font-weight: 900;
+  text-shadow: 0 1px 1px rgba(255, 255, 255, 0.8);
+  font-family: 'Georgia', serif;
+}
+
+.joker-sparkle {
+  font-size: 1.1em;
+  line-height: 1;
+}
+
+.poker-card.size-sm .joker-emoji {
+  font-size: 1.1em;
+}
+
+.poker-card.size-sm .joker-symbol {
+  font-size: 0.65em;
+  letter-spacing: 1px;
+}
+
+.poker-card.size-sm .joker-sparkle {
+  font-size: 0.8em;
+}
+
+.poker-card.size-sm .joker-corner {
+  font-size: 0.65em;
+}
+
+.poker-card.size-sm .joker-center {
+  margin: 2px 0;
+  padding: 2px 1px;
+}
+
+/* 按钮微交互动效 */
+.btn-premium {
+  background: linear-gradient(135deg, #ffb300 0%, #ff8f00 100%);
+  color: #1a1a1a;
+  font-weight: 700;
+  border: none;
+  border-radius: 24px;
+  box-shadow: 0 4px 15px rgba(255, 143, 0, 0.4);
+  transition: all 0.2s ease;
+  cursor: pointer;
+}
+.btn-premium:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(255, 143, 0, 0.6);
+  background: linear-gradient(135deg, #ffe082 0%, #ffb300 100%);
+}
+.btn-premium:active {
+  transform: translateY(1px);
+}
+.btn-premium:disabled {
+  background: #bdbdbd;
+  box-shadow: none;
+  cursor: not-allowed;
+  color: #757575;
+}
+
+.btn-secondary-premium {
+  background: rgba(255, 255, 255, 0.15);
+  color: #ffffff;
+  font-weight: 700;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: 24px;
+  transition: all 0.2s ease;
+  cursor: pointer;
+}
+.btn-secondary-premium:hover {
+  background: rgba(255, 255, 255, 0.25);
+  transform: translateY(-2px);
+}
+.btn-secondary-premium:active {
+  transform: translateY(1px);
+}

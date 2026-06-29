@@ -1,0 +1,15 @@
+fastapi==0.109.2
+uvicorn==0.27.1
+SQLAlchemy==2.0.25
+PyMySQL==1.1.0
+aio-pika==9.6.2
+python-dotenv==1.2.2
+python-multipart==0.0.27
+pydantic==2.13.4
+websockets==16.0
+anyio==4.13.0
+pytest==8.0.0
+httpx==0.26.0
+pytest-asyncio==0.23.5
+alembic==1.13.1
+redis>=4.2.0
