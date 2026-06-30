@@ -3,10 +3,13 @@
 import json
 import asyncio
 import logging
+from typing import TYPE_CHECKING
 from fastapi import WebSocket, WebSocketDisconnect
 from app.interfaces.websocket.game_routes import GameWSConnectionManager
-from app.application.game.game_app_service import GameAppService
 from app.domain.game.room import GamePhase
+
+if TYPE_CHECKING:
+    from app.application.game.game_app_service import GameAppService
 
 logger = logging.getLogger("hmp_ws_service")
 
@@ -19,6 +22,8 @@ BASE_SCORE_MIN_BEANS = {
     2700: 80000,  # 高级场底分 2700，最低 80,000 豆
     6000: 300000, # 顶级场底分 6000，最低 300,000 豆
 }
+VOICE_SIGNAL_TYPES = {"offer", "answer", "ice_candidate"}
+VOICE_SIGNAL_MAX_PAYLOAD_BYTES = 16 * 1024
 
 
 class GameWebSocketHandler:
@@ -29,7 +34,7 @@ class GameWebSocketHandler:
         websocket: WebSocket,
         player_id: str,
         manager: GameWSConnectionManager,
-        game_service: GameAppService,
+        game_service: "GameAppService",
     ):
         self.ws = websocket
         self.player_id = player_id
@@ -67,6 +72,59 @@ class GameWebSocketHandler:
                 player_view = room.get_player_view(p.id)
                 msg = {**event_data, "room_state": player_view}
                 await self.manager.send_to_player(p.id, msg)
+
+    async def _handle_voice_state(self, data: dict):
+        room = await self.service._get_player_room(self.player_id)
+        if not room:
+            await self._send({"event": "error", "msg": "当前不在房间内，无法使用语音"})
+            return
+
+        await self._broadcast_room_event(
+            room,
+            {
+                "event": "voice_state",
+                "player": self.player_id,
+                "enabled": bool(data.get("enabled", False)),
+            },
+        )
+
+    async def _handle_voice_signal(self, data: dict):
+        room = await self.service._get_player_room(self.player_id)
+        if not room:
+            await self._send({"event": "error", "msg": "当前不在房间内，无法发送语音信号"})
+            return
+
+        target_player = data.get("target_player")
+        room_player_ids = {p.id for p in room.players if not p.is_ai}
+        if target_player not in room_player_ids:
+            await self._send({"event": "error", "msg": "语音信令目标不在当前房间"})
+            return
+
+        signal_type = data.get("signal_type")
+        if signal_type not in VOICE_SIGNAL_TYPES:
+            await self._send({"event": "error", "msg": "不支持的语音信令类型"})
+            return
+
+        payload = data.get("payload")
+        if not isinstance(payload, dict):
+            await self._send({"event": "error", "msg": "语音信令内容格式不正确"})
+            return
+
+        payload_size = len(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+        if payload_size > VOICE_SIGNAL_MAX_PAYLOAD_BYTES:
+            await self._send({"event": "error", "msg": "语音信令内容过大"})
+            return
+
+        await self.manager.send_to_player(
+            target_player,
+            {
+                "event": "voice_signal",
+                "player": self.player_id,
+                "target_player": target_player,
+                "signal_type": signal_type,
+                "payload": payload,
+            },
+        )
 
     async def _handle_message(self, text: str):
         try:
@@ -117,14 +175,21 @@ class GameWebSocketHandler:
             else:
                 room = result.get("room")
                 if room:
-                    event = {"event": "call_made", "player": self.player_id, "score": score}
+                    # 总是先广播此次叫地主/抢地主动作
+                    action_event = {"event": "call_made", "player": self.player_id, "score": score}
+                    await self._broadcast_room_event(room, action_event)
+                    
+                    # 若此举确定了地主，延迟后广播 decided
                     if result.get("landlord"):
-                        event["event"] = "landlord_decided"
-                        event["landlord"] = result["landlord"]
-                        event["bottom_cards"] = result["bottom_cards"]
-                        event["multiplier"] = result["multiplier"]
-                    await self._broadcast_room_event(room, event)
-                    # 如果下一个是 AI，自动处理
+                        await asyncio.sleep(1.0)
+                        decided_event = {
+                            "event": "landlord_decided",
+                            "landlord": result["landlord"],
+                            "bottom_cards": result["bottom_cards"],
+                            "multiplier": result["multiplier"]
+                        }
+                        await self._broadcast_room_event(room, decided_event)
+                    # 随后继续处理 AI 回合
                     await self._process_ai_turns(room)
 
         elif action == "skip_call":
@@ -134,15 +199,48 @@ class GameWebSocketHandler:
             else:
                 room = result.get("room")
                 if room:
-                    event = {"event": "call_skipped", "player": self.player_id}
+                    # 总是先广播不叫/不抢动作
+                    action_event = {"event": "call_skipped", "player": self.player_id}
+                    await self._broadcast_room_event(room, action_event)
+                    
+                    # 若此举触发洗牌或地主确立，延迟后广播对应事件
                     if result.get("redeal"):
-                        event["event"] = "redeal"
+                        await asyncio.sleep(1.0)
+                        await self._broadcast_room_event(room, {"event": "redeal"})
                     elif result.get("landlord"):
-                        event["event"] = "landlord_decided"
-                        event["landlord"] = result["landlord"]
-                        event["bottom_cards"] = result["bottom_cards"]
-                        event["multiplier"] = result["multiplier"]
+                        await asyncio.sleep(1.0)
+                        decided_event = {
+                            "event": "landlord_decided",
+                            "landlord": result["landlord"],
+                            "bottom_cards": result["bottom_cards"],
+                            "multiplier": result["multiplier"]
+                        }
+                        await self._broadcast_room_event(room, decided_event)
+                    # 随后继续处理 AI 回合
+                    await self._process_ai_turns(room)
+
+        elif action == "choose_double":
+            choice = data.get("choice", "none")
+            result = await self.service.handle_double_choice(self.player_id, choice)
+            if result.get("error") or result.get("success") is False:
+                await self._send({"event": "error", "msg": result.get("error", "加倍失败")})
+            else:
+                room = result.get("room")
+                if room:
+                    event = {
+                        "event": "double_chosen",
+                        "player": self.player_id,
+                        "choice": choice,
+                        "label": self._double_choice_label(choice),
+                        "multiplier": result.get("multiplier", room.multiplier),
+                    }
                     await self._broadcast_room_event(room, event)
+                    if result.get("doubling_finished"):
+                        await self._broadcast_room_event(room, {
+                            "event": "doubling_finished",
+                            "current_turn": result.get("next_turn"),
+                            "multiplier": result.get("multiplier", room.multiplier),
+                        })
                     await self._process_ai_turns(room)
 
         elif action == "play_cards":
@@ -195,10 +293,22 @@ class GameWebSocketHandler:
                 event = {"event": "chat_msg", "player": self.player_id, "msg_id": msg_id}
                 await self._broadcast_room_event(room, event)
 
+        elif action == "voice_state":
+            await self._handle_voice_state(data)
+
+        elif action == "voice_signal":
+            await self._handle_voice_signal(data)
+
         elif action == "sync_room_state":
             room_state = await self.service.get_room_state(self.player_id)
             if room_state:
                 await self._send({"event": "reconnected", **room_state})
+                # 重新拉起 AI 处理协程，防止重连后 AI 协程挂起不动作
+                room_id = await self.service._repo.get_player_room(self.player_id)
+                if room_id:
+                    room = await self.service._repo.get_room(room_id)
+                    if room:
+                        asyncio.create_task(self._process_ai_turns(room))
 
         else:
             await self._send({"event": "error", "msg": f"未知动作: {action}"})
@@ -227,24 +337,99 @@ class GameWebSocketHandler:
                         "players": view["players"],
                         "current_turn": room.current_turn,
                     })
-            # 如果首位叫牌者是 AI
+            # 如果首位叫牌者是 AI，等待前端发牌动画播放结束（2.5秒）后再执行 AI 回合
+            current = room.current_turn
+            current_player = next((p for p in room.players if p.id == current), None)
+            if current_player and current_player.is_ai:
+                await asyncio.sleep(2.5)
             await self._process_ai_turns(room)
 
     async def _process_ai_turns(self, room):
+        """AI回合包装器：防并发锁校验"""
+        room_id = room.room_id
+        if room_id in self.manager.active_ai_rooms:
+            logger.info(f"游戏WS [room={room_id}]: 已经有一个 AI 回合处理器在运行中，跳过并发请求")
+            return
+        self.manager.active_ai_rooms.add(room_id)
+        try:
+            await self._do_process_ai_turns(room)
+        finally:
+            self.manager.active_ai_rooms.discard(room_id)
+
+    async def _do_process_ai_turns(self, room):
         """循环处理 AI 回合，直到轮到真人玩家"""
+        logger.info(f"游戏WS [room={room.room_id}]: 开始 _do_process_ai_turns. 阶段={room.phase.value}, 当前回合={room.current_turn}")
+        # 1. 优先处理并行的加倍阶段 (DOUBLING)
+        if room.phase == GamePhase.DOUBLING:
+            # 找到所有尚未做出加倍选择的 AI 玩家并依次处理
+            for p in room.players:
+                if p.is_ai and p.id not in room.doubling_choices:
+                    await asyncio.sleep(0.5)
+                    # 临时修改 current_turn 为 AI 以免被 service 的回合校验拦截
+                    room.current_turn = p.id
+                    logger.info(f"游戏WS [room={room.room_id}]: 触发 AI 玩家 {p.id} 加倍选择...")
+                    try:
+                        result = await self.service.handle_ai_turn(room)
+                    except Exception as e:
+                        import traceback
+                        logger.error(f"游戏WS: AI 加倍自动处理异常 [room={room.room_id}, player={p.id}]: {e}\n{traceback.format_exc()}")
+                        if room.phase == GamePhase.DOUBLING:
+                            room.current_turn = None
+                        continue
+                    if room.phase == GamePhase.DOUBLING:
+                        room.current_turn = None  # 恢复
+                    
+                    if result.get("error"):
+                        logger.error(f"游戏WS: AI 加倍自动处理出错 [room={room.room_id}, player={p.id}]: {result['error']}")
+                        continue
+                    
+                    room = result.get("room", room)
+                    ai_id = result.get("ai_player")
+                    choice = result.get("double_choice")
+                    logger.info(f"游戏WS [room={room.room_id}]: AI 玩家 {ai_id} 加倍选择为: {choice}")
+                    if choice:
+                        event = {
+                            "event": "double_chosen",
+                            "player": ai_id,
+                            "choice": choice,
+                            "label": self._double_choice_label(choice),
+                            "multiplier": result.get("multiplier", room.multiplier),
+                        }
+                        await self._broadcast_room_event(room, event)
+                        if result.get("doubling_finished"):
+                            logger.info(f"游戏WS [room={room.room_id}]: 加倍确认完毕，进入 PLAYING 阶段")
+                            await self._broadcast_room_event(room, {
+                                "event": "doubling_finished",
+                                "current_turn": result.get("next_turn"),
+                                "multiplier": result.get("multiplier", room.multiplier),
+                            })
+                            # 若加倍结束切到了 PLAYING 且当前出牌人是 AI，则继续调用 _do_process_ai_turns 处理其出牌
+                            await self._do_process_ai_turns(room)
+            return
+
+        # 2. 轮流处理叫地主 and 出牌阶段
         while room.phase in (GamePhase.CALLING, GamePhase.PLAYING):
             current = room.current_turn
             current_player = next((p for p in room.players if p.id == current), None)
             if not current_player or not current_player.is_ai:
+                logger.info(f"游戏WS [room={room.room_id}]: 轮到真人玩家 {current}，跳出 AI 自动处理器")
                 break
             # AI 延迟 1~2 秒模拟思考（或者直接在此睡眠）
             await asyncio.sleep(0.5)
-            result = await self.service.handle_ai_turn(room)
+            logger.info(f"游戏WS [room={room.room_id}]: 触发 AI 玩家 {current} 在阶段 {room.phase.value} 做自动决策...")
+            try:
+                result = await self.service.handle_ai_turn(room)
+            except Exception as e:
+                import traceback
+                logger.error(f"游戏WS: 自动处理 AI 回合异常 [room_id={room.room_id}, player={current}]: {e}\n{traceback.format_exc()}")
+                break
             if result.get("error"):
+                logger.error(f"游戏WS: 自动处理 AI 回合发生错误 [room_id={room.room_id}, player={current}]: {result['error']}")
                 break
             room = result.get("room", room)
             # 广播 AI 的操作
             ai_id = result.get("ai_player")
+            logger.info(f"游戏WS [room={room.room_id}]: AI 玩家 {ai_id} 回合决策返回: {result.keys()}")
             if room.phase == GamePhase.SETTLING or result.get("game_over"):
                 event = {
                     "event": "game_over",
@@ -257,18 +442,27 @@ class GameWebSocketHandler:
                 await self._broadcast_room_event(room, event)
                 await self._on_game_over(room, result)
                 break
-            elif result.get("redeal"):
-                await self._broadcast_room_event(room, {"event": "redeal"})
-                # 重发后继续处理可能的 AI 叫地主
-                continue
-            elif result.get("landlord"):
-                event = {
-                    "event": "landlord_decided",
-                    "landlord": result["landlord"],
-                    "bottom_cards": result.get("bottom_cards", []),
-                    "multiplier": result.get("multiplier", 1),
-                }
-                await self._broadcast_room_event(room, event)
+            elif "score" in result:
+                score = result["score"]
+                if score > 0:
+                    action_event = {"event": "call_made", "player": ai_id, "score": score}
+                else:
+                    action_event = {"event": "call_skipped", "player": ai_id}
+                await self._broadcast_room_event(room, action_event)
+
+                if result.get("redeal"):
+                    await asyncio.sleep(1.0)
+                    await self._broadcast_room_event(room, {"event": "redeal"})
+                    continue
+                elif result.get("landlord"):
+                    await asyncio.sleep(1.0)
+                    decided_event = {
+                        "event": "landlord_decided",
+                        "landlord": result["landlord"],
+                        "bottom_cards": result.get("bottom_cards", []),
+                        "multiplier": result.get("multiplier", 1),
+                    }
+                    await self._broadcast_room_event(room, decided_event)
             elif result.get("cards_played"):
                 event = {
                     "event": "cards_played",
@@ -278,15 +472,8 @@ class GameWebSocketHandler:
                     "remaining": result.get("remaining"),
                 }
                 await self._broadcast_room_event(room, event)
-            elif "next_caller" in result:
-                score = result.get("score", 0)
-                if score > 0:
-                    event = {"event": "call_made", "player": ai_id, "score": score}
-                else:
-                    event = {"event": "call_skipped", "player": ai_id}
-                await self._broadcast_room_event(room, event)
             elif result.get("next_turn"):
-                event = {"event": "turn_passed" if not result.get("cards_played") else "call_skipped", "player": ai_id}
+                event = {"event": "turn_passed", "player": ai_id}
                 await self._broadcast_room_event(room, event)
 
     async def _on_game_over(self, room, result: dict):
@@ -329,3 +516,10 @@ class GameWebSocketHandler:
         result = await self.service.match_ai_for_player(player_id, nickname, base_score=base_score)
         if result and result.get("status") == "room_created":
             await self._on_room_created(result)
+
+    def _double_choice_label(self, choice: str) -> str:
+        return {
+            "double": "加倍",
+            "super": "超级加倍",
+            "none": "不加倍",
+        }.get(choice, "不加倍")
