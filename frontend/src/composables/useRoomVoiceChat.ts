@@ -23,6 +23,7 @@ export function useRoomVoiceChat(options: UseRoomVoiceChatOptions) {
   const remoteVoicePlayers = ref<Record<string, boolean>>({})
   const peers = new Map<string, RTCPeerConnection>()
   const makingOffer = new Map<string, boolean>()
+  const offerGenerations = new Map<string, number>()
   const pendingIceCandidates = new Map<string, RTCIceCandidateInit[]>()
   let localStream: MediaStream | null = null
   let sessionGeneration = 0
@@ -83,7 +84,22 @@ export function useRoomVoiceChat(options: UseRoomVoiceChatOptions) {
 
   function resetPeerState(playerId: string) {
     makingOffer.delete(playerId)
+    offerGenerations.delete(playerId)
     pendingIceCandidates.delete(playerId)
+  }
+
+  function beginOfferAttempt(playerId: string) {
+    const nextGeneration = (offerGenerations.get(playerId) ?? 0) + 1
+    offerGenerations.set(playerId, nextGeneration)
+    return nextGeneration
+  }
+
+  function invalidateOfferAttempt(playerId: string) {
+    beginOfferAttempt(playerId)
+  }
+
+  function isActiveOfferAttempt(playerId: string, offerGeneration: number) {
+    return offerGenerations.get(playerId) === offerGeneration
   }
 
   function closePeer(playerId: string) {
@@ -172,16 +188,27 @@ export function useRoomVoiceChat(options: UseRoomVoiceChatOptions) {
 
   async function createOfferFor(playerId: string, generation: number) {
     const peer = createPeer(playerId)
+    const offerGeneration = beginOfferAttempt(playerId)
     makingOffer.set(playerId, true)
 
     try {
       const offer = await peer.createOffer()
-      if (generation !== sessionGeneration || !isVoiceEnabled.value || isDisposed) {
+      if (
+        generation !== sessionGeneration
+        || !isVoiceEnabled.value
+        || isDisposed
+        || !isActiveOfferAttempt(playerId, offerGeneration)
+      ) {
         return
       }
 
       await peer.setLocalDescription(offer)
-      if (generation !== sessionGeneration || !isVoiceEnabled.value || isDisposed) {
+      if (
+        generation !== sessionGeneration
+        || !isVoiceEnabled.value
+        || isDisposed
+        || !isActiveOfferAttempt(playerId, offerGeneration)
+      ) {
         return
       }
 
@@ -207,6 +234,7 @@ export function useRoomVoiceChat(options: UseRoomVoiceChatOptions) {
         return
       }
 
+      invalidateOfferAttempt(event.player)
       if (offerCollision && peer.signalingState !== 'stable') {
         await peer.setLocalDescription({ type: 'rollback' })
       }

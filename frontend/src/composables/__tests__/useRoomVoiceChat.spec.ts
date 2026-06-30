@@ -15,6 +15,10 @@ class MockMediaStream {
 
 class MockPeerConnection {
   static instances: MockPeerConnection[] = []
+  static createOfferImplementation = async () =>
+    ({ type: 'offer', sdp: 'offer-sdp' }) as RTCSessionDescriptionInit
+  static createAnswerImplementation = async () =>
+    ({ type: 'answer', sdp: 'answer-sdp' }) as RTCSessionDescriptionInit
 
   localDescription: RTCSessionDescriptionInit | null = null
   remoteDescription: RTCSessionDescriptionInit | null = null
@@ -31,8 +35,8 @@ class MockPeerConnection {
   }
 
   addTrack = vi.fn()
-  createOffer = vi.fn(async () => ({ type: 'offer', sdp: 'offer-sdp' }) as RTCSessionDescriptionInit)
-  createAnswer = vi.fn(async () => ({ type: 'answer', sdp: 'answer-sdp' }) as RTCSessionDescriptionInit)
+  createOffer = vi.fn(() => MockPeerConnection.createOfferImplementation())
+  createAnswer = vi.fn(() => MockPeerConnection.createAnswerImplementation())
   setLocalDescription = vi.fn(async (description?: RTCSessionDescriptionInit) => {
     if (description?.type === 'rollback') {
       this.localDescription = null
@@ -105,6 +109,10 @@ describe('useRoomVoiceChat', () => {
     stream = new MockMediaStream()
     sendAction = vi.fn()
     MockPeerConnection.instances = []
+    MockPeerConnection.createOfferImplementation = async () =>
+      ({ type: 'offer', sdp: 'offer-sdp' }) as RTCSessionDescriptionInit
+    MockPeerConnection.createAnswerImplementation = async () =>
+      ({ type: 'answer', sdp: 'answer-sdp' }) as RTCSessionDescriptionInit
     vi.stubGlobal('RTCPeerConnection', MockPeerConnection)
     vi.stubGlobal('RTCSessionDescription', function (description: RTCSessionDescriptionInit) {
       return description
@@ -338,6 +346,56 @@ describe('useRoomVoiceChat', () => {
       signal_type: 'answer',
       payload: { type: 'answer', sdp: 'answer-sdp' },
     })
+  })
+
+  it('does not send a stale local offer after accepting a remote offer during createOffer', async () => {
+    const deferredOffer = createDeferred<RTCSessionDescriptionInit>()
+    const localOffer = { type: 'offer', sdp: 'late-offer' } satisfies RTCSessionDescriptionInit
+    MockPeerConnection.createOfferImplementation = () => deferredOffer.promise
+
+    const { notifyVoiceSignal, useRoomVoiceChat } = await loadVoiceModules()
+    const voice = useRoomVoiceChat({
+      selfPlayerId: 'p2',
+      roomPlayerIds: () => ['p1', 'p2'],
+      sendAction,
+    })
+
+    const startPromise = voice.startVoice()
+    await flushPromises()
+
+    notifyVoiceSignal({
+      player: 'p1',
+      targetPlayer: 'p2',
+      signalType: 'offer',
+      payload: { type: 'offer', sdp: 'remote-offer-during-create' },
+    })
+    await flushPromises()
+
+    expect(sendAction).toHaveBeenCalledWith({
+      action: 'voice_signal',
+      target_player: 'p1',
+      signal_type: 'answer',
+      payload: { type: 'answer', sdp: 'answer-sdp' },
+    })
+
+    deferredOffer.resolve(localOffer)
+    await startPromise
+    await flushPromises()
+
+    expect(
+      MockPeerConnection.instances[0]!.setLocalDescription.mock.calls.some(
+        ([description]) => description?.type === 'offer' && description.sdp === 'late-offer',
+      ),
+    ).toBe(false)
+    expect(
+      sendAction.mock.calls.some(
+        ([payload]) =>
+          payload.action === 'voice_signal'
+          && payload.target_player === 'p1'
+          && payload.signal_type === 'offer'
+          && (payload.payload as RTCSessionDescriptionInit | undefined)?.sdp === 'late-offer',
+      ),
+    ).toBe(false)
   })
 
   it('ignores colliding offers for impolite peers', async () => {
