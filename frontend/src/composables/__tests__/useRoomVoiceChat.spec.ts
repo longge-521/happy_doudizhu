@@ -1,6 +1,5 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { notifyVoiceSignal } from '../gameVoiceEvents'
 
 class MockMediaStreamTrack {
   stopped = false
@@ -16,10 +15,14 @@ class MockMediaStream {
 
 class MockPeerConnection {
   static instances: MockPeerConnection[] = []
+
   localDescription: RTCSessionDescriptionInit | null = null
   remoteDescription: RTCSessionDescriptionInit | null = null
+  signalingState: RTCSignalingState = 'stable'
+  connectionState: RTCPeerConnectionState = 'new'
   onicecandidate: ((event: RTCPeerConnectionIceEvent) => void) | null = null
   ontrack: ((event: RTCTrackEvent) => void) | null = null
+  onconnectionstatechange: (() => void) | null = null
   closed = false
   candidates: RTCIceCandidateInit[] = []
 
@@ -30,18 +33,65 @@ class MockPeerConnection {
   addTrack = vi.fn()
   createOffer = vi.fn(async () => ({ type: 'offer', sdp: 'offer-sdp' }) as RTCSessionDescriptionInit)
   createAnswer = vi.fn(async () => ({ type: 'answer', sdp: 'answer-sdp' }) as RTCSessionDescriptionInit)
-  setLocalDescription = vi.fn(async (description: RTCSessionDescriptionInit) => {
-    this.localDescription = description
+  setLocalDescription = vi.fn(async (description?: RTCSessionDescriptionInit) => {
+    if (description?.type === 'rollback') {
+      this.localDescription = null
+      this.signalingState = 'stable'
+      return
+    }
+
+    this.localDescription = description ?? null
+    if (description?.type === 'offer') {
+      this.signalingState = 'have-local-offer'
+      return
+    }
+
+    this.signalingState = 'stable'
   })
   setRemoteDescription = vi.fn(async (description: RTCSessionDescriptionInit) => {
     this.remoteDescription = description
+    if (description.type === 'offer') {
+      this.signalingState = 'have-remote-offer'
+      return
+    }
+
+    this.signalingState = 'stable'
   })
   addIceCandidate = vi.fn(async (candidate: RTCIceCandidateInit) => {
     this.candidates.push(candidate)
   })
   close = vi.fn(() => {
     this.closed = true
+    this.connectionState = 'closed'
+    this.signalingState = 'closed'
   })
+}
+
+function createDeferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((innerResolve, innerReject) => {
+    resolve = innerResolve
+    reject = innerReject
+  })
+
+  return { promise, resolve, reject }
+}
+
+async function flushPromises(times = 8) {
+  for (let index = 0; index < times; index += 1) {
+    await Promise.resolve()
+  }
+}
+
+async function loadVoiceModules() {
+  const gameVoiceEvents = await import('../gameVoiceEvents')
+  const roomVoiceChat = await import('../useRoomVoiceChat')
+
+  return {
+    ...gameVoiceEvents,
+    ...roomVoiceChat,
+  }
 }
 
 describe('useRoomVoiceChat', () => {
@@ -49,7 +99,9 @@ describe('useRoomVoiceChat', () => {
   let sendAction: ReturnType<typeof vi.fn>
 
   beforeEach(() => {
+    vi.resetModules()
     vi.unstubAllGlobals()
+    document.body.innerHTML = ''
     stream = new MockMediaStream()
     sendAction = vi.fn()
     MockPeerConnection.instances = []
@@ -60,6 +112,7 @@ describe('useRoomVoiceChat', () => {
     vi.stubGlobal('RTCIceCandidate', function (candidate: RTCIceCandidateInit) {
       return candidate
     })
+    vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined)
     Object.defineProperty(globalThis.navigator, 'mediaDevices', {
       value: { getUserMedia: vi.fn(async () => stream) },
       configurable: true,
@@ -67,7 +120,7 @@ describe('useRoomVoiceChat', () => {
   })
 
   it('starts voice, opens peers for room players, and sends voice_state', async () => {
-    const { useRoomVoiceChat } = await import('../useRoomVoiceChat')
+    const { useRoomVoiceChat } = await loadVoiceModules()
     const voice = useRoomVoiceChat({
       selfPlayerId: 'p1',
       roomPlayerIds: () => ['p1', 'p2', 'p3'],
@@ -91,10 +144,11 @@ describe('useRoomVoiceChat', () => {
       payload: { type: 'offer', sdp: 'offer-sdp' },
     })
     expect(voice.isVoiceEnabled.value).toBe(true)
+    expect(MockPeerConnection.instances).toHaveLength(2)
   })
 
   it('stops tracks and closes peer connections when stopped', async () => {
-    const { useRoomVoiceChat } = await import('../useRoomVoiceChat')
+    const { useRoomVoiceChat } = await loadVoiceModules()
     const voice = useRoomVoiceChat({
       selfPlayerId: 'p1',
       roomPlayerIds: () => ['p1', 'p2'],
@@ -110,8 +164,154 @@ describe('useRoomVoiceChat', () => {
     expect(voice.isVoiceEnabled.value).toBe(false)
   })
 
-  it('answers incoming offers and applies ice candidates', async () => {
-    const { useRoomVoiceChat } = await import('../useRoomVoiceChat')
+  it('applies remote answers for locally created offers', async () => {
+    const { notifyVoiceSignal, useRoomVoiceChat } = await loadVoiceModules()
+    const voice = useRoomVoiceChat({
+      selfPlayerId: 'p1',
+      roomPlayerIds: () => ['p1', 'p2'],
+      sendAction,
+    })
+
+    await voice.startVoice()
+    notifyVoiceSignal({
+      player: 'p2',
+      targetPlayer: 'p1',
+      signalType: 'answer',
+      payload: { type: 'answer', sdp: 'remote-answer' },
+    })
+    await flushPromises()
+
+    expect(MockPeerConnection.instances[0]!.remoteDescription).toEqual({
+      type: 'answer',
+      sdp: 'remote-answer',
+    })
+  })
+
+  it('queues ice candidates until a remote offer is applied', async () => {
+    const { notifyVoiceSignal, useRoomVoiceChat } = await loadVoiceModules()
+    const voice = useRoomVoiceChat({
+      selfPlayerId: 'p2',
+      roomPlayerIds: () => ['p1', 'p2'],
+      sendAction,
+    })
+
+    await voice.startVoice()
+    notifyVoiceSignal({
+      player: 'p1',
+      targetPlayer: 'p2',
+      signalType: 'ice_candidate',
+      payload: { candidate: 'candidate-before-offer' },
+    })
+    await flushPromises()
+
+    expect(MockPeerConnection.instances[0]!.candidates).toEqual([])
+
+    notifyVoiceSignal({
+      player: 'p1',
+      targetPlayer: 'p2',
+      signalType: 'offer',
+      payload: { type: 'offer', sdp: 'remote-offer' },
+    })
+    await flushPromises()
+
+    expect(MockPeerConnection.instances[0]!.remoteDescription).toEqual({
+      type: 'offer',
+      sdp: 'remote-offer',
+    })
+    expect(MockPeerConnection.instances[0]!.candidates).toEqual([
+      { candidate: 'candidate-before-offer' },
+    ])
+    expect(sendAction).toHaveBeenCalledWith({
+      action: 'voice_signal',
+      target_player: 'p1',
+      signal_type: 'answer',
+      payload: { type: 'answer', sdp: 'answer-sdp' },
+    })
+  })
+
+  it('queues ice candidates until a remote answer is applied', async () => {
+    const { notifyVoiceSignal, useRoomVoiceChat } = await loadVoiceModules()
+    const voice = useRoomVoiceChat({
+      selfPlayerId: 'p1',
+      roomPlayerIds: () => ['p1', 'p2'],
+      sendAction,
+    })
+
+    await voice.startVoice()
+    notifyVoiceSignal({
+      player: 'p2',
+      targetPlayer: 'p1',
+      signalType: 'ice_candidate',
+      payload: { candidate: 'candidate-before-answer' },
+    })
+    await flushPromises()
+
+    expect(MockPeerConnection.instances[0]!.candidates).toEqual([])
+
+    notifyVoiceSignal({
+      player: 'p2',
+      targetPlayer: 'p1',
+      signalType: 'answer',
+      payload: { type: 'answer', sdp: 'remote-answer' },
+    })
+    await flushPromises()
+
+    expect(MockPeerConnection.instances[0]!.candidates).toEqual([
+      { candidate: 'candidate-before-answer' },
+    ])
+  })
+
+  it('handles remote voice_state off by closing the peer and removing audio', async () => {
+    const { notifyVoiceState, useRoomVoiceChat } = await loadVoiceModules()
+    const voice = useRoomVoiceChat({
+      selfPlayerId: 'p1',
+      roomPlayerIds: () => ['p1', 'p2'],
+      sendAction,
+    })
+
+    await voice.startVoice()
+    const remoteStream = new MockMediaStream() as unknown as MediaStream
+    MockPeerConnection.instances[0]!.ontrack?.({ streams: [remoteStream] } as RTCTrackEvent)
+
+    expect(document.getElementById('voice-audio-p2')).not.toBeNull()
+    expect(voice.remoteVoicePlayers.value.p2).toBe(true)
+
+    notifyVoiceState({ player: 'p2', enabled: false })
+
+    expect(MockPeerConnection.instances[0]!.close).toHaveBeenCalled()
+    expect(document.getElementById('voice-audio-p2')).toBeNull()
+    expect(voice.remoteVoicePlayers.value.p2).toBe(false)
+  })
+
+  it('ignores late getUserMedia completion after stop', async () => {
+    const deferredStream = createDeferred<MockMediaStream>()
+    vi.mocked(navigator.mediaDevices.getUserMedia).mockImplementationOnce(() => deferredStream.promise)
+    const { useRoomVoiceChat } = await loadVoiceModules()
+    const voice = useRoomVoiceChat({
+      selfPlayerId: 'p1',
+      roomPlayerIds: () => ['p1', 'p2'],
+      sendAction,
+    })
+
+    const startPromise = voice.startVoice()
+    voice.stopVoice()
+    deferredStream.resolve(stream)
+    await startPromise
+
+    expect(voice.isVoiceEnabled.value).toBe(false)
+    expect(voice.isConnecting.value).toBe(false)
+    expect(stream.tracks[0]!.stop).toHaveBeenCalled()
+    expect(sendAction).not.toHaveBeenCalledWith({ action: 'voice_state', enabled: true })
+    expect(sendAction).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'voice_signal',
+        signal_type: 'offer',
+      }),
+    )
+  })
+
+  it('rolls back and answers on offer collision for polite peers', async () => {
+    const { notifyVoiceSignal, useRoomVoiceChat } = await loadVoiceModules()
     const voice = useRoomVoiceChat({
       selfPlayerId: 'p2',
       roomPlayerIds: () => ['p1', 'p2'],
@@ -125,30 +325,82 @@ describe('useRoomVoiceChat', () => {
       signalType: 'offer',
       payload: { type: 'offer', sdp: 'remote-offer' },
     })
-    await Promise.resolve()
-    await Promise.resolve()
-    notifyVoiceSignal({
-      player: 'p1',
-      targetPlayer: 'p2',
-      signalType: 'ice_candidate',
-      payload: { candidate: 'candidate-1' },
-    })
-    await Promise.resolve()
+    await flushPromises()
 
-    const peer = MockPeerConnection.instances.find((item) => item.remoteDescription?.sdp === 'remote-offer')
-    expect(peer).toBeDefined()
+    expect(MockPeerConnection.instances[0]!.setLocalDescription).toHaveBeenCalledWith({ type: 'rollback' })
+    expect(MockPeerConnection.instances[0]!.remoteDescription).toEqual({
+      type: 'offer',
+      sdp: 'remote-offer',
+    })
     expect(sendAction).toHaveBeenCalledWith({
       action: 'voice_signal',
       target_player: 'p1',
       signal_type: 'answer',
       payload: { type: 'answer', sdp: 'answer-sdp' },
     })
-    expect(peer!.candidates).toEqual([{ candidate: 'candidate-1' }])
+  })
+
+  it('ignores colliding offers for impolite peers', async () => {
+    const { notifyVoiceSignal, useRoomVoiceChat } = await loadVoiceModules()
+    const voice = useRoomVoiceChat({
+      selfPlayerId: 'p1',
+      roomPlayerIds: () => ['p1', 'p2'],
+      sendAction,
+    })
+
+    await voice.startVoice()
+    notifyVoiceSignal({
+      player: 'p2',
+      targetPlayer: 'p1',
+      signalType: 'offer',
+      payload: { type: 'offer', sdp: 'remote-offer' },
+    })
+    await flushPromises()
+
+    expect(MockPeerConnection.instances[0]!.setLocalDescription).not.toHaveBeenCalledWith({ type: 'rollback' })
+    expect(MockPeerConnection.instances[0]!.remoteDescription).not.toEqual({
+      type: 'offer',
+      sdp: 'remote-offer',
+    })
+    expect(sendAction).not.toHaveBeenCalledWith({
+      action: 'voice_signal',
+      target_player: 'p2',
+      signal_type: 'answer',
+      payload: { type: 'answer', sdp: 'answer-sdp' },
+    })
+  })
+
+  it('disposes subscriptions and resources cleanly', async () => {
+    const { notifyVoiceSignal, notifyVoiceState, useRoomVoiceChat } = await loadVoiceModules()
+    const voice = useRoomVoiceChat({
+      selfPlayerId: 'p1',
+      roomPlayerIds: () => ['p1', 'p2'],
+      sendAction,
+    })
+
+    await voice.startVoice()
+    const actionsBeforeDispose = sendAction.mock.calls.length
+
+    voice.dispose()
+    notifyVoiceState({ player: 'p2', enabled: true })
+    notifyVoiceSignal({
+      player: 'p2',
+      targetPlayer: 'p1',
+      signalType: 'offer',
+      payload: { type: 'offer', sdp: 'remote-offer' },
+    })
+    await flushPromises()
+
+    expect(stream.tracks[0]!.stop).toHaveBeenCalled()
+    expect(MockPeerConnection.instances[0]!.close).toHaveBeenCalled()
+    expect(sendAction).toHaveBeenLastCalledWith({ action: 'voice_state', enabled: false })
+    expect(sendAction.mock.calls).toHaveLength(actionsBeforeDispose + 1)
+    expect(voice.remoteVoicePlayers.value).toEqual({})
   })
 
   it('sets an error when microphone permission fails', async () => {
     vi.mocked(navigator.mediaDevices.getUserMedia).mockRejectedValueOnce(new Error('denied'))
-    const { useRoomVoiceChat } = await import('../useRoomVoiceChat')
+    const { useRoomVoiceChat } = await loadVoiceModules()
     const voice = useRoomVoiceChat({
       selfPlayerId: 'p1',
       roomPlayerIds: () => ['p1', 'p2'],

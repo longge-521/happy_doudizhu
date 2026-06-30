@@ -22,7 +22,11 @@ export function useRoomVoiceChat(options: UseRoomVoiceChatOptions) {
   const voiceError = ref('')
   const remoteVoicePlayers = ref<Record<string, boolean>>({})
   const peers = new Map<string, RTCPeerConnection>()
+  const makingOffer = new Map<string, boolean>()
+  const pendingIceCandidates = new Map<string, RTCIceCandidateInit[]>()
   let localStream: MediaStream | null = null
+  let sessionGeneration = 0
+  let isDisposed = false
 
   function sendSignal(
     targetPlayer: string,
@@ -39,6 +43,10 @@ export function useRoomVoiceChat(options: UseRoomVoiceChatOptions) {
 
   function getRemotePlayerIds() {
     return options.roomPlayerIds().filter((playerId) => playerId && playerId !== options.selfPlayerId)
+  }
+
+  function isPolitePeer(playerId: string) {
+    return options.selfPlayerId.localeCompare(playerId) > 0
   }
 
   function attachRemoteAudio(playerId: string, stream: MediaStream) {
@@ -62,6 +70,52 @@ export function useRoomVoiceChat(options: UseRoomVoiceChatOptions) {
 
   function removeRemoteAudio(playerId: string) {
     document.getElementById(`voice-audio-${playerId}`)?.remove()
+  }
+
+  function stopTracks(stream: MediaStream | null) {
+    stream?.getTracks().forEach((track) => track.stop())
+  }
+
+  function stopLocalTracks() {
+    stopTracks(localStream)
+    localStream = null
+  }
+
+  function resetPeerState(playerId: string) {
+    makingOffer.delete(playerId)
+    pendingIceCandidates.delete(playerId)
+  }
+
+  function closePeer(playerId: string) {
+    const peer = peers.get(playerId)
+    if (!peer) {
+      resetPeerState(playerId)
+      removeRemoteAudio(playerId)
+      return
+    }
+
+    peer.close()
+    peers.delete(playerId)
+    resetPeerState(playerId)
+    removeRemoteAudio(playerId)
+  }
+
+  function queueIceCandidate(playerId: string, candidate: RTCIceCandidateInit) {
+    const pending = pendingIceCandidates.get(playerId) ?? []
+    pending.push(candidate)
+    pendingIceCandidates.set(playerId, pending)
+  }
+
+  async function flushPendingIceCandidates(playerId: string, peer: RTCPeerConnection) {
+    const pending = pendingIceCandidates.get(playerId)
+    if (!pending?.length) {
+      return
+    }
+
+    pendingIceCandidates.delete(playerId)
+    for (const candidate of pending) {
+      await peer.addIceCandidate(new RTCIceCandidate(candidate))
+    }
   }
 
   function createPeer(playerId: string) {
@@ -107,6 +161,8 @@ export function useRoomVoiceChat(options: UseRoomVoiceChatOptions) {
           ...remoteVoicePlayers.value,
           [playerId]: false,
         }
+        peers.delete(playerId)
+        resetPeerState(playerId)
         removeRemoteAudio(playerId)
       }
     }
@@ -114,22 +170,50 @@ export function useRoomVoiceChat(options: UseRoomVoiceChatOptions) {
     return peer
   }
 
-  async function createOfferFor(playerId: string) {
+  async function createOfferFor(playerId: string, generation: number) {
     const peer = createPeer(playerId)
-    const offer = await peer.createOffer()
-    await peer.setLocalDescription(offer)
-    sendSignal(playerId, 'offer', offer as unknown as Record<string, unknown>)
+    makingOffer.set(playerId, true)
+
+    try {
+      const offer = await peer.createOffer()
+      if (generation !== sessionGeneration || !isVoiceEnabled.value || isDisposed) {
+        return
+      }
+
+      await peer.setLocalDescription(offer)
+      if (generation !== sessionGeneration || !isVoiceEnabled.value || isDisposed) {
+        return
+      }
+
+      sendSignal(playerId, 'offer', offer as unknown as Record<string, unknown>)
+    } finally {
+      makingOffer.set(playerId, false)
+    }
   }
 
   async function handleVoiceSignal(event: VoiceSignalEvent) {
-    if (event.targetPlayer !== options.selfPlayerId || !isVoiceEnabled.value) {
+    if (event.targetPlayer !== options.selfPlayerId || !isVoiceEnabled.value || isDisposed) {
       return
     }
 
     const peer = createPeer(event.player)
 
     if (event.signalType === 'offer') {
-      await peer.setRemoteDescription(new RTCSessionDescription(event.payload as RTCSessionDescriptionInit))
+      const description = event.payload as RTCSessionDescriptionInit
+      const offerCollision =
+        makingOffer.get(event.player) === true || peer.signalingState !== 'stable'
+
+      if (offerCollision && !isPolitePeer(event.player)) {
+        return
+      }
+
+      if (offerCollision && peer.signalingState !== 'stable') {
+        await peer.setLocalDescription({ type: 'rollback' })
+      }
+
+      await peer.setRemoteDescription(new RTCSessionDescription(description))
+      await flushPendingIceCandidates(event.player, peer)
+
       const answer = await peer.createAnswer()
       await peer.setLocalDescription(answer)
       sendSignal(event.player, 'answer', answer as unknown as Record<string, unknown>)
@@ -138,17 +222,19 @@ export function useRoomVoiceChat(options: UseRoomVoiceChatOptions) {
 
     if (event.signalType === 'answer') {
       await peer.setRemoteDescription(new RTCSessionDescription(event.payload as RTCSessionDescriptionInit))
+      await flushPendingIceCandidates(event.player, peer)
       return
     }
 
     if (event.signalType === 'ice_candidate') {
-      await peer.addIceCandidate(new RTCIceCandidate(event.payload as RTCIceCandidateInit))
-    }
-  }
+      const candidate = event.payload as RTCIceCandidateInit
+      if (!peer.remoteDescription) {
+        queueIceCandidate(event.player, candidate)
+        return
+      }
 
-  function stopLocalTracks() {
-    localStream?.getTracks().forEach((track) => track.stop())
-    localStream = null
+      await peer.addIceCandidate(new RTCIceCandidate(candidate))
+    }
   }
 
   const unsubscribeSignal = onVoiceSignal((event) => {
@@ -158,7 +244,7 @@ export function useRoomVoiceChat(options: UseRoomVoiceChatOptions) {
   })
 
   const unsubscribeState = onVoiceState((event) => {
-    if (event.player === options.selfPlayerId) {
+    if (event.player === options.selfPlayerId || isDisposed) {
       return
     }
 
@@ -168,15 +254,12 @@ export function useRoomVoiceChat(options: UseRoomVoiceChatOptions) {
     }
 
     if (!event.enabled) {
-      const peer = peers.get(event.player)
-      peer?.close()
-      peers.delete(event.player)
-      removeRemoteAudio(event.player)
+      closePeer(event.player)
     }
   })
 
   async function startVoice() {
-    if (isVoiceEnabled.value || isConnecting.value) {
+    if (isDisposed || isVoiceEnabled.value || isConnecting.value) {
       return
     }
 
@@ -187,31 +270,43 @@ export function useRoomVoiceChat(options: UseRoomVoiceChatOptions) {
       return
     }
 
+    const generation = ++sessionGeneration
     isConnecting.value = true
 
     try {
-      localStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      if (generation !== sessionGeneration || isDisposed) {
+        stopTracks(stream)
+        return
+      }
+
+      localStream = stream
       isVoiceEnabled.value = true
       options.sendAction({ action: 'voice_state', enabled: true })
-      await Promise.all(getRemotePlayerIds().map((playerId) => createOfferFor(playerId)))
+      await Promise.all(getRemotePlayerIds().map((playerId) => createOfferFor(playerId, generation)))
     } catch {
+      if (generation !== sessionGeneration || isDisposed) {
+        return
+      }
+
       voiceError.value = '麦克风权限未开启'
       stopLocalTracks()
       isVoiceEnabled.value = false
     } finally {
-      isConnecting.value = false
+      if (generation === sessionGeneration) {
+        isConnecting.value = false
+      }
     }
   }
 
   function stopVoice() {
     const wasEnabled = isVoiceEnabled.value
 
+    sessionGeneration += 1
     stopLocalTracks()
-    peers.forEach((peer, playerId) => {
-      peer.close()
-      removeRemoteAudio(playerId)
+    peers.forEach((_, playerId) => {
+      closePeer(playerId)
     })
-    peers.clear()
     remoteVoicePlayers.value = {}
     isVoiceEnabled.value = false
     isConnecting.value = false
@@ -231,6 +326,11 @@ export function useRoomVoiceChat(options: UseRoomVoiceChatOptions) {
   }
 
   function dispose() {
+    if (isDisposed) {
+      return
+    }
+
+    isDisposed = true
     stopVoice()
     unsubscribeSignal()
     unsubscribeState()
