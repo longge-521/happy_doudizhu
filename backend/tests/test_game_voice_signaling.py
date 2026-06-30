@@ -1,53 +1,7 @@
 import json
-import sys
-from types import ModuleType
 from unittest.mock import AsyncMock
 
 import pytest
-
-
-def _install_torch_stub():
-    if "torch" in sys.modules:
-        return
-
-    class _FakeModule:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def eval(self):
-            return self
-
-        def load_state_dict(self, *args, **kwargs):
-            return None
-
-    class _NoGrad:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-    torch_module = ModuleType("torch")
-    nn_module = ModuleType("torch.nn")
-    functional_module = ModuleType("torch.nn.functional")
-
-    nn_module.Module = _FakeModule
-    nn_module.LSTM = _FakeModule
-    nn_module.Linear = _FakeModule
-    functional_module.relu = lambda x: x
-
-    torch_module.nn = nn_module
-    torch_module.cat = lambda tensors, dim=-1: tensors[0]
-    torch_module.load = lambda *args, **kwargs: {}
-    torch_module.no_grad = lambda: _NoGrad()
-    torch_module.Tensor = object
-
-    sys.modules["torch"] = torch_module
-    sys.modules["torch.nn"] = nn_module
-    sys.modules["torch.nn.functional"] = functional_module
-
-
-_install_torch_stub()
 
 from app.domain.game.room import GameRoom, Player
 from app.interfaces.websocket.game_handler import GameWebSocketHandler
@@ -63,24 +17,27 @@ class FakeManager:
 
 
 class FakeService:
-    def __init__(self, room):
+    def __init__(self, room=None):
         self.room = room
 
     async def _get_player_room(self, player_id):
-        if player_id in {p.id for p in self.room.players}:
+        if self.room and player_id in {p.id for p in self.room.players}:
             return self.room
         return None
 
 
-def make_handler(player_id="p1"):
+def make_room():
     players = [
         Player(id="p1", nickname="玩家1", is_ai=False, is_online=True),
         Player(id="p2", nickname="玩家2", is_ai=False, is_online=True),
         Player(id="p3", nickname="玩家3", is_ai=False, is_online=True),
     ]
-    room = GameRoom.create("room_voice", players)
+    return GameRoom.create("room_voice", players)
+
+
+def make_handler(player_id="p1", room=None):
     manager = FakeManager()
-    service = FakeService(room)
+    service = FakeService(room or make_room())
     handler = GameWebSocketHandler(AsyncMock(), player_id, manager, service)
     return handler, manager
 
@@ -97,6 +54,17 @@ async def test_voice_state_broadcasts_to_room_players():
     assert all(data["player"] == "p1" for _, data in manager.sent)
     assert all(data["enabled"] is True for _, data in manager.sent)
     assert all("room_state" in data for _, data in manager.sent)
+
+
+@pytest.mark.asyncio
+async def test_voice_state_rejects_when_player_is_not_in_room():
+    handler = GameWebSocketHandler(AsyncMock(), "p1", FakeManager(), FakeService())
+    sent = []
+    handler._send = AsyncMock(side_effect=lambda data: sent.append(data))
+
+    await handler._handle_message(json.dumps({"action": "voice_state", "enabled": True}))
+
+    assert sent == [{"event": "error", "msg": "当前不在房间内，无法使用语音"}]
 
 
 @pytest.mark.asyncio
@@ -128,6 +96,26 @@ async def test_voice_signal_forwards_only_to_target_room_player():
 
 
 @pytest.mark.asyncio
+async def test_voice_signal_rejects_when_player_is_not_in_room():
+    handler = GameWebSocketHandler(AsyncMock(), "p1", FakeManager(), FakeService())
+    sent = []
+    handler._send = AsyncMock(side_effect=lambda data: sent.append(data))
+
+    await handler._handle_message(
+        json.dumps(
+            {
+                "action": "voice_signal",
+                "target_player": "p2",
+                "signal_type": "offer",
+                "payload": {"type": "offer", "sdp": "v=0"},
+            }
+        )
+    )
+
+    assert sent == [{"event": "error", "msg": "当前不在房间内，无法发送语音信号"}]
+
+
+@pytest.mark.asyncio
 async def test_voice_signal_rejects_non_room_target():
     handler, manager = make_handler("p1")
 
@@ -143,6 +131,24 @@ async def test_voice_signal_rejects_non_room_target():
     )
 
     assert manager.sent == [("p1", {"event": "error", "msg": "语音信令目标不在当前房间"})]
+
+
+@pytest.mark.asyncio
+async def test_voice_signal_rejects_non_dict_payload():
+    handler, manager = make_handler("p1")
+
+    await handler._handle_message(
+        json.dumps(
+            {
+                "action": "voice_signal",
+                "target_player": "p2",
+                "signal_type": "offer",
+                "payload": "not-an-object",
+            }
+        )
+    )
+
+    assert manager.sent == [("p1", {"event": "error", "msg": "语音信令内容格式不正确"})]
 
 
 @pytest.mark.asyncio
