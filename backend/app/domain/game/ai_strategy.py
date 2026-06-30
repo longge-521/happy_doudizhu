@@ -430,9 +430,31 @@ def _get_split_single(plan: HandPlan, last_play: CardPlay) -> Optional[List[int]
 
 
 def _get_split_pair(plan: HandPlan, last_play: CardPlay) -> Optional[List[int]]:
-    """在没有对子时，尝试从三条中拆出一对来压牌"""
+    """在没有独立对子时，优先从三带二、四带二对等牌型的翅膀中提取对子，其次再尝试从三条核心中拆一对来压牌"""
+    # 1. 优先寻找不需要拆分三条/四条核心主牌的现成对子（从三带二、四带二对等翅膀中提取）
+    wing_pair_candidates = []  # 元素为 (rank, [card_ids])
+    for p in plan.plays:
+        if p.card_type == CardType.TRIPLE_TWO:
+            wing_cards = [c for c in p.cards if Card.from_id(c).rank != p.main_rank]
+            if len(wing_cards) == 2:
+                wr = Card.from_id(wing_cards[0]).rank
+                if wr > last_play.main_rank:
+                    wing_pair_candidates.append((wr, wing_cards))
+        elif p.card_type == CardType.FOUR_TWO_PAIR:
+            wing_ranks = list(set(Card.from_id(c).rank for c in p.cards if Card.from_id(c).rank != p.main_rank))
+            for wr in wing_ranks:
+                if wr > last_play.main_rank:
+                    wing_cards = [c for c in p.cards if Card.from_id(c).rank == wr]
+                    if len(wing_cards) == 2:
+                        wing_pair_candidates.append((wr, wing_cards))
+                        
+    if wing_pair_candidates:
+        # 优先使用最小的能压过的对子翅膀，保护大牌
+        wing_pair_candidates.sort(key=lambda x: x[0])
+        return wing_pair_candidates[0][1]
+
+    # 2. 如果没有现成翅膀对子，才兜底考虑从三条核心中拆一对
     candidates = []  # 元素为 (rank, [card_id1, card_id2])
-    
     for p in plan.plays:
         if p.card_type in (CardType.TRIPLE, CardType.TRIPLE_ONE, CardType.TRIPLE_TWO):
             if p.main_rank > last_play.main_rank:
@@ -442,6 +464,7 @@ def _get_split_pair(plan: HandPlan, last_play: CardPlay) -> Optional[List[int]]:
     if candidates:
         candidates.sort(key=lambda x: x[0])
         return candidates[0][1]
+        
     return None
 
 
@@ -482,6 +505,12 @@ def _get_split_triple_with_wings(plan: HandPlan, last_play: CardPlay) -> Optiona
                 available_pairs.append(cards)
             elif len(cards) == 1:
                 available_singles.append(cards[0])
+        elif p.card_type == CardType.TRIPLE:
+            if p.main_rank != best_triple_play.main_rank:
+                cards = [c for c in p.cards if c not in core_cards]
+                if len(cards) == 3:
+                    available_pairs.append(cards[:2])
+                    available_singles.append(cards[2])
         elif p.card_type in (CardType.TRIPLE_ONE, CardType.TRIPLE_TWO):
             wing = [c for c in p.cards if Card.from_id(c).rank != p.main_rank and c not in core_cards]
             if p.card_type == CardType.TRIPLE_ONE:
@@ -507,8 +536,6 @@ def _get_split_triple_with_wings(plan: HandPlan, last_play: CardPlay) -> Optiona
         # 需要 2 张对子翅膀
         if available_pairs:
             return core_cards + available_pairs[0]
-        elif len(available_singles) >= 2:
-            return core_cards + available_singles[:2] # 组合两张单牌作为对子翅膀
             
     return None
 
@@ -781,6 +808,20 @@ def ai_decide_play(
     """
     if not hand:
         return None
+
+    # 0. 冲刺控制：如果当前手牌整体就是一个合法牌型，且（首发或能压过上家），直接一次性出完赢得胜利
+    try:
+        from app.domain.game.card_type import detect_card_type, can_beat
+        hand_play = detect_card_type(hand)
+        if hand_play is not None:
+            if last_play is None or must_play:
+                logger.info(f"AI 冲刺：整手手牌为合法牌型 {hand_play.card_type.value}，直接一次性出完赢牌")
+                return hand
+            elif can_beat(hand_play, last_play):
+                logger.info(f"AI 冲刺：整手手牌为 {hand_play.card_type.value} 且可压过上家，直接一次性出完赢牌")
+                return hand
+    except Exception as e:
+        logger.warning(f"AI 冲刺判断异常: {e}")
 
     # 构建默认上下文（主要针对旧的单测兼容）
     if ctx is None:

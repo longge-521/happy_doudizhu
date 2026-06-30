@@ -5,14 +5,19 @@ import { useRouter } from 'vue-router'
 import { usePlayerStore } from '@/stores/playerStore'
 import { useGameStore } from '@/stores/gameStore'
 import { useGameWebSocket } from '@/composables/useGameWebSocket'
+import { useSoundEngine } from '@/composables/useSoundEngine'
+import SettingsModal from '@/components/SettingsModal.vue'
 
 const router = useRouter()
 const playerStore = usePlayerStore()
 const gameStore = useGameStore()
 const { connect, disconnect, sendAction } = useGameWebSocket()
+const { playSound, startBgm, stopBgm, unlock: unlockAudio } = useSoundEngine()
+
+const isMockMode = new URLSearchParams(window.location.search).get('mock') === 'true'
 
 // 校验登录状态
-if (!playerStore.playerId || !playerStore.nickname) {
+if (!isMockMode && (!playerStore.playerId || !playerStore.nickname)) {
   router.push('/login')
 }
 
@@ -21,6 +26,7 @@ const showLeaderboard = ref(false)
 const matchingCount = ref(0)
 const matchTime = ref(0)
 const showSuccessState = ref(false)
+const showSettings = ref(false)
 const featureNotice = ref({
   visible: false,
   title: '',
@@ -61,6 +67,10 @@ const RANK_NAMES = [
 const showEditBeansModal = ref(false)
 const inputBeansValue = ref(10000)
 const editBeansError = ref('')
+const showProfileModal = ref(false)
+const avatarInputValue = ref('')
+const avatarSaveError = ref('')
+const avatarImageFailed = ref(false)
 
 const inputRankId = ref(1)
 const inputSubRank = ref(4)
@@ -84,6 +94,13 @@ function openEditBeansModal() {
   editRankError.value = ''
   
   showEditBeansModal.value = true
+}
+
+function openProfileModal() {
+  avatarInputValue.value = playerStore.avatarUrl || ''
+  avatarSaveError.value = ''
+  avatarImageFailed.value = false
+  showProfileModal.value = true
 }
 
 function openFeatureNotice(title: string, message = '该功能正在开发中，敬请期待！') {
@@ -119,7 +136,33 @@ function handleFriendRoomClick() {
 }
 
 function handleProfileClick() {
-  openFeatureNotice('个人资料', '个人资料详情页正在开发中，敬请期待！')
+  openProfileModal()
+}
+
+async function handleSaveAvatar() {
+  avatarSaveError.value = ''
+  const result = await playerStore.modifyAvatar(avatarInputValue.value)
+  if (!result.ok) {
+    avatarSaveError.value = result.error || '头像保存失败'
+    return
+  }
+  avatarInputValue.value = playerStore.avatarUrl || ''
+  avatarImageFailed.value = false
+}
+
+async function handleClearAvatar() {
+  avatarSaveError.value = ''
+  const result = await playerStore.modifyAvatar('')
+  if (!result.ok) {
+    avatarSaveError.value = result.error || '头像清空失败'
+    return
+  }
+  avatarInputValue.value = ''
+  avatarImageFailed.value = false
+}
+
+function handleAvatarImageError() {
+  avatarImageFailed.value = true
 }
 
 async function handleSaveBeans() {
@@ -190,6 +233,7 @@ watch(() => gameStore.gamePhase, (newPhase) => {
   if (['CALLING', 'PLAYING', 'SETTLING'].includes(newPhase)) {
     stopMatchTimer()
     showSuccessState.value = true
+    stopBgm()
     setTimeout(() => {
       router.push(`/game/${gameStore.roomId}`)
     }, 1500)
@@ -208,13 +252,36 @@ watch(() => gameStore.wsConnected, (connected) => {
 })
 
 onMounted(() => {
-  loadLobbyData()
-  // 连接 WebSocket，如果是断线重连，会自动收到 reconnected 事件并触发上面的 watch 跳转
-  connect()
+  unlockAudio()
+  if (isMockMode) {
+    playerStore.playerId = 'mock_player'
+    playerStore.nickname = '雀圣斗地王'
+    playerStore.username = 'mock_user'
+    playerStore.beans = 9999999
+    playerStore.rankTitle = '至尊斗皇III'
+    playerStore.totalGames = 2048
+    playerStore.winRate = 72.8
+    playerStore.stars = 4
+    playerStore.subRank = 1
+    
+    leaderboard.value = [
+      { player_id: 'mock_player', nickname: '雀圣斗地王', beans: 9999999, rank_title: '至尊斗皇III', win_rate: 72.8, total_games: 2048 },
+      { player_id: 'p2', nickname: '发牌大户', beans: 5880000, rank_title: '至尊斗皇I', win_rate: 65.4, total_games: 1500 },
+      { player_id: 'p3', nickname: '农民专业户', beans: 3200000, rank_title: '傲世斗王IV', win_rate: 58.2, total_games: 890 },
+      { player_id: 'p4', nickname: '明牌炸弹人', beans: 1200000, rank_title: '傲世斗王I', win_rate: 61.0, total_games: 450 },
+      { player_id: 'p5', nickname: '小王在此', beans: 980000, rank_title: '强力斗魂V', win_rate: 51.5, total_games: 300 }
+    ]
+  } else {
+    startBgm('lobby')
+    loadLobbyData()
+    // 连接 WebSocket，如果是断线重连，会自动收到 reconnected 事件并触发上面的 watch 跳转
+    connect()
+  }
 })
 
 onUnmounted(() => {
   stopMatchTimer()
+  stopBgm()
 })
 
 function startMatchTimer() {
@@ -236,6 +303,7 @@ function stopMatchTimer() {
 }
 
 function handleStartMatch() {
+  playSound('btnClick')
   showSuccessState.value = false
   gameStore.gamePhase = 'MATCHING'
   startMatchTimer()
@@ -251,6 +319,7 @@ function handleStartMatch() {
 }
 
 function handleCancelMatch() {
+  playSound('btnClick')
   showSuccessState.value = false
   stopMatchTimer()
   if (gameStore.wsConnected) {
@@ -306,13 +375,13 @@ function handleHotPlayHint() {
       <!-- 顶部状态栏 -->
       <header class="lobby-top-bar">
         <div class="top-left">
-          <button class="btn-back" @click="handleLogout">
+          <button class="btn-back" type="button" aria-label="退出登录" @click="handleLogout">
             <div class="btn-back-circle">
               <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
                 <path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/>
               </svg>
             </div>
-            <span class="back-text">经典</span>
+            <span class="back-text">退出</span>
           </button>
           <button class="info-help-btn" type="button" @click="handleHelpClick">?</button>
         </div>
@@ -358,9 +427,12 @@ function handleHotPlayHint() {
           </div>
         </div>
 
-        <div class="top-right-leaderboard">
+        <div class="top-right-leaderboard" style="display: flex; gap: 12px; align-items: center;">
           <button class="btn-leaderboard-toggle" @click="showLeaderboard = !showLeaderboard">
             <span class="trophy-mini">🏆</span> 排行榜
+          </button>
+          <button class="btn-leaderboard-toggle" @click="showSettings = true; playSound('btnClick')" style="background: linear-gradient(135deg, #90caf9 0%, #1e88e5 100%); border-color: #bbdefb; color: #ffffff; text-shadow: 0 1px 1px rgba(0,0,0,0.35);">
+            ⚙️ 设置
           </button>
         </div>
       </header>
@@ -620,7 +692,14 @@ function handleHotPlayHint() {
         <!-- 个人信息 -->
         <div class="bottom-user-card" @click="handleProfileClick">
           <div class="user-avatar-wrap">
-            <span class="avatar-emoji">👤</span>
+            <img
+              v-if="playerStore.avatarUrl && !avatarImageFailed"
+              class="avatar-image"
+              :src="playerStore.avatarUrl"
+              alt="玩家头像"
+              @error="handleAvatarImageError"
+            />
+            <span v-else class="avatar-emoji">👤</span>
           </div>
           <div class="user-meta">
             <div class="user-name-row">
@@ -695,6 +774,9 @@ function handleHotPlayHint() {
         </div>
         <div class="top-right-hud" style="margin-left: auto; display: flex; gap: 12px; align-items: center;">
           <button class="btn-hud-tool" @click="showReadyPage = false">换桌</button>
+          <button class="btn-leaderboard-toggle" @click="showSettings = true; playSound('btnClick')" style="background: linear-gradient(135deg, #90caf9 0%, #1e88e5 100%); border-color: #bbdefb; color: #ffffff; text-shadow: 0 1px 1px rgba(0,0,0,0.35);">
+            ⚙️ 设置
+          </button>
           <button class="info-help-btn" type="button" @click="handleHelpClick">?</button>
         </div>
       </header>
@@ -720,7 +802,14 @@ function handleHotPlayHint() {
       <footer class="lobby-bottom-bar ready-bottom">
         <div class="bottom-user-card" @click="handleProfileClick">
           <div class="user-avatar-wrap">
-            <span class="avatar-emoji">👤</span>
+            <img
+              v-if="playerStore.avatarUrl && !avatarImageFailed"
+              class="avatar-image"
+              :src="playerStore.avatarUrl"
+              alt="玩家头像"
+              @error="handleAvatarImageError"
+            />
+            <span v-else class="avatar-emoji">👤</span>
           </div>
           <div class="user-meta">
             <div class="user-name-row">
@@ -812,6 +901,60 @@ function handleHotPlayHint() {
           <div v-if="leaderboard.length === 0" class="no-data">
             暂无排行榜数据
           </div>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="showProfileModal" class="modal-overlay" @click.self="showProfileModal = false">
+      <div class="glass-panel profile-modal">
+        <div class="modal-header">
+          <h3>个人资料</h3>
+          <button class="btn-close" type="button" @click="showProfileModal = false">×</button>
+        </div>
+
+        <div class="profile-summary">
+          <div class="profile-avatar-preview">
+            <img
+              v-if="playerStore.avatarUrl && !avatarImageFailed"
+              class="profile-avatar-image"
+              :src="playerStore.avatarUrl"
+              alt="玩家头像"
+              @error="handleAvatarImageError"
+            />
+            <span v-else class="profile-avatar-placeholder">👤</span>
+          </div>
+          <div class="profile-main-info">
+            <div class="profile-nickname">{{ playerStore.nickname }}</div>
+            <div class="profile-account">账号：{{ playerStore.username || '未绑定' }}</div>
+            <div class="profile-player-id">ID：{{ playerStore.playerId }}</div>
+          </div>
+        </div>
+
+        <div class="profile-stats-grid">
+          <div class="profile-stat"><span>欢乐豆</span><strong>{{ formatBeans(playerStore.beans) }}</strong></div>
+          <div class="profile-stat"><span>总局数</span><strong>{{ playerStore.totalGames }}</strong></div>
+          <div class="profile-stat"><span>胜率</span><strong>{{ (playerStore.winRate * 100).toFixed(0) }}%</strong></div>
+          <div class="profile-stat"><span>段位</span><strong>{{ playerStore.rankTitle }}</strong></div>
+        </div>
+
+        <label class="profile-avatar-field">
+          <span>头像图片 URL</span>
+          <input
+            v-model="avatarInputValue"
+            class="profile-avatar-input"
+            type="url"
+            placeholder="https://example.com/avatar.png"
+          />
+        </label>
+        <p v-if="avatarSaveError" class="profile-error">{{ avatarSaveError }}</p>
+
+        <div class="profile-actions">
+          <button class="btn-leaderboard-toggle profile-secondary-action" type="button" @click="handleClearAvatar">
+            清空头像
+          </button>
+          <button class="btn-leaderboard-toggle" type="button" @click="handleSaveAvatar">
+            保存头像
+          </button>
         </div>
       </div>
     </div>
@@ -934,6 +1077,9 @@ function handleHotPlayHint() {
         </template>
       </div>
     </div>
+
+    <!-- 原版风格设置弹窗 -->
+    <SettingsModal :show="showSettings" @close="showSettings = false" />
   </div>
 </template>
 
@@ -1521,6 +1667,13 @@ function handleHotPlayHint() {
   animation: avatarPulse 2.0s infinite ease-in-out;
 }
 
+.avatar-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 50%;
+}
+
 @keyframes avatarPulse {
   0%, 100% { box-shadow: 0 0 8px rgba(255, 215, 0, 0.45); }
   50% { box-shadow: 0 0 16px rgba(255, 215, 0, 0.75); }
@@ -1710,6 +1863,132 @@ function handleHotPlayHint() {
   display: flex;
   flex-direction: column;
   box-sizing: border-box;
+}
+
+.profile-modal {
+  width: min(92vw, 460px);
+  max-height: 86vh;
+  overflow-y: auto;
+  padding: 24px;
+  box-sizing: border-box;
+}
+
+.profile-summary {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+.profile-avatar-preview {
+  width: 82px;
+  height: 82px;
+  border-radius: 50%;
+  border: 2px solid #ffd700;
+  background: rgba(255, 255, 255, 0.14);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  flex: 0 0 auto;
+}
+
+.profile-avatar-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.profile-avatar-placeholder {
+  font-size: 2.4rem;
+}
+
+.profile-main-info {
+  min-width: 0;
+  text-align: left;
+}
+
+.profile-nickname {
+  font-size: 1.18rem;
+  font-weight: 900;
+  color: #fff;
+  overflow-wrap: anywhere;
+}
+
+.profile-account,
+.profile-player-id {
+  margin-top: 6px;
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 0.9rem;
+}
+
+.profile-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.profile-stat {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  padding: 10px;
+  background: rgba(0, 0, 0, 0.22);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-align: left;
+}
+
+.profile-stat span {
+  color: rgba(255, 255, 255, 0.68);
+  font-size: 0.78rem;
+}
+
+.profile-stat strong {
+  color: #ffd700;
+  font-size: 1rem;
+  overflow-wrap: anywhere;
+}
+
+.profile-avatar-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  text-align: left;
+  color: rgba(255, 255, 255, 0.82);
+  font-weight: 800;
+}
+
+.profile-avatar-input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1.5px solid rgba(255, 255, 255, 0.22);
+  border-radius: 8px;
+  padding: 10px 12px;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.45);
+  font-size: 0.95rem;
+}
+
+.profile-error {
+  color: #ff8a80;
+  margin: 10px 0 0;
+  text-align: left;
+  font-weight: 700;
+}
+
+.profile-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 20px;
+}
+
+.profile-secondary-action {
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: #fff;
 }
 
 .modal-header {

@@ -2,6 +2,7 @@
 <script setup lang="ts">
 import { ref, onUnmounted, watch } from 'vue'
 import { useGameStore } from '@/stores/gameStore'
+import { useSoundEngine } from '@/composables/useSoundEngine'
 import PokerCard from './PokerCard.vue'
 
 const props = defineProps<{
@@ -11,6 +12,13 @@ const props = defineProps<{
 }>()
 
 const gameStore = useGameStore()
+const { playSound } = useSoundEngine()
+
+function debugLog(...args: unknown[]) {
+  if (import.meta.env.DEV) {
+    console.log(...args)
+  }
+}
 
 // 滑动选择状态
 const isSelecting = ref(false)
@@ -57,7 +65,7 @@ watch(() => props.cards, (newCards) => {
   // 判定是否应当触发流式发牌：处于 CALLING 阶段，且在此局中尚未触发过发牌动画
   const shouldAnimate = gameStore.gamePhase === 'CALLING' && !hasAnimatedInThisDeal
 
-  console.log('[DEBUG] HandCards cards updated:', {
+  debugLog('[DEBUG] HandCards cards updated:', {
     cardsCount: newCards.length,
     gamePhase: gameStore.gamePhase,
     hasAnimatedInThisDeal,
@@ -74,6 +82,7 @@ watch(() => props.cards, (newCards) => {
     animateTimer.value = window.setInterval(() => {
       if (i < newCards.length) {
         visibleCount.value++
+        playSound('dealCard')
         i++
       } else {
         clearAnimateTimer()
@@ -119,6 +128,7 @@ function handleGlobalMouseUp() {
           const cardId = props.cards[i]
           if (cardId !== undefined) {
             gameStore.toggleCard(cardId)
+            playSound('selectCard')
           }
         }
       }

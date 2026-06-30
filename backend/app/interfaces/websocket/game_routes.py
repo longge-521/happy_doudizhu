@@ -13,6 +13,7 @@ class GameWSConnectionManager:
 
     def __init__(self):
         self.connections: Dict[str, WebSocket] = {}
+        self.active_ai_rooms = set()
 
     async def connect(self, websocket: WebSocket, player_id: str):
         await websocket.accept()
@@ -56,21 +57,29 @@ async def game_websocket_endpoint(
     # Token 校验
     from app.infrastructure.auth import verify_game_auth_token, verify_ws_token
     if not verify_ws_token(websocket.query_params):
+        logger.warning("游戏WS拒绝连接: 通用 API token 无效, player_id=%s", player_id)
         await websocket.accept()
         await websocket.close(code=1008, reason="Unauthorized")
         return
     game_auth_token = websocket.query_params.get("auth_token")
     if not game_auth_token:
+        logger.warning("游戏WS拒绝连接: 缺少游戏 auth_token, player_id=%s", player_id)
         await websocket.accept()
         await websocket.close(code=1008, reason="Unauthorized")
         return
     try:
         token_player_id = verify_game_auth_token(game_auth_token)
     except Exception:
+        logger.warning("游戏WS拒绝连接: 游戏 auth_token 无效或已过期, player_id=%s", player_id)
         await websocket.accept()
         await websocket.close(code=1008, reason="Unauthorized")
         return
     if token_player_id != player_id:
+        logger.warning(
+            "游戏WS拒绝连接: token 玩家不匹配, path_player_id=%s, token_player_id=%s",
+            player_id,
+            token_player_id,
+        )
         await websocket.accept()
         await websocket.close(code=1008, reason="Forbidden")
         return

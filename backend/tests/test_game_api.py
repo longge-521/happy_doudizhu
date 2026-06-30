@@ -36,7 +36,8 @@ def test_get_player_profile(mock_db):
         nickname="TestNick",
         beans=12000,
         total_games=10,
-        wins=6
+        wins=6,
+        avatar_url="https://example.com/avatar.png",
     )
 
     with patch("app.interfaces.api.game_routes.SQLGameRepository") as mock_repo_class:
@@ -58,6 +59,7 @@ def test_get_player_profile(mock_db):
         assert data["total_games"] == 10
         assert data["wins"] == 6
         assert data["win_rate"] == 0.6
+        assert data["avatar_url"] == "https://example.com/avatar.png"
         mock_repo.get_or_create_profile.assert_called_once_with("player123", "player123")
 
 
@@ -126,8 +128,22 @@ def test_get_game_history(mock_db):
 def test_get_leaderboard(mock_db):
     client = TestClient(app)
     mock_profiles = [
-        PlayerProfile(player_id="p1", nickname="Nick1", beans=50000, total_games=20, wins=15),
-        PlayerProfile(player_id="p2", nickname="Nick2", beans=30000, total_games=10, wins=5),
+        PlayerProfile(
+            player_id="p1",
+            nickname="Nick1",
+            beans=50000,
+            total_games=20,
+            wins=15,
+            avatar_url="https://example.com/avatar-1.png",
+        ),
+        PlayerProfile(
+            player_id="p2",
+            nickname="Nick2",
+            beans=30000,
+            total_games=10,
+            wins=5,
+            avatar_url="https://example.com/avatar-2.png",
+        ),
     ]
 
     with patch("app.interfaces.api.game_routes.SQLGameRepository") as mock_repo_class:
@@ -143,10 +159,12 @@ def test_get_leaderboard(mock_db):
         assert data[0]["player_id"] == "p1"
         assert data[0]["beans"] == 50000
         assert data[0]["win_rate"] == 0.75
+        assert data[0]["avatar_url"] == "https://example.com/avatar-1.png"
         assert data[1]["rank"] == 2
         assert data[1]["player_id"] == "p2"
         assert data[1]["beans"] == 30000
         assert data[1]["win_rate"] == 0.50
+        assert data[1]["avatar_url"] == "https://example.com/avatar-2.png"
         mock_repo.get_leaderboard.assert_called_once_with(10)
 
 
@@ -275,3 +293,102 @@ def test_update_player_rank(mock_db):
         assert data["stars"] == 3
         mock_repo.update_rank_profile.assert_called_once_with("player123", 35, 4, 3)
 
+
+def test_update_player_avatar(mock_db):
+    client = TestClient(app)
+    with patch("app.interfaces.api.game_routes.SQLGameRepository") as mock_repo_class:
+        mock_repo = MagicMock()
+        mock_profile = MagicMock()
+        mock_profile.avatar_url = "https://example.com/new-avatar.png"
+        mock_repo.get_or_create_profile.return_value = mock_profile
+        mock_repo_class.return_value = mock_repo
+
+        from app.infrastructure.auth import create_game_auth_token
+        token = create_game_auth_token("player123")
+        response = client.post(
+            "/api/game/profile/player123/avatar",
+            json={"avatar_url": "  https://example.com/new-avatar.png  "},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["ok"] is True
+        assert data["player_id"] == "player123"
+        assert data["avatar_url"] == "https://example.com/new-avatar.png"
+        mock_repo.update_avatar_url.assert_called_once_with(
+            "player123",
+            "https://example.com/new-avatar.png",
+        )
+
+
+def test_clear_player_avatar(mock_db):
+    client = TestClient(app)
+    with patch("app.interfaces.api.game_routes.SQLGameRepository") as mock_repo_class:
+        mock_repo = MagicMock()
+        mock_profile = MagicMock()
+        mock_profile.avatar_url = None
+        mock_repo.get_or_create_profile.return_value = mock_profile
+        mock_repo_class.return_value = mock_repo
+
+        from app.infrastructure.auth import create_game_auth_token
+        token = create_game_auth_token("player123")
+        response = client.post(
+            "/api/game/profile/player123/avatar",
+            json={"avatar_url": ""},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["avatar_url"] is None
+        mock_repo.update_avatar_url.assert_called_once_with("player123", None)
+
+
+def test_clear_player_avatar_with_null(mock_db):
+    client = TestClient(app)
+    with patch("app.interfaces.api.game_routes.SQLGameRepository") as mock_repo_class:
+        mock_repo = MagicMock()
+        mock_profile = MagicMock()
+        mock_profile.avatar_url = None
+        mock_repo.get_or_create_profile.return_value = mock_profile
+        mock_repo_class.return_value = mock_repo
+
+        from app.infrastructure.auth import create_game_auth_token
+        token = create_game_auth_token("player123")
+        response = client.post(
+            "/api/game/profile/player123/avatar",
+            json={"avatar_url": None},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["avatar_url"] is None
+        mock_repo.update_avatar_url.assert_called_once_with("player123", None)
+
+
+def test_update_player_avatar_rejects_invalid_url(mock_db):
+    client = TestClient(app)
+    from app.infrastructure.auth import create_game_auth_token
+    token = create_game_auth_token("player123")
+
+    response = client.post(
+        "/api/game/profile/player123/avatar",
+        json={"avatar_url": "javascript:alert(1)"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 400
+
+
+def test_update_player_avatar_rejects_mismatched_token(mock_db):
+    client = TestClient(app)
+    from app.infrastructure.auth import create_game_auth_token
+    token = create_game_auth_token("other-player")
+
+    response = client.post(
+        "/api/game/profile/player123/avatar",
+        json={"avatar_url": "https://example.com/avatar.png"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 403

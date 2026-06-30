@@ -28,6 +28,7 @@ class PlayerProfile:
         rank_id: int = 1,
         sub_rank: int = 4,
         stars: int = 0,
+        avatar_url: Optional[str] = None,
     ):
         self.id = id
         self.player_id = player_id
@@ -39,6 +40,7 @@ class PlayerProfile:
         self.rank_id = rank_id
         self.sub_rank = sub_rank
         self.stars = stars
+        self.avatar_url = avatar_url
 
     @property
     def win_rate(self) -> float:

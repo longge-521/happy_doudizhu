@@ -1,12 +1,20 @@
 # backend/app/interfaces/api/game_routes.py
 """斗地主游戏 HTTP REST API"""
+from typing import Optional
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from app.infrastructure.database.session import get_db
-from app.infrastructure.database.game_repository import SQLGameRepository
-from app.infrastructure.audit_route import AuditLogRoute
-from app.infrastructure.auth import create_game_auth_token, hash_password, require_game_player_id, verify_password
 from sqlalchemy.orm import Session
+
+from app.infrastructure.audit_route import AuditLogRoute
+from app.infrastructure.auth import (
+    create_game_auth_token,
+    hash_password,
+    require_game_player_id,
+    verify_password,
+)
+from app.infrastructure.database.game_repository import SQLGameRepository
+from app.infrastructure.database.session import get_db
 
 router = APIRouter(prefix="/api/game", tags=["Game API"], route_class=AuditLogRoute)
 
@@ -14,6 +22,18 @@ router = APIRouter(prefix="/api/game", tags=["Game API"], route_class=AuditLogRo
 def ensure_player_access(player_id: str, current_player_id: str) -> None:
     if player_id != current_player_id:
         raise HTTPException(status_code=403, detail="Forbidden: Cannot access another player")
+
+
+def normalize_avatar_url(avatar_url: Optional[str]) -> Optional[str]:
+    if avatar_url is None:
+        return None
+    normalized = avatar_url.strip()
+    if not normalized:
+        return None
+    allowed_prefixes = ("http://", "https://", "/static/", "/api/uploads/")
+    if not normalized.startswith(allowed_prefixes):
+        raise HTTPException(status_code=400, detail="头像地址必须是 http(s) 或站内静态资源地址")
+    return normalized
 
 
 class UserRegisterRequest(BaseModel):
@@ -37,6 +57,9 @@ class UpdateRankRequest(BaseModel):
     stars: int = Field(..., ge=0, description="Star count")
 
 
+class UpdateAvatarRequest(BaseModel):
+    avatar_url: Optional[str] = Field(None, max_length=500)
+
 
 @router.post("/auth/register")
 def register_user(req: UserRegisterRequest, db: Session = Depends(get_db)):
@@ -45,7 +68,11 @@ def register_user(req: UserRegisterRequest, db: Session = Depends(get_db)):
     existing = repo.get_user_by_username(username_norm)
     if existing:
         raise HTTPException(status_code=400, detail="账号已存在，请直接登录")
-    user, profile = repo.create_user_and_profile(username_norm, hash_password(req.password), req.nickname.strip())
+    user, profile = repo.create_user_and_profile(
+        username_norm,
+        hash_password(req.password),
+        req.nickname.strip(),
+    )
     return {
         "ok": True,
         "player_id": user.player_id,
@@ -74,7 +101,6 @@ def login_user(req: UserLoginRequest, db: Session = Depends(get_db)):
     }
 
 
-
 @router.get("/profile/{player_id}")
 def get_player_profile(
     player_id: str,
@@ -87,6 +113,7 @@ def get_player_profile(
     return {
         "player_id": profile.player_id,
         "nickname": profile.nickname,
+        "avatar_url": profile.avatar_url,
         "beans": profile.beans,
         "total_games": profile.total_games,
         "wins": profile.wins,
@@ -94,7 +121,7 @@ def get_player_profile(
         "rank_id": profile.rank_id,
         "sub_rank": profile.sub_rank,
         "stars": profile.stars,
-        "rank_title": profile.rank_title
+        "rank_title": profile.rank_title,
     }
 
 
@@ -108,29 +135,36 @@ def get_game_history(
     ensure_player_access(player_id, current_player_id)
     repo = SQLGameRepository(db)
     records = repo.get_history(player_id, limit)
-    return [{
-        "room_id": r.room_id,
-        "role": r.role,
-        "result": r.result,
-        "score_change": r.score_change,
-        "multiplier": r.multiplier,
-        "created_at": r.created_at.isoformat() if r.created_at else None,
-    } for r in records]
+    return [
+        {
+            "room_id": r.room_id,
+            "role": r.role,
+            "result": r.result,
+            "score_change": r.score_change,
+            "multiplier": r.multiplier,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+        }
+        for r in records
+    ]
 
 
 @router.get("/leaderboard")
 def get_leaderboard(limit: int = 20, db: Session = Depends(get_db)):
     repo = SQLGameRepository(db)
     profiles = repo.get_leaderboard(limit)
-    return [{
-        "rank": i + 1,
-        "player_id": p.player_id,
-        "nickname": p.nickname,
-        "beans": p.beans,
-        "total_games": p.total_games,
-        "win_rate": p.win_rate,
-        "rank_title": p.rank_title,
-    } for i, p in enumerate(profiles)]
+    return [
+        {
+            "rank": i + 1,
+            "player_id": p.player_id,
+            "nickname": p.nickname,
+            "avatar_url": p.avatar_url,
+            "beans": p.beans,
+            "total_games": p.total_games,
+            "win_rate": p.win_rate,
+            "rank_title": p.rank_title,
+        }
+        for i, p in enumerate(profiles)
+    ]
 
 
 @router.post("/profile/{player_id}/beans")
@@ -148,7 +182,7 @@ def update_beans(
     return {
         "ok": True,
         "player_id": player_id,
-        "beans": updated_profile.beans
+        "beans": updated_profile.beans,
     }
 
 
@@ -169,5 +203,25 @@ def update_player_rank(
         "player_id": player_id,
         "rank_id": updated_profile.rank_id,
         "sub_rank": updated_profile.sub_rank,
-        "stars": updated_profile.stars
+        "stars": updated_profile.stars,
+    }
+
+
+@router.post("/profile/{player_id}/avatar")
+def update_player_avatar(
+    player_id: str,
+    req: UpdateAvatarRequest,
+    db: Session = Depends(get_db),
+    current_player_id: str = Depends(require_game_player_id),
+):
+    ensure_player_access(player_id, current_player_id)
+    repo = SQLGameRepository(db)
+    normalized_avatar_url = normalize_avatar_url(req.avatar_url)
+    repo.get_or_create_profile(player_id, player_id)
+    repo.update_avatar_url(player_id, normalized_avatar_url)
+    updated_profile = repo.get_or_create_profile(player_id, player_id)
+    return {
+        "ok": True,
+        "player_id": player_id,
+        "avatar_url": updated_profile.avatar_url,
     }

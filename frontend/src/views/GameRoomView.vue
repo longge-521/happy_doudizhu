@@ -4,7 +4,8 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { usePlayerStore } from '@/stores/playerStore'
 import { useGameStore } from '@/stores/gameStore'
-import { useGameWebSocket } from '@/composables/useGameWebSocket'
+import { useGameWebSocket, playDoubleChoiceSound } from '@/composables/useGameWebSocket'
+import { useSoundEngine } from '@/composables/useSoundEngine'
 import {
   canBeatCardPlay,
   detectCardPlay,
@@ -19,40 +20,83 @@ import PlayerSeat from '@/components/PlayerSeat.vue'
 import HandCards from '@/components/HandCards.vue'
 import PokerCard from '@/components/PokerCard.vue'
 import SettlementModal from '@/components/SettlementModal.vue'
+import SettingsModal from '@/components/SettingsModal.vue'
+import { CHAT_PRESETS } from '@/constants/chatPresets'
+import { useRoomVoiceChat } from '@/composables/useRoomVoiceChat'
 
 const router = useRouter()
 const playerStore = usePlayerStore()
 const gameStore = useGameStore()
 const { connect, disconnect, sendAction } = useGameWebSocket()
+const { playSound, startBgm, stopBgm, toggleSfx, toggleBgm, getSettings, setMasterVolume, setSfxVolume, setBgmVolume, unlock: unlockAudio } = useSoundEngine()
+
+// 閻犱礁澧介悿鍡涙閵忊剝绶查柟璨夊啫鐓?
+const showSettings = ref(false)
+const soundSettings = ref(getSettings())
+function refreshSoundSettings() { soundSettings.value = getSettings() }
+
+const isMockMode = new URLSearchParams(window.location.search).get('mock') === 'true'
+
+if (isMockMode) {
+  // Setup 级别的 Mock 注入
+  playerStore.playerId = 'mock_player'
+  playerStore.nickname = '雀圣斗地王'
+  playerStore.username = 'mock_user'
+  playerStore.beans = 9999999
+  playerStore.rankTitle = '至尊斗皇III'
+
+  gameStore.roomId = 'mock_room_888'
+  gameStore.gamePhase = 'PLAYING'
+  gameStore.baseScore = 300
+  gameStore.multiplier = 64
+  gameStore.landlord = 'mock_player'
+  gameStore.currentTurn = 'mock_player'
+  gameStore.wsConnected = true
+  gameStore.bottomCards = [51, 47, 43]
+  gameStore.players = [
+    { id: 'mock_player', nickname: '雀圣斗地王', isAi: false, isOnline: true, remaining: 20, isLandlord: true, isSelf: true },
+    { id: 'ai_left', nickname: '发牌大户 (AI)', isAi: true, isOnline: true, remaining: 17, isLandlord: false, isSelf: false },
+    { id: 'ai_right', nickname: '明牌炸弹 (AI)', isAi: true, isOnline: true, remaining: 17, isLandlord: false, isSelf: false }
+  ]
+  gameStore.myHand = [53, 52, 50, 49, 48, 46, 45, 44, 42, 41, 40, 38, 37, 36, 34, 33, 32, 30, 29, 28]
+  gameStore.lastPlay = {
+    player: 'ai_right',
+    cards: [1],
+    cardType: 'single'
+  }
+}
 
 // 校验登录状态
-if (!playerStore.playerId || !playerStore.nickname) {
+if (!isMockMode && (!playerStore.playerId || !playerStore.nickname)) {
   router.push('/login')
 }
 
-// 预设快捷聊天语
-const CHAT_PRESETS = [
-  "快点吧，等得我花都谢了！",
-  "合作愉快，合作愉快！",
-  "大牌在后头，千万别放他！",
-  "不要走，决战到天亮！",
-  "你是地主派来的卧底吧？"
-]
 const showChatMenu = ref(false)
+const roomPlayerIds = () => gameStore.players.map(player => player.id).filter(Boolean)
+const roomVoice = useRoomVoiceChat({
+  selfPlayerId: playerStore.playerId,
+  roomPlayerIds,
+  sendAction,
+})
 
-// 倒计时计时器
+async function handleToggleVoice() {
+  playSound('btnClick')
+  await roomVoice.toggleVoice()
+}
+
+// 闁稿﹥甯熼鎼佸籍閹偊鍚€闁哄啳娉涘▍?
 const timeLeft = ref(15)
 let timerInterval: number | null = null
 const idleRoundCount = ref(0)
 
-// 托管模式状态与逻辑
+// 闁瑰灚顭囬绋课熼垾宕囩闁绘鍩栭埀顑挎缁楀矂鏌呴弰蹇曞竼
 const isAutoPlay = ref(false)
 
 function toggleAutoplay() {
   isAutoPlay.value = !isAutoPlay.value
 }
 
-// 侦听托管及当前回合状态，自动代打
+// 濞撴熬绠戦幆澶愬箥濡⒈鍚€闁告瑥锕ょ紞瀣礈瀹ュ懏绀€闁告艾鐗忔慨鎼佸箑娓氬﹦绀夐柤濂変簻婵晜绂掗敐鍡椻叺
 watch(
   [() => gameStore.isMyTurn, isAutoPlay],
   ([isMyTurn, autoPlay]) => {
@@ -77,14 +121,18 @@ watch(
   }
 )
 
-// 模拟加倍状态记录
-const localDoublingState = ref<Record<string, string>>({})
-const myDoublingChoice = ref('') // 'double' | 'super' | 'none'
+const hasHandledTimeout = ref(false)
+
+function getDoubleChoiceLabel(choice?: string) {
+  if (choice === 'double') return '加倍'
+  if (choice === 'super') return '超级加倍'
+  if (choice === 'none') return '不加倍'
+  return ''
+}
+
 const showDoublingPanel = computed(() => {
-  // 当处于 PLAYING 阶段且还没有人打出任何牌，且自己还没有选择加倍时，显示加倍浮层
-  return gameStore.gamePhase === 'PLAYING' &&
-         gameStore.allPlayedCards.length === 0 &&
-         !myDoublingChoice.value
+  return gameStore.gamePhase === 'DOUBLING' &&
+         !gameStore.doublingChoices[playerStore.playerId]
 })
 
 // 能否叫地主/抢地主判断
@@ -108,7 +156,7 @@ const passCallLabel = computed(() => {
   return hasSomeoneCalled.value ? '不抢' : '不叫'
 })
 
-// 计算玩家在房间中的相对座位定位（顺时针排布）
+// 閻犱緤绱曢悾濠氭偝閳轰緡鍟€闁革负鍔嶉崺褔姊荤紙鐘哄幀闁汇劌瀚ù澶屸偓鐢垫嚀妤犲洦鎷呭鍛毎濞达絽绋勭槐娆愩亜閻戞ɑ顦ч梺钘夌墛鐢挾鏁崘璺ㄧ
 const orderedSeats = computed(() => {
   const myId = playerStore.playerId
   const pList = gameStore.players
@@ -128,9 +176,9 @@ const orderedSeats = computed(() => {
   const selfPlayer = pList[myIndex]!
 
   // 注入加倍状态描述
-  const decoratedLeft = { ...leftPlayer, doubling: localDoublingState.value[leftPlayer.id] }
-  const decoratedRight = { ...rightPlayer, doubling: localDoublingState.value[rightPlayer.id] }
-  const decoratedSelf = { ...selfPlayer, doubling: localDoublingState.value[selfPlayer.id] }
+  const decoratedLeft = { ...leftPlayer, doubling: getDoubleChoiceLabel(gameStore.doublingChoices[leftPlayer.id]) }
+  const decoratedRight = { ...rightPlayer, doubling: getDoubleChoiceLabel(gameStore.doublingChoices[rightPlayer.id]) }
+  const decoratedSelf = { ...selfPlayer, doubling: getDoubleChoiceLabel(gameStore.doublingChoices[selfPlayer.id]) }
 
   return [
     { player: decoratedLeft, position: 'left' as const },
@@ -139,7 +187,7 @@ const orderedSeats = computed(() => {
   ]
 })
 
-// 能否过牌
+// 闁煎疇妫勯幆浣规交閸モ晛顤?
 const canPass = computed(() => {
   return gameStore.lastPlay.player !== null && gameStore.lastPlay.player !== playerStore.playerId
 })
@@ -202,15 +250,17 @@ const canSubmitSelected = computed(() => {
   return gameStore.selectedCards.length > 0 && selectedPlayState.value.valid
 })
 
-// 记牌器逻辑
+// 閻犱焦澹嗘晶婵嬪闯閵娾斁鍋撻弰蹇曞竼
+
+// 璁扮墝鍣ㄩ€昏緫
 const discardCounts = computed(() => {
-  // 经典显示顺序：大王、小王、2、A、K、Q、J、10、9、8、7、6、5、4、3
+  // 缁忓吀鏄剧ず椤哄簭锛氬ぇ鐜嬨€佸皬鐜嬨€?銆丄銆並銆丵銆丣銆?0銆?銆?銆?銆?銆?銆?銆?
   const keys = ['大', '小', '2', 'A', 'K', 'Q', 'J', '10', '9', '8', '7', '6', '5', '4', '3']
   const counts: Record<string, number> = {
     '大': 1, '小': 1, '2': 4, 'A': 4, 'K': 4, 'Q': 4, 'J': 4, '10': 4, '9': 4, '8': 4, '7': 4, '6': 4, '5': 4, '4': 4, '3': 4
   }
 
-  // 减去自己手牌
+  // 鍑忓幓鑷繁鎵嬬墝
   for (const cId of gameStore.myHand) {
     const d = getCardDisplay(cId)
     if (d.suit === 'joker') {
@@ -221,7 +271,7 @@ const discardCounts = computed(() => {
     }
   }
 
-  // 减去全场已出牌
+  // 鍑忓幓鍏ㄥ満宸插嚭鐗?
   for (const cId of gameStore.allPlayedCards) {
     const d = getCardDisplay(cId)
     if (d.suit === 'joker') {
@@ -236,11 +286,22 @@ const discardCounts = computed(() => {
 })
 
 onMounted(() => {
+  unlockAudio()
+
+  if (isMockMode) {
+    return
+  }
+
   if (!gameStore.wsConnected) {
     connect()
   } else {
-    // 主动同步最新房间局势，防止大厅跳转延迟导致状态不同步
+    // 濞戞捁顕ф慨鈺呭触鐏炵虎鍔勯柡鍫氬亾闁哄倻澧楅崺褔姊婚弶鎴犳拱闁告柨灏呯槐婵嬫⒓閸欏鍓惧鍫嗗啫娉涢悹鍝勭枃濞村棗顕欓幆鎵閻庝絻澹堥崵褔鎮╅懜纰樺亾娴ｉ鐟濋柛姘湰椤?
     sendAction({ action: 'sync_room_state' })
+  }
+
+  // 濠碘€冲€归悘澶婎啅閹绘帗韬繛鎾虫啞閸ㄦ瑦绋夐銊х闁告凹鍨版慨鈺冣偓鐢垫嚀閻?BGM
+  if (gameStore.gamePhase !== 'IDLE' && gameStore.gamePhase !== 'MATCHING') {
+    startBgm('game')
   }
 
   // 开启倒计时检测
@@ -251,14 +312,29 @@ onMounted(() => {
       const newTimeLeft = Math.max(0, Math.ceil(gameStore.turnDeadline - now))
       timeLeft.value = newTimeLeft
 
-      // 当倒计时归零且有待处理状态时
-      if (newTimeLeft === 0 && oldTimeLeft > 0) {
+      // 闁稿﹥甯熼鎼佸籍閼稿灚妯婄紒娑欐煥閿涙劙鏁嶉崼婊呯煂閺夌儐鍠栭崺宀勬嚊椤忓嫮绠掗柡鍐啇缁?
+      if (gameStore.isMyTurn && newTimeLeft > 0 && newTimeLeft !== oldTimeLeft) {
+        if (newTimeLeft <= 3) {
+          playSound('tickUrgent')
+        } else if (newTimeLeft <= 5) {
+          playSound('tick')
+        }
+      }
+
+      // 鐟滅増鎸搁埀顒佸笩椤撴悂寮捄铏圭Ш闂傚棙婀圭粭鏍嫉婢跺﹦绐″璺哄閹﹪鎮╅懜纰樺亾娴ｈ顦?
+      if (newTimeLeft === 0) {
         if (showDoublingPanel.value) {
           // 加倍阶段超时，自动选择“不加倍”
-          chooseDoubling('none')
+          if (!hasHandledTimeout.value) {
+            hasHandledTimeout.value = true
+            chooseDoubling('none')
+          }
         } else if (gameStore.isMyTurn) {
           // 出牌/叫地主阶段超时操作
-          handleTimeout()
+          if (!hasHandledTimeout.value) {
+            hasHandledTimeout.value = true
+            handleTimeout()
+          }
         }
       }
     }
@@ -267,9 +343,11 @@ onMounted(() => {
 
 onUnmounted(() => {
   if (timerInterval) clearInterval(timerInterval)
+  roomVoice.dispose()
+  stopBgm()
 })
 
-// 超时自动操作逻辑
+// 閻℃帒鎳忓鍌炴嚊椤忓嫬袟闁瑰灝绉崇紞鏃堟焻閺勫繒甯?
 function handleTimeout() {
   if (!isAutoPlay.value) {
     idleRoundCount.value++
@@ -297,21 +375,24 @@ function handleTimeout() {
 
 // 叫地主操作
 function handleCall() {
+  playSound('btnClick')
   idleRoundCount.value = 0
   sendAction({ action: 'call_landlord', score: nextCallScore.value })
 }
 
-// 不叫/不抢操作
+// 濞戞挸绉磋ぐ?濞戞挸绉垫慨鐘诲箼瀹ュ嫮绋?
 function handleSkipCall(isAuto = false) {
   if (!isAuto) {
+    playSound('btnClick')
     idleRoundCount.value = 0
   }
   sendAction({ action: 'skip_call' })
 }
 
-// 出牌操作
+// 闁告垼娅ｆ晶婵嬪箼瀹ュ嫮绋?
 function handlePlayCards() {
   if (!canSubmitSelected.value) return
+  playSound('btnClick')
   idleRoundCount.value = 0
   sendAction({
     action: 'play_cards',
@@ -320,9 +401,10 @@ function handlePlayCards() {
   gameStore.clearSelection()
 }
 
-// 不要/过牌操作
+// 濞戞挸绉烽々?閺夆晛娲ㄦ晶婵嬪箼瀹ュ嫮绋?
 function handlePass(isAuto = false) {
   if (!isAuto) {
+    playSound('btnClick')
     idleRoundCount.value = 0
   }
   sendAction({ action: 'pass_turn' })
@@ -331,63 +413,38 @@ function handlePass(isAuto = false) {
 
 function applySuggestion() {
   if (!playSuggestion.value?.canPlay) return
+  playSound('btnClick')
   gameStore.selectCards(playSuggestion.value.cards)
 }
 
 // 发送聊天短语
 function handleSendChat(msgId: number) {
+  playSound('btnClick')
   sendAction({ action: 'chat', msg_id: msgId })
   showChatMenu.value = false
 }
 
-// 模拟选择加倍
+// 选择加倍
 function chooseDoubling(type: 'double' | 'super' | 'none') {
-  myDoublingChoice.value = type
-  let label = '不加倍'
-  if (type === 'double') {
-    label = '加倍'
-    gameStore.multiplier *= 2 // 视觉加倍
-  } else if (type === 'super') {
-    label = '超级加倍'
-    gameStore.multiplier *= 4 // 视觉超级加倍
-  }
-
-  // 注入自己状态
-  localDoublingState.value[playerStore.playerId] = label
-  // 通过聊天接口向其他玩家广播加倍状态
-  sendAction({ action: 'chat', msg_id: CHAT_PRESETS.length + (type === 'double' ? 1 : type === 'super' ? 2 : 0) })
-
-  // 重置出牌倒计时为满额 15 秒
-  gameStore.turnDeadline = Date.now() / 1000 + 15
-  timeLeft.value = 15
-
-  // 让机器人也随即做出选择，制造真实的牌局体验
-  setTimeout(() => {
-    for (const p of gameStore.players) {
-      if (p.isAi && !localDoublingState.value[p.id]) {
-        const aiChoices: Array<'double' | 'none'> = ['double', 'none']
-        const rand = aiChoices[Math.floor(Math.random() * aiChoices.length)]!
-        localDoublingState.value[p.id] = rand === 'double' ? '加倍' : '不加倍'
-      }
-    }
-  }, 800)
+  playSound('btnClick')
+  playDoubleChoiceSound(type, playerStore.playerId)
+  idleRoundCount.value = 0
+  sendAction({ action: 'choose_double', choice: type })
 }
 
-// 关闭结算面板，重置数据并返回大厅
+// 闁稿繑濞婂Λ瀵哥磼閹惧墎鏆梻鍫涘灪濠㈡﹢鏁嶅畝鍕缂傚喚鍠楅弳鐔煎箲椤旇壈瀚欓弶鈺傛煥濞叉牗寰勮瀹?
 function handleCloseSettlement() {
   gameStore.reset()
-  myDoublingChoice.value = ''
-  localDoublingState.value = {}
   router.push('/lobby')
 }
 
 // 退出房间
 function handleExitRoom() {
+  playSound('btnClick')
   if (confirm('确定要退出当前游戏吗？这将会使您托管或流失积分！')) {
+    stopBgm()
     disconnect()
     gameStore.reset()
-    myDoublingChoice.value = ''
-    localDoublingState.value = {}
     router.push('/lobby')
   }
 }
@@ -399,7 +456,7 @@ function getSettleRemainingCards(playerId: string): number[] {
   return sortCardIds(hands)
 }
 
-// 监听 errorMsg，一旦有值，在 2.5 秒后自动淡出消失
+// 闁烩晜鍨甸幆?errorMsg闁挎稑濂旂粩鎾籍閿旇姤绠掗柛濠勩€嬬槐婵嬪捶?2.5 缂佸甯掗幃妤呮嚊椤忓嫬袟婵烇絺鈧啿姣夋繛鎴濈墕閵?
 watch(
   () => gameStore.errorMsg,
   (newVal) => {
@@ -411,7 +468,15 @@ watch(
   }
 )
 
-// 监听重新洗牌
+// 闁烩晜鍨甸幆澶愬炊閻愬弶鍊ら柟瀛樼墬閻栧爼骞嬭箛娑欌枆婵炲牆鐏氶弫濂稿矗濮楀牏绀夊璺虹С缂嶅懐鎼鹃崨顔筋槯濠㈣泛瀚幃濠囧冀閸ヮ亶鍞?
+watch(
+  [() => gameStore.currentTurn, () => gameStore.gamePhase],
+  () => {
+    hasHandledTimeout.value = false
+  }
+)
+
+// 闁烩晜鍨甸幆澶愭煂瀹ュ棙鐓€婵炲弶顨堟晶?
 watch(
   () => gameStore.gamePhase,
   (newPhase, oldPhase) => {
@@ -427,29 +492,32 @@ watch(
 
 <template>
   <div class="game-table room-modern-layout">
-    <!-- 大牌特效浮层 -->
+    <!-- 濠㈠爢鍛杺闁绘顫夐弲銉ッ归鑲╂勾 -->
     <div class="poker-effects-layer" :class="{ 'shake-screen': gameStore.activeEffect === 'bomb' }">
-      <!-- 炸弹能量波 -->
+      <!-- 闁绘劗顭堥懘濠囨嚄娴犲娅ゆ繛?-->
       <div v-if="gameStore.activeEffect === 'bomb'" class="effect-bomb-shockwave">
         <div class="shockwave-ring"></div>
         <div class="shockwave-ring delay"></div>
       </div>
-      <!-- 飞机划过 -->
+      <!-- 濡炲鍋炲┃鈧柛鎺撳笩缁?-->
       <div v-if="gameStore.activeEffect === 'plane'" class="effect-plane-flyby">
-        <div class="plane-silhouette">✈️</div>
+        <div class="plane-silhouette">✈</div>
         <div class="plane-smoke"></div>
       </div>
     </div>
 
-    <!-- 顶部状态栏 -->
+    <!-- 濡炪倕鐖奸崕鎾偐閼哥鍋撴担鍦焿 -->
     <header class="room-header">
       <div class="top-left-hud">
         <button class="btn-exit" @click="handleExitRoom" aria-label="退出">
           <span class="exit-arrow">↩</span>
         </button>
 
-        <!-- 记牌器 -->
-        <div v-if="gameStore.gamePhase === 'PLAYING' || gameStore.gamePhase === 'CALLING'" class="card-remembrancer">
+        <div v-if="gameStore.gamePhase === 'PLAYING' || gameStore.gamePhase === 'CALLING' || gameStore.gamePhase === 'DOUBLING'" class="card-remembrancer">
+          <div class="remembrancer-heading">
+            <span>牌型统计 ▲</span>
+            <span class="remembrancer-fold">»</span>
+          </div>
           <div class="remembrancer-grid">
             <div
               v-for="item in discardCounts"
@@ -465,66 +533,60 @@ watch(
       </div>
 
       <div class="room-info">
-        <span class="room-id">房间号: <strong>{{ gameStore.roomId }}</strong></span>
-        <span class="base-score-badge">底分: <strong>{{ gameStore.baseScore }}</strong></span>
-        <span class="multiplier-badge font-glow">倍数: <strong>{{ gameStore.multiplier }}倍</strong></span>
+        <div class="score-status-pill">
+          <span class="base-score-badge">底分: <strong>{{ gameStore.baseScore }}</strong></span>
+          <span class="multiplier-badge font-glow">倍数: <strong>{{ gameStore.multiplier }}倍</strong></span>
+        </div>
         
-        <!-- 托管按钮 -->
+        <!-- 闁瑰灚顭囬鎼佸箰婢舵劖灏?-->
         <button 
-          v-if="gameStore.gamePhase === 'PLAYING' || gameStore.gamePhase === 'CALLING'"
+          v-if="gameStore.gamePhase === 'PLAYING' || gameStore.gamePhase === 'CALLING' || gameStore.gamePhase === 'DOUBLING'"
           class="btn-autoplay"
           :class="{ active: isAutoPlay }"
           @click="toggleAutoplay"
         >
-          {{ isAutoPlay ? '🤖 托管中 (点击取消)' : '🤖 开启托管' }}
+          {{ isAutoPlay ? '托管中 (点击取消)' : '开启托管' }}
         </button>
       </div>
 
       <div class="top-right-hud">
-        <div class="bottom-cards-row">
-          <div 
-            v-for="(cId, index) in gameStore.bottomCards.length > 0 ? gameStore.bottomCards : [0, 0, 0]"
-            :key="index"
-            class="bottom-card-flip-container"
-            :class="{ 'is-flipped': gameStore.bottomCards.length > 0 }"
-          >
-            <div class="bottom-card-inner" :style="{ transitionDelay: (index * 0.1) + 's' }">
-              <div class="bottom-card-back">
-                <PokerCard :card-id="0" :face-down="true" :no-hover="true" size="sm" />
-              </div>
-              <div class="bottom-card-front">
-                <PokerCard :card-id="cId" :face-down="false" :no-hover="true" size="sm" />
+        <div class="bottom-cards-panel">
+          <div class="bottom-cards-title">地主牌</div>
+          <div class="bottom-cards-row">
+            <div 
+              v-for="(cId, index) in gameStore.bottomCards.length > 0 ? gameStore.bottomCards : [0, 0, 0]"
+              :key="index"
+              class="bottom-card-flip-container"
+              :class="{ 'is-flipped': gameStore.bottomCards.length > 0 }"
+            >
+              <div class="bottom-card-inner" :style="{ transitionDelay: (index * 0.1) + 's' }">
+                <div class="bottom-card-back">
+                  <PokerCard :card-id="0" :face-down="true" :no-hover="true" size="sm" />
+                </div>
+                <div class="bottom-card-front">
+                  <PokerCard :card-id="cId" :face-down="false" :no-hover="true" size="sm" />
+                </div>
               </div>
             </div>
           </div>
         </div>
 
-        <div class="chat-trigger-area">
-        <button class="btn-chat" @click="showChatMenu = !showChatMenu">
-          💬 快捷语
-        </button>
-        <!-- 快捷语面板 -->
-        <div v-if="showChatMenu" class="chat-menu glass-panel">
-          <div
-            v-for="(text, idx) in CHAT_PRESETS"
-            :key="idx"
-            class="chat-menu-item"
-            @click="handleSendChat(idx)"
-          >
-            {{ text }}
-          </div>
-        </div>
+        <div class="settings-control-area">
+          <button class="btn-settings-toggle" @click="showSettings = true; playSound('btnClick')" title="设置">
+            <span class="settings-gear">⚙</span>
+            <span class="settings-label">设置</span>
+          </button>
         </div>
       </div>
     </header>
 
-    <!-- 浮雕背景LOGO -->
+    <!-- 婵炴惌鍣ｅú澶愭嚄鐏炵偓鐝疞OGO -->
     <div class="brand-logo-watermark">
       <div class="watermark-main">欢乐斗地主</div>
       <div class="watermark-sub">经典新手场 底分{{ gameStore.baseScore }}</div>
     </div>
 
-    <!-- 桌面中央出牌与动作展示区 -->
+    <!-- 婵℃鐭傚鐗堢▔椤撶偑浜烽柛鎴ｆ婢ф繃绋夋惔鈥承楀ù锝嗙矊閻秶绮堥崫鍕殬 -->
     <div class="table-play-area">
       <div
         v-for="seat in orderedSeats"
@@ -533,7 +595,7 @@ watch(
         :class="[seat.position, { 'show-all-hands': gameStore.showAllHands }]"
       >
         <template v-if="!gameStore.showAllHands">
-          <!-- 精美特效大字动作文本 -->
+          <!-- 缂侇喖澧界欢銊╂偋鐟欏嫭娅忓鍫嗗啰鎽熼柛鏂诲妺缂嶆棃寮崶銊︽嫳 -->
           <div
             v-if="gameStore.playerActions[seat.player.id]"
             class="action-text-fancy"
@@ -546,7 +608,7 @@ watch(
           >
             {{ gameStore.playerActions[seat.player.id] }}
           </div>
-          <!-- 牌型显示 -->
+          <!-- 闁绘鑻悗鐑藉及閸撗佷粵 -->
           <div
             v-else-if="gameStore.playerPlayedCards[seat.player.id] && gameStore.playerPlayedCards[seat.player.id]!.length > 0"
             class="played-cards-row"
@@ -562,7 +624,7 @@ watch(
           </div>
         </template>
 
-        <!-- 结算明牌展示区 -->
+        <!-- 缂備焦鎸鹃悾濠氬及鎼达絽顤傞悘鐐存礈閵囨岸宕?-->
         <template v-else>
           <div
             v-if="getSettleRemainingCards(seat.player.id).length > 0"
@@ -583,7 +645,7 @@ watch(
           </div>
           <div v-else class="settle-finished-status">
             <span class="settle-finished-text">打完了</span>
-            <!-- 展示赢家最后一次打出的绝杀牌 -->
+            <!-- 閻忕偞娲滈妵姘辨導閵忕媭鍟€闁哄牃鍋撻柛姘凹缁旀潙鈻庨埄鍐ㄢ叺闁告垼娅ｅ▓鎴犵磼濠靛洦绲婚柣?-->
             <div
               v-if="gameStore.playerPlayedCards[seat.player.id] && gameStore.playerPlayedCards[seat.player.id]!.length > 0"
               class="played-cards-row"
@@ -602,7 +664,7 @@ watch(
       </div>
     </div>
 
-    <!-- 中部座位渲染区 -->
+    <!-- 濞戞搩鍙冮崕瀛樻償瑜岀紞鍛€掗崣澶屽帬闁?-->
     <div class="seats-container">
       <PlayerSeat
         v-for="seat in orderedSeats"
@@ -613,9 +675,9 @@ watch(
       />
     </div>
 
-    <!-- 底部操作区与手牌区 -->
+    <!-- 閹煎瓨娲熼崕鎾箼瀹ュ嫮绋婇柛鏍〃缁楀矂骞嶇€ｎ剙顤傞柛?-->
     <div class="player-bottom-area">
-      <!-- 加倍决策行动面板 -->
+      <!-- 闁告梻濮撮埀顒€绉撮崰鍛驳閺嶎剦鏀介柛鏂诲姂濞间即寮?-->
       <div v-if="showDoublingPanel" class="action-bar-row">
         <div class="play-action-panel">
           <div class="actions-group">
@@ -627,7 +689,7 @@ watch(
               加倍
             </button>
             
-            <!-- 加倍阶段内联时钟计时器 -->
+            <!-- 闁告梻濮撮埀顒€绉瑰Ο浣糕枔闂堟稑鏁堕柤杈ㄦ⒐濡炲倿鏌﹂悢娲诲悁闁哄啳娉涘▍?-->
             <div class="turn-alarm-clock">
               <div class="clock-icon">⏰</div>
               <span class="time-left-digits">{{ timeLeft }}</span>
@@ -651,28 +713,28 @@ watch(
         </div>
       </div>
 
-      <!-- 错误气泡 -->
+      <!-- 闂佹寧鐟ㄩ銈咁潩閺冣偓閸?-->
       <transition name="fade">
         <div v-if="gameStore.errorMsg" class="error-toast-bubble">
-          <span>⚠️ {{ gameStore.errorMsg }}</span>
+          <span>⚠ {{ gameStore.errorMsg }}</span>
         </div>
       </transition>
 
-      <!-- 轮到自己决策时的时钟倒计时与行动面板 -->
+      <!-- 閺夌儐鍠栭崺宀勬嚊椤忓嫮绠掗柛鎰－閻°儵寮崜浣圭暠闁哄啫鐖奸幐鎾诲磹閹烘洦鍚€闁哄啯婀圭粭宀€鎮扮仦钘壭楅梻鍫涘灪濠?-->
       <div v-if="gameStore.isMyTurn && !showDoublingPanel" class="action-bar-row">
-        <!-- 叫地主阶段时钟计时器 -->
+        <!-- 闁告瑯鍋勫﹢瀛樼▔婵犳碍鈻夋繛鍫濈仛濡炲倿鏌﹂悢娲诲悁闁哄啳娉涘▍?-->
         <div v-if="gameStore.gamePhase === 'CALLING'" class="turn-alarm-clock">
           <div class="clock-icon">⏰</div>
           <span class="time-left-digits">{{ timeLeft }}</span>
         </div>
 
-        <!-- 叫地主阶段按钮 -->
+        <!-- 闁告瑯鍋勫﹢瀛樼▔婵犳碍鈻夋繛鍫濈仛鐎垫粓鏌?-->
         <div v-if="gameStore.gamePhase === 'CALLING'" class="actions-group">
           <button class="btn-action-call" @click="handleCall">{{ callActionLabel }}</button>
           <button class="btn-action-pass" @click="handleSkipCall()">{{ passCallLabel }}</button>
         </div>
 
-        <!-- 出牌阶段按钮 -->
+        <!-- 闁告垼娅ｆ晶婵嬫⒓閼告鍞介柟绋款樀閹?-->
         <div v-if="gameStore.gamePhase === 'PLAYING'" class="play-action-panel">
           <div
             v-if="gameStore.selectedCards.length > 0 && !selectedPlayState.valid"
@@ -689,7 +751,7 @@ watch(
               不出
             </button>
             
-            <!-- 出牌阶段内联时钟计时器 -->
+            <!-- 闁告垼娅ｆ晶婵嬫⒓閼告鍞介柛鎰嚀娴犲牓寮崼鏇熷閻犱讲鍓濆鍌炲闯?-->
             <div class="turn-alarm-clock">
               <div class="clock-icon">⏰</div>
               <span class="time-left-digits">{{ timeLeft }}</span>
@@ -714,25 +776,25 @@ watch(
         </div>
       </div>
 
-      <!-- 自己的手牌 -->
+      <!-- 闁煎浜滅换渚€鎯冮崟顒€顤侀柣?-->
       <div class="self-hand-row">
         <HandCards :cards="gameStore.myHand" :hinted-cards="suggestedCards" size="lg" />
       </div>
     </div>
 
-    <!-- 游戏结束左下角大字 -->
+    <!-- 婵炴挸鎲￠崹娆戠磼閹惧瓨灏嗙€归潻缂氱粭鍛喆閹烘垯浜ｉ悗?-->
     <transition name="fade">
       <div v-if="gameStore.showGameOverBanner" class="game-over-finish-text">打完啦！！</div>
     </transition>
 
-    <!-- 游戏结束浮空大字 -->
+    <!-- 婵炴挸鎲￠崹娆戠磼閹惧瓨灏嗘繛鎼枤閳规牗寰勮閻?-->
     <transition name="fade">
       <div v-if="gameStore.showWinnerBanner" class="game-over-banner-overlay">
         <div class="game-over-title font-glow">{{ gameStore.gameOverTitle }}</div>
       </div>
     </transition>
 
-    <!-- 结算弹窗 -->
+    <!-- 缂備焦鎸鹃悾璇差嚕閸︻厾宕?-->
     <SettlementModal
       v-if="gameStore.gamePhase === 'SETTLING' && gameStore.settlement"
       :settlement="gameStore.settlement"
@@ -741,7 +803,7 @@ watch(
       @close="handleCloseSettlement"
     />
 
-    <!-- 重新洗牌提示 -->
+    <!-- 闂佹彃绉甸弻濠偯哄Δ鍐杺闁圭粯鍔楅妵?-->
     <transition name="fade">
       <div v-if="gameStore.showRedealNotice" class="redeal-overlay glass-panel">
         <div class="redeal-content">
@@ -749,6 +811,43 @@ watch(
         </div>
       </div>
     </transition>
+
+    <!-- 闁告鍠撴晶妤侇槹鎼淬垻澹愰悹浣稿⒔閻ゅ棗顕ｉ崷顓犲炊 -->
+    <SettingsModal :show="showSettings" @close="showSettings = false" />
+
+    <!-- 闁规潙娼″Λ鍧楀矗閸戙倗绀勭€归潻缂氱粭鍛喆閹烘垹娼旂紒鈧悮瀵哥 -->
+    <div class="room-id-footer">
+      房间号: <strong>{{ gameStore.roomId }}</strong>
+    </div>
+
+    <!-- 闊浂鍋呭畵搴ｆ嫚椤撯寬鏇㈠矗閹存繂闅橀柛鈺冨櫐缁辨瑩宕ｉ崗鍛憮閻熸瑦甯掗惈宥囩矆閻氬绀?-->
+    <div class="chat-trigger-area">
+      <button
+        class="btn-voice"
+        :class="{ active: roomVoice.isVoiceEnabled.value, connecting: roomVoice.isConnecting.value }"
+        :title="roomVoice.isVoiceEnabled.value ? '关闭语音' : '开启语音'"
+        @click="handleToggleVoice"
+      >
+        {{ roomVoice.isConnecting.value ? '连接中' : roomVoice.isVoiceEnabled.value ? '麦克风开' : '麦克风' }}
+      </button>
+      <button class="btn-chat" @click="showChatMenu = !showChatMenu">
+        快捷语
+      </button>
+      <div v-if="roomVoice.voiceError.value" class="voice-error">
+        {{ roomVoice.voiceError.value }}
+      </div>
+      <!-- 闊浂鍋呭畵搴ｆ嫚椤撱垺妗ㄩ柡?-->
+      <div v-if="showChatMenu" class="chat-menu glass-panel">
+        <div
+          v-for="(text, idx) in CHAT_PRESETS"
+          :key="idx"
+          class="chat-menu-item"
+          @click="handleSendChat(idx)"
+        >
+          {{ text }}
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -765,14 +864,14 @@ watch(
   color: #ffffff;
 }
 
-/* 顶部状态栏 */
+/* 濡炪倕鐖奸崕鎾偐閼哥鍋撴担鍦焿 */
 .room-header {
   display: grid;
-  grid-template-columns: minmax(420px, 1fr) auto minmax(280px, 1fr);
-  align-items: center;
-  gap: 18px;
-  min-height: 74px;
-  padding: 10px 22px;
+  grid-template-columns: minmax(360px, 1fr) auto minmax(260px, 1fr);
+  align-items: start;
+  gap: 20px;
+  min-height: 118px;
+  padding: 10px 12px;
   background: linear-gradient(to bottom, rgba(9, 28, 73, 0.58) 0%, rgba(9, 28, 73, 0) 100%);
   z-index: 30;
 }
@@ -781,17 +880,19 @@ watch(
 .top-right-hud {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 10px;
   min-width: 0;
 }
 
 .top-right-hud {
   justify-content: flex-end;
+  align-items: flex-start;
+  gap: 16px;
 }
 
 .btn-exit {
-  width: 52px;
-  height: 52px;
+  width: 36px;
+  height: 36px;
   flex: 0 0 auto;
   background: rgba(255, 255, 255, 0.16);
   border: 2px solid rgba(255, 255, 255, 0.65);
@@ -806,7 +907,7 @@ watch(
 }
 
 .exit-arrow {
-  font-size: 2rem;
+  font-size: 1.35rem;
   line-height: 1;
 }
 
@@ -816,15 +917,33 @@ watch(
 
 .room-info {
   display: flex;
+  flex-direction: column;
   justify-content: center;
   align-items: center;
-  gap: 16px;
-  min-width: 300px;
+  gap: 8px;
+  min-width: 240px;
   white-space: nowrap;
 }
 
+.score-status-pill {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 28px;
+  min-width: 238px;
+  min-height: 48px;
+  padding: 0 24px;
+  border-radius: 26px;
+  background: rgba(16, 42, 86, 0.45);
+  border: 1px solid rgba(205, 224, 255, 0.25);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    0 8px 18px rgba(0, 0, 0, 0.16);
+}
+
 .room-id, .base-score-badge, .multiplier-badge {
-  font-size: 0.95rem;
+  font-size: 1rem;
+  font-weight: 700;
   text-shadow: 0 1px 3px rgba(0,0,0,0.6);
 }
 
@@ -837,29 +956,83 @@ watch(
   text-shadow: 0 0 8px rgba(255, 215, 0, 0.6);
 }
 
-.btn-chat {
-  background: linear-gradient(to bottom, #ffb300, #ff8f00);
+.chat-trigger-area {
+  position: absolute;
+  bottom: 20px;
+  right: 20px;
+  z-index: 100;
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.btn-chat,
+.btn-voice {
   border: 1px solid #ffd54f;
   color: #3e2723;
-  padding: 6px 16px;
+  min-width: 76px;
+  min-height: 34px;
+  padding: 6px 12px;
   border-radius: 20px;
   font-weight: bold;
   cursor: pointer;
+  white-space: nowrap;
 }
 
-.chat-trigger-area {
-  position: relative;
+.btn-chat {
+  background: linear-gradient(to bottom, #ffb300, #ff8f00);
+}
+
+.btn-voice {
+  background: linear-gradient(to bottom, #b3e5fc, #4fc3f7);
+  border-color: #e1f5fe;
+}
+
+.btn-voice.active {
+  background: linear-gradient(to bottom, #81c784, #43a047);
+  color: #fff;
+  border-color: #c8e6c9;
+}
+
+.btn-voice.connecting {
+  opacity: 0.78;
+}
+
+.voice-error {
+  position: absolute;
+  right: 0;
+  bottom: 44px;
+  width: 220px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: rgba(86, 19, 19, 0.9);
+  color: #fff3e0;
+  font-size: 0.8rem;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
 }
 
 .chat-menu {
   position: absolute;
   right: 0;
-  top: 40px;
-  width: 220px;
+  bottom: 44px;
+  width: min(300px, calc(100vw - 40px));
+  max-height: min(420px, calc(100vh - 140px));
+  overflow-y: auto;
   padding: 8px 0;
   display: flex;
   flex-direction: column;
   z-index: 50;
+}
+
+.room-id-footer {
+  position: absolute;
+  bottom: 20px;
+  left: 20px;
+  font-size: 0.85rem;
+  color: rgba(255, 255, 255, 0.45);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+  z-index: 100;
+  pointer-events: none;
 }
 
 .chat-menu-item {
@@ -877,38 +1050,66 @@ watch(
 
 .bottom-cards-row {
   display: flex;
-  gap: 5px;
+  justify-content: center;
+  gap: 4px;
   flex: 0 0 auto;
-  background: rgba(9, 31, 73, 0.48);
-  padding: 5px 9px;
-  border-radius: 6px;
-  border: 1px solid rgba(255,255,255,0.26);
-  box-shadow: inset 0 1px 4px rgba(0,0,0,0.24);
+  padding: 0 6px 7px;
 }
 
-/* 记牌器 */
+.bottom-cards-panel {
+  width: 188px;
+  padding: 8px 6px 6px;
+  border-radius: 8px;
+  background: rgba(7, 28, 67, 0.55);
+  border: 1px solid rgba(205, 224, 255, 0.3);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.13),
+    0 7px 18px rgba(0, 0, 0, 0.18);
+}
+
+.bottom-cards-title {
+  margin-bottom: 5px;
+  color: rgba(221, 231, 255, 0.86);
+  font-size: 0.95rem;
+  font-weight: 800;
+  line-height: 1;
+  text-align: center;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.55);
+}
+
+/* 閻犱焦澹嗘晶婵嬪闯?*/
 .card-remembrancer {
-  width: clamp(430px, 48vw, 760px);
+  width: clamp(340px, 31vw, 420px);
   overflow: hidden;
-  border-radius: 4px;
-  background: rgba(255, 255, 255, 0.94);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.92);
   color: #283348;
-  border: 1px solid rgba(42, 68, 112, 0.28);
+  border: 1px solid rgba(205, 224, 255, 0.28);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
 }
 
-.remembrancer-title {
-  font-size: 0.75rem;
-  font-weight: bold;
-  color: #ffd700;
-  text-align: center;
-  margin-bottom: 4px;
-  opacity: 0.8;
+.remembrancer-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 30px;
+  padding: 0 12px;
+  color: rgba(234, 242, 255, 0.93);
+  background: rgba(12, 42, 89, 0.82);
+  font-size: 0.9rem;
+  font-weight: 800;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
+}
+
+.remembrancer-fold {
+  color: rgba(234, 242, 255, 0.76);
+  font-size: 1.35rem;
+  line-height: 1;
 }
 
 .remembrancer-grid {
   display: grid;
-  grid-template-columns: repeat(15, minmax(28px, 1fr));
+  grid-template-columns: repeat(15, minmax(22px, 1fr));
 }
 
 .rem-col {
@@ -916,7 +1117,7 @@ watch(
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  min-height: 44px;
+  min-height: 58px;
   border-left: 1px solid rgba(40, 51, 72, 0.18);
   line-height: 1.05;
 }
@@ -926,16 +1127,16 @@ watch(
 }
 
 .rem-key {
-  font-size: 0.86rem;
+  font-size: 0.82rem;
   font-weight: 800;
   color: #2b3448;
 }
 
 .rem-count {
-  margin-top: 5px;
-  font-size: 1rem;
+  margin-top: 8px;
+  font-size: 0.92rem;
   font-weight: 900;
-  color: #d46a1b;
+  color: #e96d1a;
 }
 
 .rem-col.zero {
@@ -946,7 +1147,7 @@ watch(
   color: rgba(212, 106, 27, 0.24);
 }
 
-/* 浮雕标志背景 */
+/* 婵炴惌鍣ｅú澶愬冀閸パ呯闁煎啿鏈▍?*/
 .brand-logo-watermark {
   position: absolute;
   top: 41%;
@@ -970,7 +1171,7 @@ watch(
   margin-top: 10px;
 }
 
-/* 座位容器 */
+/* 閹煎洷鍌滅Т閻庡湱鎳撳▍?*/
 .seats-container {
   position: absolute;
   top: 0;
@@ -984,7 +1185,7 @@ watch(
   pointer-events: auto;
 }
 
-/* 加倍遮罩 */
+/* 闁告梻濮撮埀顒€绉规导鍕磾?*/
 .doubling-overlay {
   position: fixed;
   top: 0;
@@ -1055,7 +1256,7 @@ watch(
   transform: scale(1.02);
 }
 
-/* 底部手牌与行动栏 */
+/* 閹煎瓨娲熼崕鎾箥鐎ｎ剙顤傚☉鎾虫唉椤㈡垿宕濋妸锔惧焿 */
 .player-bottom-area {
   display: flex;
   flex-direction: column;
@@ -1086,7 +1287,7 @@ watch(
   to { transform: translateY(0); opacity: 1; }
 }
 
-/* 闹钟样式 */
+/* 闂傚倸缍婇幐鎾诲冀瀹勬壆纭€ */
 .turn-alarm-clock {
   display: flex;
   align-items: center;
@@ -1151,7 +1352,7 @@ watch(
   border: 1px solid rgba(185, 205, 255, 0.45);
 }
 
-/* 行动大按钮 */
+/* 閻炴稑鑻慨鈺傚緞瑜庣€垫粓鏌?*/
 .btn-action-call {
   background: linear-gradient(135deg, #ffb300 0%, #ff8f00 100%);
   color: #1a1a1a;
@@ -1232,21 +1433,21 @@ watch(
   max-width: min(92vw, 1120px);
 }
 
-/* 托管按钮基础及呼吸灯发光样式 */
+/* 闁瑰灚顭囬鎼佸箰婢舵劖灏﹂柛鈺勬椤㈠懘宕ｆ繝鍌涘殤闁告艾鎽滄导鍛村矗閹存繂甯ㄩ柡宥呭槻缁?*/
 .btn-autoplay {
-  background: rgba(255, 255, 255, 0.15);
-  border: 1px solid rgba(255, 255, 255, 0.3);
-  border-radius: 20px;
+  background: rgba(210, 225, 255, 0.24);
+  border: 1px solid rgba(226, 238, 255, 0.42);
+  border-radius: 16px;
   color: #fff;
-  padding: 4px 14px;
+  padding: 5px 17px;
   font-size: 13px;
   cursor: pointer;
-  margin-left: 12px;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
   transition: all 0.3s ease;
-  font-weight: 500;
+  font-weight: 700;
+  line-height: 1;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.18);
 }
 
 .btn-autoplay:hover {
@@ -1339,7 +1540,7 @@ watch(
   }
 }
 
-/* 桌面中央出牌区样式 */
+/* 婵℃鐭傚鐗堢▔椤撶偑浜烽柛鎴ｆ婢ф繈宕犻悜妯煎鐎?*/
 .table-play-area {
   position: absolute;
   top: 30%;
@@ -1393,7 +1594,7 @@ watch(
   border-color: #80d8ff;
 }
 
-/* 特效容器与全屏震动 */
+/* 闁绘顫夐弲銉р偓鍦嚀濞呮帗绋夋惔鈥冲伎閻忕偛绻樺〒鍧楀礉?*/
 .poker-effects-layer {
   position: absolute;
   top: 0; left: 0; width: 100%; height: 100%;
@@ -1411,7 +1612,7 @@ watch(
   50% { transform: translate(-5px, 4px); }
 }
 
-/* 炸弹冲击波圈 */
+/* 闁绘劗顭堥懘濠囧礃閹绘帒姣婃繛澶堝灩濠€鈧?*/
 .effect-bomb-shockwave {
   position: absolute;
   top: 50%; left: 50%;
@@ -1434,7 +1635,7 @@ watch(
   100% { transform: scale(4); opacity: 0; border-width: 1px; }
 }
 
-/* 飞机特效 */
+/* 濡炲鍋炲┃鈧柣妤勵潐閺?*/
 .effect-plane-flyby {
   position: absolute;
   top: 30%;
@@ -1464,7 +1665,7 @@ watch(
   to { left: 110%; opacity: 0; }
 }
 
-/* 顺子金色流光扫过 */
+/* 濡炪倕鎼悺娆撴煂閹达絽顥忔繛缈犵閸樻粓骞嶉銉х畺 */
 .played-cards-row {
   position: relative;
   overflow: hidden;
@@ -1489,7 +1690,7 @@ watch(
   to { left: 150%; }
 }
 
-/* 特效大字动作文本 */
+/* 闁绘顫夐弲銉﹀緞瑜嶉悺褔宕濋妸銈囩▕闁哄倸娲﹀﹢?*/
 .action-text-fancy {
   font-size: 2.4rem;
   font-weight: 900;
@@ -1520,7 +1721,7 @@ watch(
   to { transform: scale(1); opacity: 1; }
 }
 
-/* 游戏结束浮空大字 */
+/* 婵炴挸鎲￠崹娆戠磼閹惧瓨灏嗘繛鎼枤閳规牗寰勮閻?*/
 .game-over-banner-overlay {
   position: fixed;
   top: 0;
@@ -1583,7 +1784,7 @@ watch(
   opacity: 0;
 }
 
-/* 结算平铺余牌与已打完提示 */
+/* 缂備焦鎸鹃悾濠氱嵁閹惰姤鎳欏ù锝嗙懅婢ф繃绋夋惔鈥冲殥闁瑰灚鎸搁悾顒勫箵閹邦喓浠?*/
 .settle-hands-list-center {
   display: flex;
   flex-direction: column;
@@ -1650,7 +1851,7 @@ watch(
   letter-spacing: 2px;
 }
 
-/* 错误气泡 */
+/* 闂佹寧鐟ㄩ銈咁潩閺冣偓閸?*/
 .error-toast-bubble {
   position: absolute;
   bottom: 80px;
@@ -1673,7 +1874,7 @@ watch(
   40%, 80% { transform: translateX(-46%); }
 }
 
-/* 重新洗牌横幅 */
+/* 闂佹彃绉甸弻濠偯哄Δ鍐杺婵☆垼浜滅粻?*/
 .redeal-overlay {
   position: absolute;
   top: 40%;
@@ -1701,12 +1902,12 @@ watch(
   to { transform: rotate(360deg); }
 }
 
-/* 3D 底牌翻转 */
+/* 3D 閹煎瓨娲滄晶婵堢礄閺勫繑绁?*/
 .bottom-card-flip-container {
   perspective: 600px;
-  width: 42px; /* 适配 sm 尺寸 */
-  height: 58px;
-  margin: 0 3px;
+  width: 52px;
+  height: 73px;
+  margin: 0;
 }
 .bottom-card-inner {
   position: relative;
@@ -1728,5 +1929,119 @@ watch(
 }
 .bottom-card-front {
   transform: rotateY(180deg);
+}
+
+.bottom-card-flip-container :deep(.poker-card.size-sm) {
+  width: 52px;
+  height: 73px;
+  padding: 3px;
+  border-radius: 5px;
+}
+
+/* ===== 闂傚﹨娅曢弲銉╁箳瑜嶉崺妤呮閵忊剝绶?===== */
+.settings-control-area {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.btn-settings-toggle {
+  width: 58px;
+  min-height: 64px;
+  padding: 7px 0 6px;
+  background: rgba(18, 46, 92, 0.58);
+  border: 1px solid rgba(210, 229, 255, 0.36);
+  border-radius: 8px;
+  color: rgba(238, 246, 255, 0.95);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  transition: all 0.2s;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    0 6px 14px rgba(0, 0, 0, 0.2);
+}
+
+.btn-settings-toggle:hover {
+  background: rgba(255, 255, 255, 0.28);
+  transform: translateY(-1px);
+}
+
+.settings-gear {
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  font-size: 24px;
+  line-height: 1;
+}
+
+.settings-label {
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.sound-panel {
+  position: absolute;
+  right: 0;
+  top: 52px;
+  width: 220px;
+  padding: 14px 16px;
+  border-radius: 12px;
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sound-panel-title {
+  font-size: 14px;
+  font-weight: 700;
+  text-align: center;
+  margin-bottom: 2px;
+  color: #ffe082;
+}
+
+.sound-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.sound-toggle-btn {
+  padding: 3px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  min-width: 44px;
+  text-align: center;
+}
+
+.sound-toggle-btn.active {
+  background: rgba(76, 175, 80, 0.5);
+  border-color: #66bb6a;
+  color: #ffffff;
+}
+
+.sound-slider {
+  flex: 1;
+  max-width: 100px;
+  height: 4px;
+  accent-color: #ffe082;
+  cursor: pointer;
 }
 </style>

@@ -618,17 +618,50 @@ function formatJSON(obj: any): string {
   }
 }
 
+const isMockMode = new URLSearchParams(window.location.search).get('mock') === 'true'
+
 // 生命周期
 onMounted(() => {
-  connectDebugWs()
+  if (isMockMode) {
+    isConnected.value = true
+    terminalLogs.value = [
+      { time: '02:00:01', text: '初始化 WebSocket 调试连接成功！', type: 'system' },
+      { time: '02:00:03', text: '注册客户端成功 ID: client_readme', type: 'system' },
+      { time: '02:00:15', text: '订阅频道: hmp:site_message', type: 'sent' },
+      { time: '02:00:16', text: '收到广播订阅回执：success', type: 'received' }
+    ]
+    siteMessages.value = [
+      { id: 1, sender: 'system', receiver: 'client_readme', content: '欢迎来到 HMP 系统调试控制台！', is_read: true, created_at: '2026-07-01 02:00:00' },
+      { id: 2, sender: 'system', receiver: 'client_readme', content: '系统安全检查通过，未发现路径穿越隐患。', is_read: false, created_at: '2026-07-01 02:05:00' }
+    ]
+    unreadCount.value = 1
+    
+    isUploading.value = true
+    uploadProgress.value = 78
+    uploadSpeed.value = '2.4 MB/s'
+    uploadEta.value = '剩余时间: 3秒'
+    uploadRatio.value = '15.6 MB / 20.0 MB'
+    
+    auditLogs.value = [
+      { id: 101, operator: 'mock_player', action: 'user_login', status: 'success', ip_address: '127.0.0.1', created_at: '2026-07-01 02:00:00', request_params: { username: 'mock_player' } },
+      { id: 102, operator: 'mock_player', action: 'join_match', status: 'success', ip_address: '127.0.0.1', created_at: '2026-07-01 02:01:00', request_params: { base_score: 300 } },
+      { id: 103, operator: 'mock_player', action: 'play_cards', status: 'success', ip_address: '127.0.0.1', created_at: '2026-07-01 02:02:15', request_params: { cards: [53, 52], card_type: 'rocket' } }
+    ]
+    auditTotal.value = 3
+  } else {
+    connectDebugWs()
+  }
 })
 
 onUnmounted(() => {
-  disconnectDebugWs()
+  if (!isMockMode) {
+    disconnectDebugWs()
+  }
 })
 
 function handleTabChange(tab: 'ws' | 'messages' | 'upload' | 'audit') {
   activeTab.value = tab
+  if (isMockMode) return
   if (tab === 'messages') loadMessages()
   if (tab === 'upload') loadUploadedFiles()
   if (tab === 'audit') loadAuditLogs(1)

@@ -139,6 +139,17 @@ class GameAppService:
         result["room"] = room
         return result
 
+    async def handle_double_choice(self, player_id: str, choice: str) -> dict:
+        """处理玩家加倍确认"""
+        room = await self._get_player_room(player_id)
+        if not room:
+            return {"error": "你不在任何房间中"}
+        result = room.choose_double(player_id, choice)
+        await self._repo.save_room(room)
+        result["room"] = room
+        return result
+
+
     async def handle_play(self, player_id: str, card_ids: List[int]) -> dict:
         """处理出牌"""
         room = await self._get_player_room(player_id)
@@ -163,36 +174,46 @@ class GameAppService:
         """处理 AI 回合"""
         ai_id = room.current_turn
         if room.phase == GamePhase.CALLING:
-            await asyncio.sleep(1)  # AI 思考延迟
+            await asyncio.sleep(1.5)  # AI 思考延迟 (由 1.0s 增至 1.5s)
             hand = room.hands[ai_id]
-            score = ai_decide_call(hand)
-            if score > 0:
-                # 确保叫分高于当前最高分
-                current_max = max(room._call_scores.values()) if room._call_scores else 0
-                if room._call_round == 1:
-                    # 第一轮：叫分增量限制为+1，避免直接叫3分导致流程提早结束
-                    proposed = current_max + 1
-                    if proposed <= score:
-                        score = proposed
-                    else:
-                        score = 0
+            call_level = ai_decide_call(hand)
+            if room._first_bidder is None:
+                # 尚未有人叫地主 -> 叫地主
+                if call_level >= 2:
+                    result = room.call_landlord(ai_id, 1)
+                    score_res = 1
                 else:
-                    if score <= current_max:
-                        score = 0
-            if score > 0:
-                result = room.call_landlord(ai_id, score)
+                    result = room.skip_call(ai_id)
+                    score_res = 0
             else:
-                result = room.skip_call(ai_id)
+                # 抢地主
+                if call_level >= 3:
+                    result = room.call_landlord(ai_id, 1)
+                    score_res = 1
+                else:
+                    result = room.skip_call(ai_id)
+                    score_res = 0
+
             if result.get("redeal"):
                 room.deal()
             await self._repo.save_room(room)
             result["room"] = room
             result["ai_player"] = ai_id
-            result["score"] = score
+            result["score"] = score_res
+            return result
+
+        elif room.phase == GamePhase.DOUBLING:
+            await asyncio.sleep(1.0)
+            choice = self._decide_ai_double_choice(room, ai_id)
+            result = room.choose_double(ai_id, choice)
+            await self._repo.save_room(room)
+            result["room"] = room
+            result["ai_player"] = ai_id
+            result["double_choice"] = choice
             return result
 
         elif room.phase == GamePhase.PLAYING:
-            await asyncio.sleep(1)  # AI 思考延迟
+            await asyncio.sleep(1.5)  # AI 思考延迟 (由 1.0s 增至 1.5s)
             hand = room.hands[ai_id]
             last_cp = room.last_play.card_play
             must_play = (room.last_play.player is None)
@@ -209,6 +230,15 @@ class GameAppService:
             return result
 
         return {"error": "AI 当前无法操作"}
+
+    def _decide_ai_double_choice(self, room: GameRoom, ai_id: str) -> str:
+        """保守 AI 加倍策略：牌力明显较好时加倍，否则不加倍"""
+        hand = room.hands.get(ai_id, [])
+        high_cards = sum(1 for card in hand if card >= 48)
+        is_landlord = ai_id == room.landlord
+        if is_landlord or high_cards >= 3:
+            return "double"
+        return "none"
 
     async def get_room_state(self, player_id: str) -> Optional[dict]:
         """获取玩家可见的房间状态 (用于断线重连)"""

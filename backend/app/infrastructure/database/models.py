@@ -51,6 +51,7 @@ class PlayerProfileORM(Base):
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     player_id = Column(String(100), nullable=False, unique=True, index=True, comment="玩家ID")
     nickname = Column(String(100), nullable=False, comment="昵称")
+    avatar_url = Column(String(500), nullable=True, comment="头像图片URL")
     beans = Column(Integer, default=10000, nullable=False, comment="欢乐豆")
     total_games = Column(Integer, default=0, nullable=False, comment="总对局数")
     wins = Column(Integer, default=0, nullable=False, comment="胜场数")
