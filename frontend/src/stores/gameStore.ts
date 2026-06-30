@@ -20,6 +20,8 @@ export interface LastPlay {
   cardType: string | null
 }
 
+export type DoublingChoice = 'double' | 'super' | 'none'
+
 export const useGameStore = defineStore('game', () => {
   const wsConnected = ref(false)
   const roomId = ref('')
@@ -43,6 +45,7 @@ export const useGameStore = defineStore('game', () => {
   const playerPlayedCards = ref<Record<string, number[]>>({})
   const allPlayedCards = ref<number[]>([])
   const baseScore = ref(10)
+  const doublingChoices = ref<Record<string, DoublingChoice>>({})
   const showAllHands = ref(false)
   const showGameOverBanner = ref(false)
   const showWinnerBanner = ref(false)
@@ -77,7 +80,8 @@ export const useGameStore = defineStore('game', () => {
     if (state.phase) gamePhase.value = state.phase
     if (state.players) players.value = state.players.map((p: any) => ({
       id: p.id, nickname: p.nickname, isAi: p.is_ai, isOnline: p.is_online,
-      remaining: p.remaining, isLandlord: p.is_landlord, isSelf: p.is_self,
+      remaining: p.remaining !== undefined ? p.remaining : (p.is_self ? (state.hand ? state.hand.length : 0) : 0),
+      isLandlord: p.is_landlord, isSelf: p.is_self,
     }))
     if (state.hand !== undefined) {
       myHand.value = sortCardIds(state.hand)
@@ -97,6 +101,7 @@ export const useGameStore = defineStore('game', () => {
     }
     if (state.base_score !== undefined) baseScore.value = state.base_score
     if (state.all_played_cards !== undefined) allPlayedCards.value = state.all_played_cards
+    if (state.doubling_choices !== undefined) doublingChoices.value = state.doubling_choices || {}
   }
 
   function reset() {
@@ -120,6 +125,7 @@ export const useGameStore = defineStore('game', () => {
     playerPlayedCards.value = {}
     allPlayedCards.value = []
     baseScore.value = 10
+    doublingChoices.value = {}
     showAllHands.value = false
     showGameOverBanner.value = false
     showWinnerBanner.value = false
@@ -132,7 +138,7 @@ export const useGameStore = defineStore('game', () => {
     wsConnected, roomId, gamePhase, players, myHand, selectedCards,
     bottomCards, lastPlay, currentTurn, turnDeadline, turnTimeout, multiplier,
     callRound, callScores, firstBidder, landlord, settlement, errorMsg, isMyTurn, playerActions, playerPlayedCards,
-    allPlayedCards, baseScore, showAllHands, showGameOverBanner, showWinnerBanner, gameOverTitle,
+    allPlayedCards, baseScore, doublingChoices, showAllHands, showGameOverBanner, showWinnerBanner, gameOverTitle,
     showRedealNotice, activeEffect,
     toggleCard, clearSelection, selectCards, updateFromRoomState, reset,
   }

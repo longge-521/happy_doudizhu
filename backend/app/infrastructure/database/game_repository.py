@@ -45,6 +45,7 @@ class SQLGameRepository:
             self._db.flush()
         return PlayerProfile(
             id=orm.id, player_id=orm.player_id, nickname=orm.nickname,
+            avatar_url=orm.avatar_url,
             beans=orm.beans, total_games=orm.total_games, wins=orm.wins,
             created_at=orm.created_at,
             rank_id=orm.rank_id, sub_rank=orm.sub_rank, stars=orm.stars
@@ -88,10 +89,17 @@ class SQLGameRepository:
                 .limit(limit).all())
         return [PlayerProfile(
             id=r.id, player_id=r.player_id, nickname=r.nickname,
+            avatar_url=r.avatar_url,
             beans=r.beans, total_games=r.total_games, wins=r.wins,
             created_at=r.created_at,
             rank_id=r.rank_id, sub_rank=r.sub_rank, stars=r.stars
         ) for r in rows]
+
+    def update_avatar_url(self, player_id: str, avatar_url: Optional[str]) -> None:
+        orm = self._db.query(PlayerProfileORM).filter_by(player_id=player_id).first()
+        if orm:
+            orm.avatar_url = avatar_url
+            self._db.commit()
 
     def update_rank_profile(self, player_id: str, rank_id: int, sub_rank: int, stars: int) -> None:
         orm = self._db.query(PlayerProfileORM).filter_by(player_id=player_id).first()

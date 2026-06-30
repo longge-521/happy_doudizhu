@@ -268,3 +268,47 @@ def test_ai_decide_play_douzero_route():
             assert res == [0, 1, 2, 3]
 
 
+def test_ai_decide_play_sprint():
+    """测试冲刺规则：当手牌剩 5 张且自身是合法牌型时，应当无条件直接出完"""
+    from app.domain.game.ai_strategy import ai_decide_play
+    from app.domain.game.card_type import detect_card_type
+    
+    # 手牌：3个4 (4,5,6) 和 对5 (8,9)
+    hand = [4, 5, 6, 8, 9]
+    
+    # 1. 自由出牌（首发）时，直接出完 5 张牌
+    lead_play = ai_decide_play(hand, last_play=None, must_play=True)
+    assert lead_play is not None
+    assert set(lead_play) == set(hand)
+    
+    # 2. 跟牌时：上家出 3个3带对6 (0,1,2,12,13)，我们能够压过，也直接一次性出完
+    last_play = detect_card_type([0, 1, 2, 12, 13])
+    follow_play = ai_decide_play(hand, last_play=last_play, must_play=False)
+    assert follow_play is not None
+    assert set(follow_play) == set(hand)
+
+
+def test_split_triple_two_not_splitting_core_for_pair():
+    """测试对子跟牌时，优先使用三带二里面的对子翅膀，而不是拆核心三条"""
+    from app.domain.game.ai_strategy import _pick_follow_play, _decompose_hand, AIContext
+    from app.domain.game.card_type import detect_card_type
+    
+    # 手牌：3个K (40,41,42) 和 对5 (8,9) -> 被拆解为 TRIPLE_TWO
+    hand = [8, 9, 40, 41, 42]
+    plan = _decompose_hand(hand)
+    
+    # 上家出 对3 (0,1)
+    last_play = detect_card_type([0, 1])
+    ctx = AIContext(
+        ai_id="test_ai", role="landlord", landlord_id="test_ai",
+        teammate_id=None, landlord_remaining=5, teammate_remaining=0,
+        last_play_from="farmer", is_last_play_teammate=False, is_last_play_landlord=False
+    )
+    
+    # 我们有比对3大的对5作为三带二的翅膀，应当打出对5 [8,9]，而不是拆散 3个K 出对K
+    follow_play = _pick_follow_play(hand, plan, last_play, "landlord", ctx)
+    assert follow_play is not None
+    assert set(follow_play) == {8, 9}
+
+
+

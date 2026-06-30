@@ -167,7 +167,7 @@ export function useGameWebSocket() {
           gameStore.players = data.players.map((p: any) => ({
             id: p.id, nickname: p.nickname, isAi: p.is_ai,
             isOnline: p.is_online, remaining: p.remaining,
-            isLandlord: false, isSelf: p.is_self,
+            isSelf: p.is_self,
           }))
         }
         break
@@ -239,6 +239,17 @@ export function useGameWebSocket() {
         if (data.room_state) gameStore.updateFromRoomState(data.room_state)
         gameStore.playerActions = { ...gameStore.playerActions, [data.player]: '' }
         gameStore.playerPlayedCards = { ...gameStore.playerPlayedCards, [data.player]: data.cards }
+
+        // 剩余牌报警判定逻辑：如果出牌后玩家手牌剩余 1 或 2 张，立马触发报警语音
+        const activePlayer = gameStore.players.find(p => p.id === data.player)
+        if (activePlayer) {
+          if (activePlayer.remaining === 2) {
+            void playSoundCP('baojing2', data.player)
+          } else if (activePlayer.remaining === 1) {
+            void playSoundCP('baojing1', data.player)
+          }
+        }
+
         const play = detectCardPlay(data.cards)
         if (play) {
           if (effectTimer) {
@@ -348,6 +359,85 @@ export function useGameWebSocket() {
               ...gameStore.playerActions,
               [lastPlayer]: ''
             }
+
+            // 播放最后一手绝杀牌的出牌音效与特效
+            const { playSound: playSoundCP } = useSoundEngine()
+            const play = detectCardPlay(lastCards)
+            if (play) {
+              if (effectTimer) {
+                clearTimeout(effectTimer)
+                effectTimer = null
+              }
+
+              // 计算对应语音点数：3~17
+              let cardVal = 3
+              if (play.mainRank !== undefined) {
+                if (play.mainRank === 13) cardVal = 16      // 小王
+                else if (play.mainRank === 14) cardVal = 17 // 大王
+                else cardVal = play.mainRank + 3
+              }
+
+              if (play.kind === 'bomb') {
+                playSoundCP('bomb_effect')
+                setTimeout(() => playSoundCP('bomb', lastPlayer), 200)
+                gameStore.activeEffect = 'bomb'
+                effectTimer = window.setTimeout(() => {
+                  gameStore.activeEffect = ''
+                  effectTimer = null
+                }, 1500)
+              } else if (play.kind === 'rocket') {
+                playSoundCP('bomb_effect')
+                setTimeout(() => playSoundCP('rocket', lastPlayer), 200)
+                gameStore.activeEffect = 'bomb'
+                effectTimer = window.setTimeout(() => {
+                  gameStore.activeEffect = ''
+                  effectTimer = null
+                }, 1500)
+              } else if (play.kind === 'airplane' || play.kind === 'airplane_single' || play.kind === 'airplane_pair') {
+                playSoundCP('plane_effect')
+                setTimeout(() => playSoundCP('airplane', lastPlayer), 200)
+                gameStore.activeEffect = 'plane'
+                effectTimer = window.setTimeout(() => {
+                  gameStore.activeEffect = ''
+                  effectTimer = null
+                }, 1500)
+              } else if (play.kind === 'straight') {
+                playSoundCP('shunzi_effect')
+                setTimeout(() => playSoundCP('straight', lastPlayer), 200)
+                gameStore.activeEffect = 'shimmer'
+                effectTimer = window.setTimeout(() => {
+                  gameStore.activeEffect = ''
+                  effectTimer = null
+                }, 1500)
+              } else if (play.kind === 'double_straight') {
+                playSoundCP('shunzi_effect')
+                setTimeout(() => playSoundCP('double_straight', lastPlayer), 200)
+                gameStore.activeEffect = 'shimmer'
+                effectTimer = window.setTimeout(() => {
+                  gameStore.activeEffect = ''
+                  effectTimer = null
+                }, 1500)
+              } else if (play.kind === 'single') {
+                playSoundCP('playCard')
+                setTimeout(() => playSoundCP(String(cardVal) as `${number}`, lastPlayer), 100)
+              } else if (play.kind === 'pair') {
+                playSoundCP('playCard')
+                setTimeout(() => playSoundCP(`pair${cardVal}`, lastPlayer), 100)
+              } else if (play.kind === 'triple') {
+                playSoundCP('playCard')
+                setTimeout(() => playSoundCP(`three_one${cardVal}`, lastPlayer), 100)
+              } else if (play.kind === 'triple_one') {
+                playSoundCP('playCard')
+                setTimeout(() => playSoundCP('three_one', lastPlayer), 100)
+              } else if (play.kind === 'triple_two') {
+                playSoundCP('playCard')
+                setTimeout(() => playSoundCP('three_two', lastPlayer), 100)
+              } else {
+                playSoundCP('playCard', lastPlayer)
+              }
+            } else {
+              playSoundCP('playCard', lastPlayer)
+            }
           }
         }
         
@@ -360,12 +450,14 @@ export function useGameWebSocket() {
         }
         gameStore.settlement = settlementData
 
-        // 判断自己是否胜利并播放对应音效
+        // 判断自己是否胜利并播放对应音效，延迟 1.5 秒播放以给绝杀牌音效留出播放时间
         const myId = playerStoreGO.playerId
         const isLandlord = gameStore.landlord === myId
         const myWon = (data.winner_side === 'landlord' && isLandlord) ||
                        (data.winner_side === 'farmer' && !isLandlord)
-        playSoundGO(myWon ? 'gameWin' : 'gameLose')
+        setTimeout(() => {
+          playSoundGO(myWon ? 'gameWin' : 'gameLose')
+        }, 1500)
 
         gameStore.showAllHands = true
         gameStore.showGameOverBanner = true
@@ -387,15 +479,9 @@ export function useGameWebSocket() {
         break
       }
       case 'chat_msg': {
-        const { playSound: playSoundChat } = useSoundEngine()
-        playSoundChat('chatMsg')
+        const { playQuickChatVoice } = useSoundEngine()
         const msg = CHAT_PRESETS[data.msg_id] || '...'
-        gameStore.playerActions[data.player] = msg
-        setTimeout(() => {
-          if (gameStore.playerActions[data.player] === msg) {
-            gameStore.playerActions[data.player] = ''
-          }
-        }, 3000)
+        void playQuickChatVoice(msg, data.player, data.msg_id)
         break
       }
       case 'voice_signal':

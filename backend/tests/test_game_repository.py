@@ -80,3 +80,27 @@ def test_sql_game_repository_rank_state_machine():
     assert orm.rank_id == 21 and orm.sub_rank == 1 and orm.stars == 3
     
     session.close()
+
+
+def test_sql_game_repository_avatar_url_mapping_and_update():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine)
+    session = Session()
+    repo = SQLGameRepository(session)
+
+    profile = repo.get_or_create_profile("player_avatar", "AvatarTester")
+    assert profile.avatar_url is None
+
+    repo.update_avatar_url("player_avatar", "https://example.com/avatar.png")
+    profile = repo.get_or_create_profile("player_avatar", "AvatarTester")
+    assert profile.avatar_url == "https://example.com/avatar.png"
+
+    orm = session.query(PlayerProfileORM).filter_by(player_id="player_avatar").first()
+    assert orm.avatar_url == "https://example.com/avatar.png"
+
+    repo.update_avatar_url("player_avatar", None)
+    profile = repo.get_or_create_profile("player_avatar", "AvatarTester")
+    assert profile.avatar_url is None
+
+    session.close()

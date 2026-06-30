@@ -12,6 +12,7 @@ class GamePhase(Enum):
     MATCHING = "MATCHING"
     DEALING = "DEALING"
     CALLING = "CALLING"
+    DOUBLING = "DOUBLING"
     PLAYING = "PLAYING"
     SETTLING = "SETTLING"
 
@@ -54,6 +55,7 @@ class GameRoom:
         self.last_play: LastPlay = LastPlay()
         self.pass_count: int = 0  # 连续不出次数
         self.multiplier: int = 1
+        self.doubling_choices: Dict[str, str] = {}
         self.redeal_count: int = 0
         self.created_at: str = ""
         self.base_score: int = 10
@@ -66,6 +68,10 @@ class GameRoom:
         self._first_caller_index: int = 0  # 首位叫牌者索引
         self._call_round: int = 1        # 当前圈数 (1=第一圈, 2=第二圈)
         self._first_bidder: Optional[str] = None  # 首位叫地主的玩家 ID
+        self._round2_queue: List[str] = []   # 第二圈待表态队列
+        self._round2_scores: Dict[str, int] = {}  # 第二圈叫分记录
+        self._grab_count: Dict[str, int] = {}  # 抢地主次数
+        self._declined_players: Set[str] = set()  # 选择不叫或不抢的玩家 ID 集合
 
     @classmethod
     def create(cls, room_id: str, players: List[Player], base_score: int = 10) -> "GameRoom":
@@ -97,57 +103,57 @@ class GameRoom:
         self.landlord = None
         self.last_play = LastPlay()
         self.pass_count = 0
+        self.doubling_choices = {}
         self.all_played_cards = []
         self.play_history = []
         self._call_index = 0
         self._call_scores = {}
         self._call_round = 1
         self._first_bidder = None
+        self._round2_queue = []
+        self._round2_scores = {}
+        self._grab_count = {}
+        self._declined_players = set()
         # 随机选择首位叫牌者 (使用第一个玩家索引)
         import random
         self._first_caller_index = random.randint(0, 2)
         self._call_index = self._first_caller_index
         self.current_turn = ids[self._first_caller_index]
-        self.turn_deadline = time.time() + 15
+        self.turn_deadline = time.time() + 18  # 15s 叫牌时间 + 3s 发牌动画缓冲
         return dict(self.hands)
 
     # ── 叫地主 ──
 
     def call_landlord(self, player_id: str, score: int) -> dict:
-        """玩家叫地主 (score: 1/2/3)"""
+        """玩家叫地主 (score: 传入值兼容，完全按腾讯规则决定叫/抢)"""
         if self.phase != GamePhase.CALLING:
             return {"success": False, "error": "当前不在叫地主阶段"}
         if player_id != self.current_turn:
             return {"success": False, "error": "不是你的回合"}
-        if score < 1 or score > 3:
-            return {"success": False, "error": "叫分必须在1~3之间"}
 
-        if self._call_round == 1:
-            # 叫分必须高于已有最高分
-            current_max = max(self._call_scores.values()) if self._call_scores else 0
-            if score <= current_max:
-                return {"success": False, "error": f"叫分必须高于当前最高分 {current_max}"}
-
-            self._call_scores[player_id] = score
-            self.multiplier = score
-
-            if self._first_bidder is None:
-                self._first_bidder = player_id
-
-            # 第一圈叫3分直接成为地主
-            if score == 3:
-                return self._set_landlord(player_id)
-
-            # 继续轮转
-            return self._advance_call()
+        if self._first_bidder is None:
+            # 叫地主
+            self._first_bidder = player_id
+            self.landlord = player_id
+            self.multiplier = 1
+            self._call_scores[player_id] = 1
+            self._call_round = 2  # 设为 2 表示已叫过，转为抢地主阶段
+            return self._advance_bidding(player_id)
         else:
-            # 第二圈抢地主
-            if player_id != self._first_bidder:
-                return {"success": False, "error": "非首位叫地主玩家在第二圈不能抢地主"}
+            # 抢地主
+            if player_id in self._declined_players:
+                return {"success": False, "error": "您之前已选择不叫或不抢，无法进行抢地主"}
+            if player_id == self.landlord:
+                return {"success": False, "error": "您当前已经是暂定地主"}
+            if self._grab_count.get(player_id, 0) >= 1:
+                return {"success": False, "error": "您已经进行过抢地主，每人限抢一次"}
 
-            self._call_scores[player_id] = score
+            self.landlord = player_id
             self.multiplier *= 2
-            return self._set_landlord(player_id)
+            self._grab_count[player_id] = self._grab_count.get(player_id, 0) + 1
+            max_score = max(self._call_scores.values()) if self._call_scores else 0
+            self._call_scores[player_id] = max_score + 1
+            return self._advance_bidding(player_id)
 
     def skip_call(self, player_id: str) -> dict:
         """玩家不叫/不抢"""
@@ -156,76 +162,110 @@ class GameRoom:
         if player_id != self.current_turn:
             return {"success": False, "error": "不是你的回合"}
 
-        if self._call_round == 1:
-            self._call_scores[player_id] = 0
-            return self._advance_call()
-        else:
-            # 第二圈不抢
-            if player_id != self._first_bidder:
-                return {"success": False, "error": "非首位叫地主玩家在第二圈不能选择不抢"}
+        self._declined_players.add(player_id)
+        self._call_scores[player_id] = 0
+        return self._advance_bidding(player_id)
 
-            self._call_scores[player_id] = 0
-            # 找到第一圈除了首叫者之外叫分最高的玩家
-            candidates = {pid: s for pid, s in self._call_scores.items() if pid != self._first_bidder and s > 0}
-            if not candidates:
-                winner = self._first_bidder
-            else:
-                winner = max(candidates, key=candidates.get)
-            return self._set_landlord(winner)
-
-    def _advance_call(self) -> dict:
-        """推进叫地主流程"""
+    def _advance_bidding(self, current_player_id: str) -> dict:
+        """推进叫牌/抢地主流程"""
         ids = self._player_ids()
-        
-        if self._call_round == 1:
-            # 检查是否所有人都叫过了（即第一圈是否结束）
-            if len(self._call_scores) >= 3:
-                called_players = [pid for pid, s in self._call_scores.items() if s > 0]
-                
-                if len(called_players) == 0:
-                    # 所有人都不叫，重新发牌
-                    self.redeal_count += 1
-                    if self.redeal_count >= self.MAX_REDEAL:
-                        # 超过重发次数，随机指定地主
-                        import random
-                        forced = random.choice(ids)
-                        self.multiplier = 1
-                        return self._set_landlord(forced)
-                    self.phase = GamePhase.DEALING
-                    return {"success": True, "redeal": True}
-                
-                elif len(called_players) == 1:
-                    # 只有 1 人叫分，直接成为地主
-                    return self._set_landlord(called_players[0])
-                
-                else:
-                    # 有 2 人或 3 人叫分，进入第二圈抢地主，轮到首叫者表态
-                    self._call_round = 2
-                    self.current_turn = self._first_bidder
-                    self._call_index = ids.index(self._first_bidder)
-                    self.turn_deadline = time.time() + 15
-                    return {"success": True, "next_caller": self.current_turn, "call_round": 2}
-            
-            # 第一圈还没结束，轮到下一个
-            self._call_index = (self._call_index + 1) % 3
-            self.current_turn = ids[self._call_index]
+
+        if self._first_bidder is None:
+            # 尚未有人叫地主
+            if len(self._declined_players) >= 3:
+                # 重新发牌
+                self.redeal_count += 1
+                if self.redeal_count >= self.MAX_REDEAL:
+                    import random
+                    forced = random.choice(ids)
+                    self.multiplier = 1
+                    return self._set_landlord(forced)
+                self.phase = GamePhase.DEALING
+                return {"success": True, "redeal": True}
+
+            # 轮到下一个叫地主
+            idx = ids.index(current_player_id)
+            next_player = ids[(idx + 1) % 3]
+            self.current_turn = next_player
+            self._call_index = (idx + 1) % 3
             self.turn_deadline = time.time() + 15
             return {"success": True, "next_caller": self.current_turn}
+        else:
+            # 抢地主流程，寻找下一个符合资格的抢地主玩家
+            idx = ids.index(current_player_id)
+            next_turn_id = None
+            for i in range(1, 3):
+                candidate_id = ids[(idx + i) % 3]
+                if (
+                    candidate_id not in self._declined_players
+                    and candidate_id != self.landlord
+                    and self._grab_count.get(candidate_id, 0) < 1
+                ):
+                    next_turn_id = candidate_id
+                    break
+
+            if next_turn_id:
+                self.current_turn = next_turn_id
+                self._call_index = ids.index(next_turn_id)
+                self.turn_deadline = time.time() + 15
+                return {"success": True, "next_caller": self.current_turn}
+            else:
+                # 没人能抢了，确定地主
+                return self._set_landlord(self.landlord)
 
     def _set_landlord(self, player_id: str) -> dict:
-        """确定地主，分配底牌，进入出牌阶段"""
+        """确定地主，分配底牌，进入加倍确认阶段"""
         self.landlord = player_id
         # 底牌给地主
         self.hands[player_id] = sort_cards(self.hands[player_id] + self.bottom_cards)
-        self.phase = GamePhase.PLAYING
-        self.current_turn = player_id  # 地主先出
+        self.phase = GamePhase.DOUBLING
+        self.current_turn = None
         self.turn_deadline = time.time() + 15
         self.last_play = LastPlay()
         self.pass_count = 0
+        self.doubling_choices = {}
         return {
             "success": True,
             "landlord": player_id,
             "bottom_cards": self.bottom_cards,
+            "multiplier": self.multiplier,
+        }
+
+    def choose_double(self, player_id: str, choice: str) -> dict:
+        """玩家确认加倍选择"""
+        if self.phase != GamePhase.DOUBLING:
+            return {"success": False, "error": "当前不在加倍确认阶段"}
+        if player_id not in self._player_ids():
+            return {"success": False, "error": "玩家不在当前房间"}
+        if player_id in self.doubling_choices:
+            return {"success": False, "error": "你已经选择过加倍"}
+        if choice not in ("double", "super", "none"):
+            return {"success": False, "error": "无效的加倍选择"}
+
+        self.doubling_choices[player_id] = choice
+        if choice == "double":
+            self.multiplier *= 2
+        elif choice == "super":
+            self.multiplier *= 4
+
+        result = {
+            "success": True,
+            "player": player_id,
+            "choice": choice,
+            "multiplier": self.multiplier,
+        }
+        if len(self.doubling_choices) >= len(self.players):
+            result.update(self._finish_doubling())
+        return result
+
+    def _finish_doubling(self) -> dict:
+        """所有玩家完成加倍确认后，进入出牌阶段"""
+        self.phase = GamePhase.PLAYING
+        self.current_turn = self.landlord
+        self.turn_deadline = time.time() + 15
+        return {
+            "doubling_finished": True,
+            "next_turn": self.current_turn,
             "multiplier": self.multiplier,
         }
 
@@ -369,6 +409,7 @@ class GameRoom:
             },
             "pass_count": self.pass_count,
             "multiplier": self.multiplier,
+            "doubling_choices": self.doubling_choices,
             "redeal_count": self.redeal_count,
             "created_at": self.created_at,
             "call_index": self._call_index,
@@ -376,9 +417,13 @@ class GameRoom:
             "first_caller_index": self._first_caller_index,
             "call_round": self._call_round,
             "first_bidder": self._first_bidder,
+            "round2_queue": self._round2_queue,
+            "round2_scores": self._round2_scores,
             "base_score": self.base_score,
             "all_played_cards": self.all_played_cards,
             "play_history": self.play_history,
+            "grab_count": self._grab_count,
+            "declined_players": list(self._declined_players),
         }
 
     @classmethod
@@ -407,6 +452,7 @@ class GameRoom:
             room.last_play.card_play = detect_card_type(room.last_play.cards)
         room.pass_count = data.get("pass_count", 0)
         room.multiplier = data.get("multiplier", 1)
+        room.doubling_choices = data.get("doubling_choices", {})
         room.redeal_count = data.get("redeal_count", 0)
         room.created_at = data.get("created_at", "")
         room._call_index = data.get("call_index", 0)
@@ -414,6 +460,10 @@ class GameRoom:
         room._first_caller_index = data.get("first_caller_index", 0)
         room._call_round = data.get("call_round", 1)
         room._first_bidder = data.get("first_bidder")
+        room._round2_queue = data.get("round2_queue", [])
+        room._round2_scores = data.get("round2_scores", {})
+        room._grab_count = data.get("grab_count", {})
+        room._declined_players = set(data.get("declined_players", []))
         room.base_score = data.get("base_score", 10)
         room.all_played_cards = data.get("all_played_cards", [])
         room.play_history = data.get("play_history", [])
@@ -421,14 +471,18 @@ class GameRoom:
 
     def get_player_view(self, player_id: str) -> dict:
         """获取特定玩家可见的房间状态（隐藏他人手牌）"""
+        # 只有在最终确定地主（即已离开 DEALING 和 CALLING 阶段）时才判定地主确定
+        is_landlord_decided = self.landlord is not None and self.phase not in (GamePhase.DEALING, GamePhase.CALLING)
+
         players_view = []
         for p in self.players:
             pv = {"id": p.id, "nickname": p.nickname, "is_ai": p.is_ai, "is_online": p.is_online}
             if p.id == player_id:
                 pv["is_self"] = True
-            else:
-                pv["remaining"] = len(self.hands.get(p.id, []))
-            if self.landlord:
+            pv["remaining"] = len(self.hands.get(p.id, []))
+            
+            # 只有地主最终敲定后才设置 is_landlord 标志
+            if is_landlord_decided:
                 pv["is_landlord"] = (p.id == self.landlord)
             players_view.append(pv)
 
@@ -445,6 +499,7 @@ class GameRoom:
                 "card_type": self.last_play.card_type,
             },
             "multiplier": self.multiplier,
+            "doubling_choices": dict(self.doubling_choices),
             "call_round": self._call_round,
             "call_scores": dict(self._call_scores),
             "first_bidder": self._first_bidder,
@@ -452,7 +507,9 @@ class GameRoom:
             "base_score": self.base_score,
             "all_played_cards": self.all_played_cards,
         }
-        # 地主确定后才公开底牌
-        if self.landlord:
+        # 地主确定后且非叫地主阶段才公开底牌，否则为 []
+        if is_landlord_decided:
             view["bottom_cards"] = self.bottom_cards
+        else:
+            view["bottom_cards"] = []
         return view

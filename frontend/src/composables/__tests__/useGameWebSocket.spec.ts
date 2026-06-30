@@ -143,7 +143,7 @@ describe('useGameWebSocket', () => {
     unsubscribeState()
   })
 
-  it('uses shared funny quick chat presets for chat bubbles', async () => {
+  it('plays quick chat voice without showing chat text on the table', async () => {
     const playerStore = usePlayerStore()
     playerStore.playerId = 'p1'
     playerStore.authToken = 'token'
@@ -162,14 +162,55 @@ describe('useGameWebSocket', () => {
 
     const { useGameStore } = await import('@/stores/gameStore')
     const gameStore = useGameStore()
-    expect(gameStore.playerActions.p2).toBe('快点吧，牌都快睡着了！')
+    expect(playQuickChatVoiceMock).toHaveBeenCalledWith('大家好，很高兴见到各位。', 'p2', 0)
+    expect(playSoundMock).not.toHaveBeenCalledWith('chatMsg')
+    expect(gameStore.playerActions.p2).toBeUndefined()
+  })
+
+  it('triggers alarm sound and balloon text when remaining card count is 1 or 2 after cards_played', async () => {
+    vi.useFakeTimers()
+    const { usePlayerStore } = await import('@/stores/playerStore')
+    const playerStore = usePlayerStore()
+    playerStore.playerId = 'p2'
+    playerStore.authToken = 'token'
+
+    const { useGameStore } = await import('@/stores/gameStore')
+    const gameStore = useGameStore()
+    
+    gameStore.players = [
+      { id: 'p2', nickname: 'Test2', isAi: false, isOnline: true, remaining: 17, isLandlord: false, isSelf: false }
+    ]
+
+    const { connect } = useGameWebSocket()
+    connect()
+    const socket = MockWebSocket.instances[0]!
+
+    socket.onmessage?.(new MessageEvent('message', {
+      data: JSON.stringify({
+        event: 'cards_played',
+        player: 'p2',
+        cards: [1, 2],
+        room_state: {
+          players: [
+            { id: 'p2', nickname: 'Test2', is_ai: false, is_online: true, remaining: 2, is_landlord: false, is_self: false }
+          ]
+        }
+      }),
+    }))
+
+    expect(playSoundMock).toHaveBeenCalledWith('baojing2', 'p2')
+    expect(gameStore.playerActions.p2).toBe('')
+
+    vi.useRealTimers()
   })
 })
 
 const playSoundMock = vi.fn()
+const playQuickChatVoiceMock = vi.fn()
 vi.mock('../useSoundEngine', () => ({
   useSoundEngine: () => ({
     playSound: playSoundMock,
+    playQuickChatVoice: playQuickChatVoiceMock,
     startBgm: vi.fn(),
     stopBgm: vi.fn(),
   }),

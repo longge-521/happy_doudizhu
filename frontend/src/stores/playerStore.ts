@@ -7,6 +7,7 @@ export const usePlayerStore = defineStore('player', () => {
   const nickname = ref(localStorage.getItem('hmp_nickname') || '')
   const username = ref(localStorage.getItem('hmp_username') || '')
   const authToken = ref(localStorage.getItem('hmp_game_auth_token') || '')
+  const avatarUrl = ref(localStorage.getItem('hmp_avatar_url') || '')
   const beans = ref(10000)
   const totalGames = ref(0)
   const winRate = ref(0)
@@ -24,10 +25,12 @@ export const usePlayerStore = defineStore('player', () => {
     nickname.value = name
     username.value = accountName
     authToken.value = token
+    avatarUrl.value = ''
     localStorage.setItem('hmp_player_id', id)
     localStorage.setItem('hmp_nickname', name)
     localStorage.setItem('hmp_username', accountName)
     localStorage.setItem('hmp_game_auth_token', token)
+    localStorage.removeItem('hmp_avatar_url')
   }
 
   async function fetchProfile() {
@@ -38,6 +41,12 @@ export const usePlayerStore = defineStore('player', () => {
       })
       if (res.ok) {
         const data = await res.json()
+        avatarUrl.value = data.avatar_url || ''
+        if (avatarUrl.value) {
+          localStorage.setItem('hmp_avatar_url', avatarUrl.value)
+        } else {
+          localStorage.removeItem('hmp_avatar_url')
+        }
         beans.value = data.beans
         totalGames.value = data.total_games
         winRate.value = data.win_rate || 0
@@ -132,10 +141,12 @@ export const usePlayerStore = defineStore('player', () => {
     nickname.value = ''
     username.value = ''
     authToken.value = ''
+    avatarUrl.value = ''
     localStorage.removeItem('hmp_player_id')
     localStorage.removeItem('hmp_nickname')
     localStorage.removeItem('hmp_username')
     localStorage.removeItem('hmp_game_auth_token')
+    localStorage.removeItem('hmp_avatar_url')
   }
 
   async function modifyBeans(newBeans: number): Promise<{ ok: boolean; error?: string }> {
@@ -182,9 +193,33 @@ export const usePlayerStore = defineStore('player', () => {
     }
   }
 
+  async function modifyAvatar(newAvatarUrl: string | null): Promise<{ ok: boolean; error?: string }> {
+    try {
+      const res = await fetch(`/api/game/profile/${playerId.value}/avatar`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ avatar_url: newAvatarUrl })
+      })
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}))
+        return { ok: false, error: errData.detail || '淇敼澶村儚澶辫触' }
+      }
+      const data = await res.json()
+      avatarUrl.value = data.avatar_url || ''
+      if (avatarUrl.value) {
+        localStorage.setItem('hmp_avatar_url', avatarUrl.value)
+      } else {
+        localStorage.removeItem('hmp_avatar_url')
+      }
+      return { ok: true }
+    } catch (e: any) {
+      return { ok: false, error: e.message || '缃戠粶杩炴帴澶辫触' }
+    }
+  }
+
   return {
-    playerId, nickname, username, authToken, beans, totalGames, winRate,
+    playerId, nickname, username, authToken, avatarUrl, beans, totalGames, winRate,
     rankId, subRank, stars, rankTitle,
-    register, login, logout, fetchProfile, modifyBeans, modifyRank
+    register, login, logout, fetchProfile, modifyBeans, modifyRank, modifyAvatar
   }
 })
