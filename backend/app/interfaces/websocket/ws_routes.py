@@ -6,7 +6,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends
 from app.application.message.message_app_service import MessageAppService
 from app.application.upload.upload_app_service import UploadAppService
 
-logger = logging.getLogger("hmp_ws_service")
+logger = logging.getLogger("happy_doudizhu")
 router = APIRouter(tags=["WebSocket"])
 
 def _is_safe_upload_id(upload_id: str) -> bool:
@@ -88,7 +88,7 @@ async def websocket_endpoint(
     await handler.run()
 
 
-@router.websocket("/hmp_ws_service/repository/mirror/v2.0")
+@router.websocket("/happy_doudizhu/repository/mirror/v2.0")
 async def repository_mirror_ws_endpoint(
     websocket: WebSocket,
     manager: WSConnectionManager = Depends(get_websocket_manager)

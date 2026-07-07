@@ -17,7 +17,7 @@ LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "log")
 if not os.path.exists(LOG_DIR):
     os.makedirs(LOG_DIR)
 
-log_path = os.path.join(LOG_DIR, "hmp_ws_service.log")
+log_path = os.path.join(LOG_DIR, "happy_doudizhu.log")
 
 # 使用 RotatingFileHandler 以支持日志文件轮转与自动清理，防范磁盘满溢
 # 初始化全局日志系统 (从基础设施层导入并装配)
@@ -25,7 +25,7 @@ from app.infrastructure.logging.setup import setup_logging
 
 setup_logging()
 
-logger = logging.getLogger("hmp_ws_service")
+logger = logging.getLogger("happy_doudizhu")
 
 # 引入 DDD 重构层
 from app.infrastructure.database.session import init_db, should_auto_init_db
@@ -43,7 +43,7 @@ from app.interfaces.websocket.ws_routes import router as ws_router
 from app.interfaces.websocket.game_routes import router as game_ws_router
 from app.interfaces.api.game_routes import router as game_api_router
 
-app = FastAPI(title="HMP WS Service (DDD)")
+app = FastAPI(title="Happy Doudizhu Service (DDD)")
 
 # CORS 中间件 (支持 Vue 前端跨域访问)
 from fastapi.middleware.cors import CORSMiddleware

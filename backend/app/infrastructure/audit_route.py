@@ -4,7 +4,7 @@ from fastapi import Request, Response
 from fastapi.routing import APIRoute
 from app.application.audit_log.audit_log_app_service import AuditLogAppService
 
-logger = logging.getLogger("hmp_ws_service")
+logger = logging.getLogger("happy_doudizhu")
 
 class AuditLogRoute(APIRoute):
     """

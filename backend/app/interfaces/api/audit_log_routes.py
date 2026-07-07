@@ -8,7 +8,7 @@ from app.infrastructure.auth import verify_token
 from app.application.audit_log.audit_log_app_service import AuditLogAppService
 from app.infrastructure.audit_route import AuditLogRoute
 
-logger = logging.getLogger("hmp_ws_service")
+logger = logging.getLogger("happy_doudizhu")
 router = APIRouter(prefix="/api/audit-logs", tags=["AuditLogs"], dependencies=[Depends(verify_token)], route_class=AuditLogRoute)
 
 def get_audit_service(db: Session = Depends(get_db)) -> AuditLogAppService:

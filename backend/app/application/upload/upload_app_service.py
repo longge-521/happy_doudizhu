@@ -3,7 +3,7 @@ import logging
 from typing import List, Union
 from app.infrastructure.storage.local_storage_adapter import LocalStorageAdapter
 
-logger = logging.getLogger("hmp_ws_service")
+logger = logging.getLogger("happy_doudizhu")
 
 class UploadAppService:
     """文件上传与合并应用服务类：组装物理存储、上传状态会话并执行合并大文件的业务用例。"""

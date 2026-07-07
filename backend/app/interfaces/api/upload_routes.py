@@ -8,7 +8,9 @@ from app.infrastructure.database.models import UploadedFileORM
 from app.infrastructure.auth import verify_token
 from app.infrastructure.audit_route import AuditLogRoute
 
-logger = logging.getLogger("hmp_ws_service")
+from app.infrastructure.config import settings
+
+logger = logging.getLogger("happy_doudizhu")
 router = APIRouter(
     prefix="/api/uploads",
     tags=["Uploads"],
@@ -53,7 +55,7 @@ async def delete_uploaded_file(request: Request,
     # 允许的合法目录集合（包含当前配置的 UPLOAD_DIR 和项目默认的内部 uploads 目录）
     base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
     default_upload_dir = os.path.join(base_dir, "uploads")
-    config_upload_dir = os.getenv("UPLOAD_DIR", default_upload_dir)
+    config_upload_dir = settings.UPLOAD_DIR or default_upload_dir
     
     # 规范化并获取绝对路径，若为相对路径则相对于项目的 base_dir
     allowed_dirs = [

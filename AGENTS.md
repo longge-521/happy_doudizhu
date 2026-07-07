@@ -137,7 +137,7 @@ DB_HOST=127.0.0.1
 DB_PORT=3306
 DB_USER=root
 DB_PASSWORD=your_password
-DB_NAME=hmp_websocket
+DB_NAME=happy_doudizhu
 REDIS_HOST=127.0.0.1
 REDIS_PORT=6379
 REDIS_PASSWORD=your_redis_password
@@ -152,14 +152,16 @@ APP_ENV=development
 AUTO_INIT_DB=true
 ```
 
-数据库模型在 `backend/app/infrastructure/database/models.py`：
+数据库模型在 `backend/app/infrastructure/database/models.py`，实际表名均带 `ddz_` 前缀：
 
-- `site_message`
-- `uploaded_file`
-- `audit_log`
-- `player_profile`
-- `user_account`
-- `game_record`
+| 模型类 | 实际表名 | 说明 |
+| --- | --- | --- |
+| `SiteMessageORM` | `ddz_site_message` | 站内信 |
+| `UploadedFileORM` | `ddz_uploaded_file` | 上传文件 |
+| `AuditLogORM` | `ddz_audit_log` | 审计日志 |
+| `PlayerProfileORM` | `ddz_player_profile` | 玩家档案 |
+| `UserORM` | `ddz_user_account` | 用户账号 |
+| `GameRecordORM` | `ddz_game_record` | 对局战绩 |
 
 数据库初始化逻辑在 `backend/app/infrastructure/database/session.py`：
 
@@ -236,32 +238,58 @@ WebSocket 前端封装：
 
 `DebugConsoleView.vue` 内置 WebSocket 调试、站内信、二进制切片上传、审计日志查询等功能。
 
+## Python 运行环境
+
+> **强制要求**：后端必须使用以下专用 conda 环境运行，禁止使用系统默认 Python。
+
+| 项目 | 値 |
+| --- | --- |
+| Conda 环境名 | `hmp_ai` |
+| Python 解释器路径 | `D:\ProgramData\miniconda3\envs\hmp_ai\python.exe` |
+| Python 版本 | 3.10.20 |
+| 激活命令（可选） | `conda activate hmp_ai` |
+
+**原因**：系统全局 Python 为 3.13，SQLAlchemy 2.0.25 与 Python 3.13 存在类继承兼容性问题（`__static_attributes__`、`__firstlineno__`），会导致所有测试和服务启动失败。`hmp_ai` 环境已完整安装 `requirements.txt` 中的所有依赖，是本项目唯一经过验证的运行环境。
+
+**新环境初始化数据库**（首次部署时运行）：
+
+```powershell
+cd backend
+D:\ProgramData\miniconda3\envs\hmp_ai\python.exe scripts/create_db.py
+```
+
+---
+
 ## 运行命令
+
+> 以下命令中的 `python` 均指 `D:\ProgramData\miniconda3\envs\hmp_ai\python.exe`，请勿使用系统 python。
 
 后端依赖安装：
 
-```bash
+```powershell
 cd backend
-pip install -r requirements.txt
+D:\ProgramData\miniconda3\envs\hmp_ai\python.exe -m pip install -r requirements.txt
 ```
 
 后端启动：
 
-```bash
+```powershell
 cd backend
-python main.py
+D:\ProgramData\miniconda3\envs\hmp_ai\python.exe main.py
 ```
 
-后端测试：
+后端测试（全量）：
 
-```bash
-python -m pytest
+```powershell
+cd backend
+D:\ProgramData\miniconda3\envs\hmp_ai\python.exe -m pytest tests/ -v
 ```
 
-也可只跑后端测试目录：
+后端测试（快速，失败即停）：
 
-```bash
-python -m pytest backend/tests -v
+```powershell
+cd backend
+D:\ProgramData\miniconda3\envs\hmp_ai\python.exe -m pytest tests/ -x -q --tb=short
 ```
 
 前端依赖安装：
@@ -294,7 +322,7 @@ npm run build
 
 ## 测试现状
 
-后端当前有约 20 个测试文件、40 多个测试函数，重点覆盖：
+后端当前有约 20 个测试文件、145 个测试函数（截至 2026-07-07 全部通过），重点覆盖：
 
 - 扑克牌编码、排序和发牌。
 - 斗地主牌型识别与压制规则。
@@ -306,6 +334,8 @@ npm run build
 - 上传安全、路径穿越防护、切片边界。
 - 审计日志 APIRoute。
 - 数据库启动初始化策略。
+
+运行测试必须使用 `hmp_ai` 环境（见“Python 运行环境”章节），否则因 Python 3.13 兼容性问题无法收集测试。
 
 前端目前只有默认组件测试较少，修改核心前端交互时应优先做手动联调，必要时补 Vitest。
 

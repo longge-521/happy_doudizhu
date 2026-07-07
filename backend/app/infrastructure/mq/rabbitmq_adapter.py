@@ -1,12 +1,12 @@
-import os
 import json
 import uuid
 import logging
 import asyncio
 import aio_pika
 from typing import Callable, Awaitable, Optional
+from app.infrastructure.config import settings
 
-logger = logging.getLogger("hmp_ws_service")
+logger = logging.getLogger("happy_doudizhu")
 
 class RabbitMQAdapter:
     """处理具体的 aio_pika 连接管理、通道声明以及重连逻辑，提供向外暴露的简单发送/消费接口。"""
@@ -14,11 +14,11 @@ class RabbitMQAdapter:
     def __init__(self):
         self.connection: Optional[aio_pika.RobustConnection] = None
         self.channel: Optional[aio_pika.RobustChannel] = None
-        self.host = os.getenv("MQ_HOST", "127.0.0.1")
-        self.port = int(os.getenv("MQ_PORT", "5672"))
-        self.user = os.getenv("MQ_USER", "admin")
-        self.password = os.getenv("MQ_PASSWORD", "123456")
-        self.exchange_name = os.getenv("MQ_EXCHANGE_NAME", "hmp_ws_service_site_messages_exchange")
+        self.host = settings.MQ_HOST
+        self.port = settings.MQ_PORT
+        self.user = settings.MQ_USER
+        self.password = settings.MQ_PASSWORD
+        self.exchange_name = settings.MQ_EXCHANGE_NAME
         self._consumer_tasks = []
 
     async def connect(self):

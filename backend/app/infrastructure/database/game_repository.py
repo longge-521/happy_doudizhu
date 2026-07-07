@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from app.infrastructure.database.models import PlayerProfileORM, GameRecordORM, UserORM
 from app.domain.game.entities import PlayerProfile, GameRecord
 
-logger = logging.getLogger("hmp_ws_service")
+logger = logging.getLogger("happy_doudizhu")
 
 
 class SQLGameRepository:

@@ -38,7 +38,7 @@ def setup_logging(default_level=logging.DEBUG):
     if not os.path.exists(log_dir):
         os.makedirs(log_dir)
 
-    log_path = os.path.join(log_dir, "hmp_ws_service.log")
+    log_path = os.path.join(log_dir, "happy_doudizhu.log")
 
     # 1. 声明纯文本物理文件 Formatter 与 Handler (无 ANSI 转义纯文本)
     file_format = "%(asctime)s [%(levelname)s] [%(filename)s:%(lineno)d - %(funcName)s]: %(message)s"

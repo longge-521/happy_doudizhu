@@ -5,7 +5,7 @@ from app.domain.message.entities import SiteMessage
 from app.domain.message.repositories import MessageRepository
 from app.infrastructure.mq.rabbitmq_adapter import RabbitMQAdapter
 
-logger = logging.getLogger("hmp_ws_service")
+logger = logging.getLogger("happy_doudizhu")
 
 class MessageAppService:
     """站内信应用服务类，编排事务与业务用例。"""
