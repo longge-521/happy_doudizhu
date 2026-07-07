@@ -1,9 +1,14 @@
 // frontend/src/composables/useGameWebSocket.ts
 import { ref } from 'vue'
-import { CHAT_PRESETS } from '@/constants/chatPresets'
 import { useGameStore } from '@/stores/gameStore'
 import { usePlayerStore } from '@/stores/playerStore'
-import { detectCardPlay } from '@/utils/cardUtils'
+import {
+  clearCardPresentationEffectTimer,
+  getDoubleChoiceLabel,
+  playCardPresentationEffects,
+  playDoubleChoiceSound,
+  playQuickChatMessage,
+} from './gameWebSocketEffects'
 import { notifyVoiceSignal, notifyVoiceState } from './gameVoiceEvents'
 import { useSoundEngine } from './useSoundEngine'
 
@@ -14,13 +19,14 @@ let reconnectTimer: number | null = null
 let manuallyClosed = false
 let socketPlayerId = ''
 let gameOverTimer: number | null = null
-let effectTimer: number | null = null
 
 function debugLog(...args: unknown[]) {
   if (import.meta.env.DEV) {
     console.log(...args)
   }
 }
+
+export { playDoubleChoiceSound }
 
 export function useGameWebSocket() {
   function connect() {
@@ -104,6 +110,7 @@ export function useGameWebSocket() {
       clearTimeout(gameOverTimer)
       gameOverTimer = null
     }
+    clearCardPresentationEffectTimer()
     if (ws) {
       ws.close()
       ws = null
@@ -195,7 +202,7 @@ export function useGameWebSocket() {
         gameStore.landlord = data.landlord
         gameStore.bottomCards = data.bottom_cards || []
         gameStore.multiplier = data.multiplier || 1
-        gameStore.playerActions = {} // 清空叫分提示
+        gameStore.playerActions = {}
         break
       }
       case 'double_chosen': {
@@ -214,7 +221,6 @@ export function useGameWebSocket() {
         gameStore.gamePhase = 'PLAYING'
         if (data.current_turn !== undefined) gameStore.currentTurn = data.current_turn || ''
         if (data.multiplier !== undefined) gameStore.multiplier = data.multiplier
-        // 延迟 2.5 秒清空加倍文字提示，使用户能看清每个人的选择
         setTimeout(() => {
           if (gameStore.gamePhase === 'PLAYING') {
             gameStore.playerActions = {}
@@ -240,7 +246,6 @@ export function useGameWebSocket() {
         gameStore.playerActions = { ...gameStore.playerActions, [data.player]: '' }
         gameStore.playerPlayedCards = { ...gameStore.playerPlayedCards, [data.player]: data.cards }
 
-        // 剩余牌报警判定逻辑：如果出牌后玩家手牌剩余 1 或 2 张，立马触发报警语音
         const activePlayer = gameStore.players.find(p => p.id === data.player)
         if (activePlayer) {
           if (activePlayer.remaining === 2) {
@@ -250,82 +255,7 @@ export function useGameWebSocket() {
           }
         }
 
-        const play = detectCardPlay(data.cards)
-        if (play) {
-          if (effectTimer) {
-            clearTimeout(effectTimer)
-            effectTimer = null
-          }
-
-          // 计算对应语音点数：3~17
-          let cardVal = 3
-          if (play.mainRank !== undefined) {
-            if (play.mainRank === 13) cardVal = 16      // 小王
-            else if (play.mainRank === 14) cardVal = 17 // 大王
-            else cardVal = play.mainRank + 3
-          }
-
-          if (play.kind === 'bomb') {
-            playSoundCP('bomb_effect')
-            setTimeout(() => playSoundCP('bomb', data.player), 200)
-            gameStore.activeEffect = 'bomb'
-            effectTimer = window.setTimeout(() => {
-              gameStore.activeEffect = ''
-              effectTimer = null
-            }, 1500)
-          } else if (play.kind === 'rocket') {
-            playSoundCP('bomb_effect')
-            setTimeout(() => playSoundCP('rocket', data.player), 200)
-            gameStore.activeEffect = 'bomb'
-            effectTimer = window.setTimeout(() => {
-              gameStore.activeEffect = ''
-              effectTimer = null
-            }, 1500)
-          } else if (play.kind === 'airplane' || play.kind === 'airplane_single' || play.kind === 'airplane_pair') {
-            playSoundCP('plane_effect')
-            setTimeout(() => playSoundCP('airplane', data.player), 200)
-            gameStore.activeEffect = 'plane'
-            effectTimer = window.setTimeout(() => {
-              gameStore.activeEffect = ''
-              effectTimer = null
-            }, 1500)
-          } else if (play.kind === 'straight') {
-            playSoundCP('shunzi_effect')
-            setTimeout(() => playSoundCP('straight', data.player), 200)
-            gameStore.activeEffect = 'shimmer'
-            effectTimer = window.setTimeout(() => {
-              gameStore.activeEffect = ''
-              effectTimer = null
-            }, 1500)
-          } else if (play.kind === 'double_straight') {
-            playSoundCP('shunzi_effect')
-            setTimeout(() => playSoundCP('double_straight', data.player), 200)
-            gameStore.activeEffect = 'shimmer'
-            effectTimer = window.setTimeout(() => {
-              gameStore.activeEffect = ''
-              effectTimer = null
-            }, 1500)
-          } else if (play.kind === 'single') {
-            playSoundCP('playCard')
-            setTimeout(() => playSoundCP(String(cardVal) as `${number}`, data.player), 100)
-          } else if (play.kind === 'pair') {
-            playSoundCP('playCard')
-            setTimeout(() => playSoundCP(`pair${cardVal}`, data.player), 100)
-          } else if (play.kind === 'triple') {
-            playSoundCP('playCard')
-            setTimeout(() => playSoundCP(`three_one${cardVal}`, data.player), 100)
-          } else if (play.kind === 'triple_one') {
-            playSoundCP('playCard')
-            setTimeout(() => playSoundCP('three_one', data.player), 100)
-          } else if (play.kind === 'triple_two') {
-            playSoundCP('playCard')
-            setTimeout(() => playSoundCP('three_two', data.player), 100)
-          } else {
-            playSoundCP('playCard', data.player)
-          }
-        } else {
-          playSoundCP('playCard', data.player)
-        }
+        playCardPresentationEffects(data.cards, data.player, gameStore)
         break
       }
       case 'turn_passed': {
@@ -347,100 +277,21 @@ export function useGameWebSocket() {
         if (data.room_state) {
           data.room_state.phase = 'PLAYING'
           gameStore.updateFromRoomState(data.room_state)
-          // 将最后的绝杀出牌写入 playerPlayedCards，以便在桌面上与结算单中正确展示绝杀牌
           if (data.room_state.last_play && data.room_state.last_play.player) {
             const lastPlayer = data.room_state.last_play.player
             const lastCards = data.room_state.last_play.cards || []
             gameStore.playerPlayedCards = {
               ...gameStore.playerPlayedCards,
-              [lastPlayer]: lastCards
+              [lastPlayer]: lastCards,
             }
             gameStore.playerActions = {
               ...gameStore.playerActions,
-              [lastPlayer]: ''
+              [lastPlayer]: '',
             }
-
-            // 播放最后一手绝杀牌的出牌音效与特效
-            const { playSound: playSoundCP } = useSoundEngine()
-            const play = detectCardPlay(lastCards)
-            if (play) {
-              if (effectTimer) {
-                clearTimeout(effectTimer)
-                effectTimer = null
-              }
-
-              // 计算对应语音点数：3~17
-              let cardVal = 3
-              if (play.mainRank !== undefined) {
-                if (play.mainRank === 13) cardVal = 16      // 小王
-                else if (play.mainRank === 14) cardVal = 17 // 大王
-                else cardVal = play.mainRank + 3
-              }
-
-              if (play.kind === 'bomb') {
-                playSoundCP('bomb_effect')
-                setTimeout(() => playSoundCP('bomb', lastPlayer), 200)
-                gameStore.activeEffect = 'bomb'
-                effectTimer = window.setTimeout(() => {
-                  gameStore.activeEffect = ''
-                  effectTimer = null
-                }, 1500)
-              } else if (play.kind === 'rocket') {
-                playSoundCP('bomb_effect')
-                setTimeout(() => playSoundCP('rocket', lastPlayer), 200)
-                gameStore.activeEffect = 'bomb'
-                effectTimer = window.setTimeout(() => {
-                  gameStore.activeEffect = ''
-                  effectTimer = null
-                }, 1500)
-              } else if (play.kind === 'airplane' || play.kind === 'airplane_single' || play.kind === 'airplane_pair') {
-                playSoundCP('plane_effect')
-                setTimeout(() => playSoundCP('airplane', lastPlayer), 200)
-                gameStore.activeEffect = 'plane'
-                effectTimer = window.setTimeout(() => {
-                  gameStore.activeEffect = ''
-                  effectTimer = null
-                }, 1500)
-              } else if (play.kind === 'straight') {
-                playSoundCP('shunzi_effect')
-                setTimeout(() => playSoundCP('straight', lastPlayer), 200)
-                gameStore.activeEffect = 'shimmer'
-                effectTimer = window.setTimeout(() => {
-                  gameStore.activeEffect = ''
-                  effectTimer = null
-                }, 1500)
-              } else if (play.kind === 'double_straight') {
-                playSoundCP('shunzi_effect')
-                setTimeout(() => playSoundCP('double_straight', lastPlayer), 200)
-                gameStore.activeEffect = 'shimmer'
-                effectTimer = window.setTimeout(() => {
-                  gameStore.activeEffect = ''
-                  effectTimer = null
-                }, 1500)
-              } else if (play.kind === 'single') {
-                playSoundCP('playCard')
-                setTimeout(() => playSoundCP(String(cardVal) as `${number}`, lastPlayer), 100)
-              } else if (play.kind === 'pair') {
-                playSoundCP('playCard')
-                setTimeout(() => playSoundCP(`pair${cardVal}`, lastPlayer), 100)
-              } else if (play.kind === 'triple') {
-                playSoundCP('playCard')
-                setTimeout(() => playSoundCP(`three_one${cardVal}`, lastPlayer), 100)
-              } else if (play.kind === 'triple_one') {
-                playSoundCP('playCard')
-                setTimeout(() => playSoundCP('three_one', lastPlayer), 100)
-              } else if (play.kind === 'triple_two') {
-                playSoundCP('playCard')
-                setTimeout(() => playSoundCP('three_two', lastPlayer), 100)
-              } else {
-                playSoundCP('playCard', lastPlayer)
-              }
-            } else {
-              playSoundCP('playCard', lastPlayer)
-            }
+            playCardPresentationEffects(lastCards, lastPlayer, gameStore)
           }
         }
-        
+
         const settlementData = {
           winner: data.winner,
           winnerSide: data.winner_side,
@@ -450,7 +301,6 @@ export function useGameWebSocket() {
         }
         gameStore.settlement = settlementData
 
-        // 判断自己是否胜利并播放对应音效，延迟 1.5 秒播放以给绝杀牌音效留出播放时间
         const myId = playerStoreGO.playerId
         const isLandlord = gameStore.landlord === myId
         const myWon = (data.winner_side === 'landlord' && isLandlord) ||
@@ -463,8 +313,7 @@ export function useGameWebSocket() {
         gameStore.showGameOverBanner = true
         gameStore.showWinnerBanner = false
         gameStore.gameOverTitle = data.winner_side === 'landlord' ? '地主胜利' : '农民胜利'
-        
-        // 3秒后弹出谁胜利了的大字
+
         setTimeout(() => {
           gameStore.showWinnerBanner = true
         }, 3000)
@@ -478,12 +327,9 @@ export function useGameWebSocket() {
         }, 5000)
         break
       }
-      case 'chat_msg': {
-        const { playQuickChatVoice } = useSoundEngine()
-        const msg = CHAT_PRESETS[data.msg_id] || '...'
-        void playQuickChatVoice(msg, data.player, data.msg_id)
+      case 'chat_msg':
+        playQuickChatMessage(data.msg_id, data.player)
         break
-      }
       case 'voice_signal':
         notifyVoiceSignal({
           player: data.player,
@@ -508,23 +354,4 @@ export function useGameWebSocket() {
   }
 
   return { isConnected, connect, disconnect, sendAction }
-}
-
-function getDoubleChoiceLabel(choice: string) {
-  if (choice === 'double') return '加倍'
-  if (choice === 'super') return '超级加倍'
-  return '不加倍'
-}
-
-export function playDoubleChoiceSound(choice: string, playerId: string) {
-  const { playSound } = useSoundEngine()
-  if (choice === 'double') {
-    playSound('doubling')
-    setTimeout(() => playSound('jiabei', playerId), 120)
-  } else if (choice === 'super') {
-    playSound('doubling')
-    setTimeout(() => playSound('superDouble', playerId), 120)
-  } else {
-    playSound('bujiabei', playerId)
-  }
 }
