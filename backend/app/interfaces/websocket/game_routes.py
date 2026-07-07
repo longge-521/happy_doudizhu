@@ -4,7 +4,7 @@ import logging
 from typing import Dict, List
 from fastapi import APIRouter, WebSocket, Depends
 
-logger = logging.getLogger("hmp_ws_service")
+logger = logging.getLogger("happy_doudizhu")
 router = APIRouter(tags=["Game WebSocket"])
 
 

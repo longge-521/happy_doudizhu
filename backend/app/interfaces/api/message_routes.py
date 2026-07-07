@@ -9,7 +9,7 @@ from app.infrastructure.database import SQLMessageRepository
 from app.infrastructure.database.session import get_db
 from app.infrastructure.audit_route import AuditLogRoute
 
-logger = logging.getLogger("hmp_ws_service")
+logger = logging.getLogger("happy_doudizhu")
 router = APIRouter(
     prefix="/api/messages",
     tags=["Messages"],

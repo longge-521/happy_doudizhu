@@ -8,7 +8,7 @@ from app.domain.game.room import GameRoom, Player, GamePhase
 from app.domain.game.ai_strategy import ai_decide_call, ai_decide_play, build_ai_context
 from app.infrastructure.redis_game_repository import RedisGameRepository
 
-logger = logging.getLogger("hmp_ws_service")
+logger = logging.getLogger("happy_doudizhu")
 
 AI_NAMES = ["机器人小明", "机器人小红", "机器人小刚", "机器人小芳", "机器人小李"]
 

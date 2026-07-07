@@ -5,7 +5,7 @@ import logging
 from typing import Optional, List
 from app.domain.game.room import GameRoom
 
-logger = logging.getLogger("hmp_ws_service")
+logger = logging.getLogger("happy_doudizhu")
 
 ROOM_KEY_PREFIX = "game:room:"
 PLAYER_ROOM_PREFIX = "game:player_room:"

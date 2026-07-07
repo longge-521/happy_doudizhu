@@ -9,7 +9,7 @@ from app.interfaces.websocket.ws_routes import WSConnectionManager, _is_safe_upl
 from app.infrastructure.database.session import transactional_session
 from app.application.audit_log.audit_log_app_service import AuditLogAppService
 
-logger = logging.getLogger("hmp_ws_service")
+logger = logging.getLogger("happy_doudizhu")
 
 class WebSocketHandler:
     """管理单个 WebSocket 长连接的长生命周期协议解析、会话状态及数据收发处理器。"""

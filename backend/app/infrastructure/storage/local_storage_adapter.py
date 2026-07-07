@@ -5,20 +5,22 @@ import shutil
 import time
 from typing import List, Union
 
-logger = logging.getLogger("hmp_ws_service")
+from app.infrastructure.config import settings
+
+logger = logging.getLogger("happy_doudizhu")
 
 
 class LocalStorageAdapter:
     """Local disk storage for chunked uploads and merged files."""
 
-    MAX_CHUNK_BYTES = int(os.getenv("UPLOAD_MAX_CHUNK_BYTES", str(4 * 1024 * 1024)))
-    MAX_UPLOAD_BYTES = int(os.getenv("UPLOAD_MAX_BYTES", str(512 * 1024 * 1024)))
+    MAX_CHUNK_BYTES = settings.UPLOAD_MAX_CHUNK_BYTES
+    MAX_UPLOAD_BYTES = settings.UPLOAD_MAX_BYTES
     MAX_TOTAL_CHUNKS = max(1, (MAX_UPLOAD_BYTES + MAX_CHUNK_BYTES - 1) // MAX_CHUNK_BYTES)
 
     def __init__(self):
         self.base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-        self.upload_dir = os.getenv("UPLOAD_DIR", os.path.join(self.base_dir, "uploads"))
-        self.temp_dir = os.getenv("TEMP_DIR", os.path.join(self.base_dir, "temp_uploads"))
+        self.upload_dir = settings.UPLOAD_DIR or os.path.join(self.base_dir, "uploads")
+        self.temp_dir = settings.TEMP_DIR or os.path.join(self.base_dir, "temp_uploads")
         self._ensure_dirs()
 
     def _ensure_dirs(self):

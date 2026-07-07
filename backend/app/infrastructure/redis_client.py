@@ -1,22 +1,15 @@
-import os
 import logging
 from redis.asyncio import Redis, ConnectionPool
-from dotenv import load_dotenv
+from app.infrastructure.config import settings
 
-load_dotenv()
-logger = logging.getLogger("hmp_ws_service")
-
-REDIS_HOST = os.getenv("REDIS_HOST", "127.0.0.1")
-REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
-REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", None)
-REDIS_DB = int(os.getenv("REDIS_DB", "0"))
+logger = logging.getLogger("happy_doudizhu")
 
 # 创建异步连接池
 pool = ConnectionPool(
-    host=REDIS_HOST,
-    port=REDIS_PORT,
-    password=REDIS_PASSWORD,
-    db=REDIS_DB,
+    host=settings.REDIS_HOST,
+    port=settings.REDIS_PORT,
+    password=settings.REDIS_PASSWORD,
+    db=settings.REDIS_DB,
     decode_responses=True,
     socket_connect_timeout=2.0
 )

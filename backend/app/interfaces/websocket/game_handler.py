@@ -11,7 +11,7 @@ from app.domain.game.room import GamePhase
 if TYPE_CHECKING:
     from app.application.game.game_app_service import GameAppService
 
-logger = logging.getLogger("hmp_ws_service")
+logger = logging.getLogger("happy_doudizhu")
 
 
 BASE_SCORE_MIN_BEANS = {

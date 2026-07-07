@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 T_Domain = TypeVar('T_Domain')
 T_ORM = TypeVar('T_ORM')
 
-logger = logging.getLogger("hmp_ws_service")
+logger = logging.getLogger("happy_doudizhu")
 class GenericSQLRepository(Generic[T_Domain, T_ORM]):
 
     """SQLAlchemy 泛型仓储基类，封装基础的 CRUD 操作，不进行 commit"""

@@ -2,17 +2,17 @@ import base64
 import hashlib
 import hmac
 import json
-import os
 import logging
 import secrets
 import time
 from fastapi import HTTPException, Request, Security
 from fastapi.security import APIKeyHeader, APIKeyQuery
 
-logger = logging.getLogger("hmp_ws_service")
+from app.infrastructure.config import settings
 
-# 从环境变量中获取安全令牌，默认可为空以维持开发兼容性
-API_TOKEN = os.getenv("API_TOKEN", "")
+logger = logging.getLogger("happy_doudizhu")
+
+API_TOKEN = settings.API_TOKEN or ""
 
 # 声明凭证获取策略
 api_key_header = APIKeyHeader(name="Authorization", auto_error=False)
@@ -21,7 +21,7 @@ game_auth_query = APIKeyQuery(name="auth_token", auto_error=False)
 
 PASSWORD_HASH_PREFIX = "pbkdf2_sha256"
 PASSWORD_HASH_ITERATIONS = 260000
-GAME_AUTH_TOKEN_TTL_SECONDS = int(os.getenv("GAME_AUTH_TOKEN_TTL_SECONDS", str(7 * 24 * 3600)))
+GAME_AUTH_TOKEN_TTL_SECONDS = settings.GAME_AUTH_TOKEN_TTL_SECONDS
 
 
 def _b64url_encode(data: bytes) -> str:
@@ -34,7 +34,7 @@ def _b64url_decode(data: str) -> bytes:
 
 
 def _game_auth_secret() -> bytes:
-    secret = os.getenv("GAME_AUTH_SECRET") or API_TOKEN or os.getenv("API_TOKEN")
+    secret = settings.GAME_AUTH_SECRET or settings.API_TOKEN
     if not secret and _is_production_env():
         raise RuntimeError("GAME_AUTH_SECRET or API_TOKEN must be configured in production")
     if not secret:
@@ -43,7 +43,7 @@ def _game_auth_secret() -> bytes:
 
 
 def _is_production_env() -> bool:
-    return os.getenv("APP_ENV", "").lower() in {"prod", "production"}
+    return settings.APP_ENV.lower() in {"prod", "production"}
 
 
 def _extract_bearer_token(authorization: str | None) -> str | None:
@@ -138,9 +138,10 @@ def verify_token(
     若环境变量未配置 API_TOKEN，则不进行拦截（以兼容开发与本地调试环境）。
     如果配置了，客户端必须提供匹配的 Bearer Token 或 Query Token 参数。
     """
-    if not API_TOKEN and not _is_production_env():
+    api_token = settings.API_TOKEN or ""
+    if not api_token and not _is_production_env():
         return True
-    if not API_TOKEN:
+    if not api_token:
         raise HTTPException(
             status_code=401,
             detail="Unauthorized: API_TOKEN must be configured in production"
@@ -156,7 +157,7 @@ def verify_token(
     if not extracted_token and token:
         extracted_token = token
         
-    if not extracted_token or extracted_token != API_TOKEN:
+    if not extracted_token or extracted_token != api_token:
         logger.warning("Unauthenticated HTTP access request rejected.")
         raise HTTPException(
             status_code=401,
@@ -168,11 +169,12 @@ def verify_ws_token(query_params) -> bool:
     """
     WebSocket 连接校验辅助方法。
     """
-    if not API_TOKEN and not _is_production_env():
+    api_token = settings.API_TOKEN or ""
+    if not api_token and not _is_production_env():
         return True
-    if not API_TOKEN:
+    if not api_token:
         logger.warning("Rejected WebSocket access because API_TOKEN is missing in production.")
         return False
     
     token = query_params.get("token")
-    return token == API_TOKEN
+    return token == api_token

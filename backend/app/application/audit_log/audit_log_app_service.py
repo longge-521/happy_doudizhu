@@ -7,7 +7,7 @@ from app.domain.audit_log.audit_log import AuditLog
 from app.infrastructure.database.audit_log_repository import SQLAuditLogRepository
 from app.infrastructure.database.session import SessionLocal
 
-logger = logging.getLogger("hmp_ws_service")
+logger = logging.getLogger("happy_doudizhu")
 
 class AuditLogAppService:
     """审计日志应用服务层，实现审计日志与业务的事务隔离及异步记录。"""

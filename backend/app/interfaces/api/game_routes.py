@@ -1,9 +1,11 @@
 # backend/app/interfaces/api/game_routes.py
 """斗地主游戏 HTTP REST API"""
+import os
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from pydantic import BaseModel, Field
+from app.infrastructure.config import settings
 from sqlalchemy.orm import Session
 
 from app.infrastructure.audit_route import AuditLogRoute
@@ -59,6 +61,16 @@ class UpdateRankRequest(BaseModel):
 
 class UpdateAvatarRequest(BaseModel):
     avatar_url: Optional[str] = Field(None, max_length=500)
+
+
+class UpdateProfileRequest(BaseModel):
+    nickname: Optional[str] = Field(None, min_length=1, max_length=20)
+    avatar_url: Optional[str] = Field(None, max_length=500)
+
+
+class UpdatePasswordRequest(BaseModel):
+    old_password: str = Field(..., min_length=4, max_length=100)
+    new_password: str = Field(..., min_length=4, max_length=100)
 
 
 @router.post("/auth/register")
@@ -224,4 +236,87 @@ def update_player_avatar(
         "ok": True,
         "player_id": player_id,
         "avatar_url": updated_profile.avatar_url,
+    }
+
+
+@router.post("/profile/{player_id}/update")
+def update_player_profile(
+    player_id: str,
+    req: UpdateProfileRequest,
+    db: Session = Depends(get_db),
+    current_player_id: str = Depends(require_game_player_id),
+):
+    ensure_player_access(player_id, current_player_id)
+    repo = SQLGameRepository(db)
+    if req.nickname is not None:
+        repo.update_nickname(player_id, req.nickname)
+    if req.avatar_url is not None:
+        normalized = normalize_avatar_url(req.avatar_url)
+        repo.update_avatar_url(player_id, normalized)
+    updated = repo.get_or_create_profile(player_id, player_id)
+    return {
+        "ok": True,
+        "nickname": updated.nickname,
+        "avatar_url": updated.avatar_url,
+    }
+
+
+@router.post("/profile/{player_id}/upload-avatar")
+async def upload_player_avatar(
+    player_id: str,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_player_id: str = Depends(require_game_player_id),
+):
+    ensure_player_access(player_id, current_player_id)
+    content_type = file.content_type
+    if not content_type or not content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="只允许上传图片格式的文件")
+
+    base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+    upload_dir = settings.UPLOAD_DIR or os.path.join(base_dir, "uploads")
+    avatar_dir = os.path.join(upload_dir, "avatars")
+    if not os.path.exists(avatar_dir):
+        os.makedirs(avatar_dir)
+
+    file_ext = os.path.splitext(file.filename)[1] or ".png"
+    import uuid
+    unique_filename = f"avatar_{player_id}_{uuid.uuid4().hex}{file_ext}"
+    dest_path = os.path.join(avatar_dir, unique_filename)
+
+    with open(dest_path, "wb") as f:
+        content = await file.read()
+        f.write(content)
+
+    avatar_url = f"/api/uploads/avatars/{unique_filename}"
+    return {
+        "ok": True,
+        "avatar_url": avatar_url
+    }
+
+
+@router.post("/profile/{player_id}/password")
+def update_player_password(
+    player_id: str,
+    req: UpdatePasswordRequest,
+    db: Session = Depends(get_db),
+    current_player_id: str = Depends(require_game_player_id),
+):
+    ensure_player_access(player_id, current_player_id)
+    repo = SQLGameRepository(db)
+    user = repo.get_user_by_player_id(player_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="未找到对应的用户记录")
+
+    if not verify_password(req.old_password, user.password):
+        raise HTTPException(status_code=400, detail="旧密码输入错误，校验失败")
+
+    if req.old_password == req.new_password:
+        raise HTTPException(status_code=400, detail="新密码不能与旧密码相同")
+
+    new_hash = hash_password(req.new_password)
+    repo.update_user_password(player_id, new_hash)
+    return {
+        "ok": True,
+        "message": "密码修改成功，请重新登录"
     }

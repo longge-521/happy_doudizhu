@@ -1,28 +1,29 @@
 from app.infrastructure.database import session
 from app.infrastructure.database import schema_migrations
+from app.infrastructure.config import settings
 
 
 def test_auto_init_db_disabled_in_production_by_default(monkeypatch):
-    monkeypatch.setenv("APP_ENV", "production")
-    monkeypatch.delenv("AUTO_INIT_DB", raising=False)
+    monkeypatch.setattr(settings, "APP_ENV", "production")
+    monkeypatch.setattr(settings, "AUTO_INIT_DB", None)
 
     assert session.should_auto_init_db() is False
 
 
 def test_auto_init_db_enabled_outside_production_by_default(monkeypatch):
-    monkeypatch.delenv("APP_ENV", raising=False)
-    monkeypatch.delenv("AUTO_INIT_DB", raising=False)
+    monkeypatch.setattr(settings, "APP_ENV", "development")
+    monkeypatch.setattr(settings, "AUTO_INIT_DB", None)
 
     assert session.should_auto_init_db() is True
 
 
 def test_auto_init_db_can_be_explicitly_overridden(monkeypatch):
-    monkeypatch.setenv("APP_ENV", "production")
-    monkeypatch.setenv("AUTO_INIT_DB", "true")
+    monkeypatch.setattr(settings, "APP_ENV", "production")
+    monkeypatch.setattr(settings, "AUTO_INIT_DB", True)
     assert session.should_auto_init_db() is True
 
-    monkeypatch.setenv("APP_ENV", "development")
-    monkeypatch.setenv("AUTO_INIT_DB", "false")
+    monkeypatch.setattr(settings, "APP_ENV", "development")
+    monkeypatch.setattr(settings, "AUTO_INIT_DB", False)
     assert session.should_auto_init_db() is False
 
 
@@ -68,9 +69,9 @@ def test_run_schema_migrations_adds_known_missing_columns(monkeypatch):
 
     class FakeInspector:
         def get_columns(self, table_name):
-            if table_name == "audit_log":
+            if table_name == "ddz_audit_log":
                 return [{"name": "id"}]
-            if table_name == "player_profile":
+            if table_name == "ddz_player_profile":
                 return [{"name": "player_id"}]
             return []
 
@@ -78,10 +79,10 @@ def test_run_schema_migrations_adds_known_missing_columns(monkeypatch):
 
     schema_migrations.run_schema_migrations(FakeEngine())
 
-    assert any("ALTER TABLE audit_log ADD COLUMN request_params" in sql for sql in executed_sql)
-    assert any("ALTER TABLE audit_log ADD COLUMN execution_time" in sql for sql in executed_sql)
-    assert any("ALTER TABLE audit_log ADD COLUMN method" in sql for sql in executed_sql)
-    assert any("ALTER TABLE player_profile ADD COLUMN avatar_url" in sql for sql in executed_sql)
-    assert any("ALTER TABLE player_profile ADD COLUMN rank_id" in sql for sql in executed_sql)
-    assert any("ALTER TABLE player_profile ADD COLUMN sub_rank" in sql for sql in executed_sql)
-    assert any("ALTER TABLE player_profile ADD COLUMN stars" in sql for sql in executed_sql)
+    assert any("ALTER TABLE ddz_audit_log ADD COLUMN request_params" in sql for sql in executed_sql)
+    assert any("ALTER TABLE ddz_audit_log ADD COLUMN execution_time" in sql for sql in executed_sql)
+    assert any("ALTER TABLE ddz_audit_log ADD COLUMN method" in sql for sql in executed_sql)
+    assert any("ALTER TABLE ddz_player_profile ADD COLUMN avatar_url" in sql for sql in executed_sql)
+    assert any("ALTER TABLE ddz_player_profile ADD COLUMN rank_id" in sql for sql in executed_sql)
+    assert any("ALTER TABLE ddz_player_profile ADD COLUMN sub_rank" in sql for sql in executed_sql)
+    assert any("ALTER TABLE ddz_player_profile ADD COLUMN stars" in sql for sql in executed_sql)

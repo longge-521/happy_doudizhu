@@ -13,3 +13,4 @@ httpx==0.26.0
 pytest-asyncio==0.23.5
 alembic==1.13.1
 redis>=4.2.0
+pydantic-settings==2.1.0

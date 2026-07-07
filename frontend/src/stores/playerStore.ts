@@ -194,17 +194,22 @@ export const usePlayerStore = defineStore('player', () => {
   }
 
   async function modifyAvatar(newAvatarUrl: string | null): Promise<{ ok: boolean; error?: string }> {
+    return modifyProfile(nickname.value, newAvatarUrl)
+  }
+
+  async function modifyProfile(newNickname: string, newAvatarUrl: string | null): Promise<{ ok: boolean; error?: string }> {
     try {
-      const res = await fetch(`/api/game/profile/${playerId.value}/avatar`, {
+      const res = await fetch(`/api/game/profile/${playerId.value}/update`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: JSON.stringify({ avatar_url: newAvatarUrl })
+        body: JSON.stringify({ nickname: newNickname, avatar_url: newAvatarUrl })
       })
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}))
-        return { ok: false, error: errData.detail || '淇敼澶村儚澶辫触' }
+        return { ok: false, error: errData.detail || '修改资料失败' }
       }
       const data = await res.json()
+      nickname.value = data.nickname || ''
       avatarUrl.value = data.avatar_url || ''
       if (avatarUrl.value) {
         localStorage.setItem('hmp_avatar_url', avatarUrl.value)
@@ -213,13 +218,52 @@ export const usePlayerStore = defineStore('player', () => {
       }
       return { ok: true }
     } catch (e: any) {
-      return { ok: false, error: e.message || '缃戠粶杩炴帴澶辫触' }
+      return { ok: false, error: e.message || '网络连接失败' }
+    }
+  }
+
+  async function uploadAvatarFile(file: File): Promise<{ ok: boolean; avatarUrl?: string; error?: string }> {
+    try {
+      const formData = new FormData()
+      formData.append('file', file)
+
+      const res = await fetch(`/api/game/profile/${playerId.value}/upload-avatar`, {
+        method: 'POST',
+        headers: { ...authHeaders() },
+        body: formData
+      })
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}))
+        return { ok: false, error: errData.detail || '头像上传失败' }
+      }
+      const data = await res.json()
+      return { ok: true, avatarUrl: data.avatar_url }
+    } catch (e: any) {
+      return { ok: false, error: e.message || '网络连接失败' }
+    }
+  }
+
+  async function modifyPassword(oldPassword: string, newPassword: string): Promise<{ ok: boolean; error?: string }> {
+    try {
+      const res = await fetch(`/api/game/profile/${playerId.value}/password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ old_password: oldPassword, new_password: newPassword })
+      })
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}))
+        return { ok: false, error: errData.detail || '修改密码失败' }
+      }
+      return { ok: true }
+    } catch (e: any) {
+      return { ok: false, error: e.message || '网络连接失败' }
     }
   }
 
   return {
     playerId, nickname, username, authToken, avatarUrl, beans, totalGames, winRate,
     rankId, subRank, stars, rankTitle,
-    register, login, logout, fetchProfile, modifyBeans, modifyRank, modifyAvatar
+    register, login, logout, fetchProfile, modifyBeans, modifyRank, modifyAvatar,
+    modifyProfile, uploadAvatarFile, modifyPassword
   }
 })
