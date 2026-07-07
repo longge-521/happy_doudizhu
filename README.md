@@ -97,6 +97,84 @@ happy_doudizhu/
 └── AGENTS.md                       # 协同开发智能体的操作约束说明
 ```
 
+### 1. 各层职责划分
+
+* **领域层 (`backend/app/domain/`)**：
+  - **无外部依赖的纯业务逻辑**：定义扑克牌编码、排序、洗牌 (`card.py`) 与 14 种斗地主常见牌型的智能校验与 `can_beat` 压制判定算法 (`card_type.py`)。
+  - **房间状态机 (`room.py`)**：严密的五大阶段状态转换 (`MATCHING` -> `DEALING` -> `CALLING` -> `PLAYING` -> `SETTLING`)，规避前后端状态不一致。
+* **应用层 (`backend/app/application/`)**：
+  - **业务流程编排**：由 `GameAppService` 统一提供匹配排队、自动开局、AI 机器人补齐席位、叫地主/出牌的流程驱动。
+* **基础设施层 (`backend/app/infrastructure/`)**：
+  - **持久化与外部依赖**：提供 MySQL 的 SQLAlchemy 数据模型与持久化仓储 (`game_repository.py`)、Redis 匹配队列与房间缓存仓储 (`redis_game_repository.py`)、RabbitMQ 站内信广播适配器。
+* **接口层 (`backend/app/interfaces/`)**：
+  - **外部通信网关**：包含面向普通 REST 的游戏 API (`api/game_routes.py`)，提供大文件 WebSocket 分片上传路由与 WebSocket 调试接口，以及斗地主的核心 WebSocket 对战网关 (`websocket/game_routes.py`)。
+
+---
+
+## ⚡ WebSocket 核心交互协议
+
+对局过程完全基于 WebSocket 事件驱动交互。核心交互事件协议如下：
+
+### 1. 客户端发起动作 (Client Actions)
+客户端往对战网关发送消息时使用统一格式：`{"action": "动作名", ...}`
+
+* **开始匹配 / 取消匹配**：
+  ```json
+  {"action": "join_match", "nickname": "玩家昵称", "base_score": 80}
+  {"action": "cancel_match"}
+  ```
+* **叫地主 / 不叫 / 抢地主 / 不抢**：
+  ```json
+  {"action": "call_landlord", "score": 3}
+  {"action": "skip_call"}
+  ```
+* **加倍 / 超级加倍 / 不加倍**：
+  ```json
+  {"action": "choose_doubling", "choice": "double"} // choice 可选: double | super | none
+  ```
+* **出牌 / 过牌**：
+  ```json
+  {"action": "play_cards", "cards": [48, 49, 50]} // 传入出牌 ID 数组
+  {"action": "pass_turn"}
+  ```
+
+### 2. 服务端广播事件 (Server Events)
+服务端会根据不同事件向房间内玩家推送更新。为保证游戏公平性，向不同座席广播时会调用 `GameRoom.get_player_view(player_id)`，隐藏他人手牌并只暴露其余手牌张数。
+
+* **对局开始 (`game_start`)**：
+  ```json
+  {
+    "event": "game_start",
+    "room_id": "room_xxx",
+    "hand": [53, 52, 50, 49, 48], // 当前玩家被分配的手牌 ID 列表
+    "current_turn": "player_123",  // 第一个叫分的座席 ID
+    "turn_deadline": 1782390120,   // 当前回合超时的绝对时间戳
+    "players": [
+      {"id": "p1", "nickname": "玩家A", "is_ai": false, "remaining": 17},
+      {"id": "p2", "nickname": "机器人", "is_ai": true, "remaining": 17}
+    ]
+  }
+  ```
+* **地主确定 (`landlord_decided`)**：
+  ```json
+  {
+    "event": "landlord_decided",
+    "landlord": "p1",
+    "bottom_cards": [51, 47, 43], // 广播三张明面底牌
+    "multiplier": 2                // 当前房间倍数翻倍
+  }
+  ```
+* **出牌成功 (`cards_played`)**：
+  ```json
+  {
+    "event": "cards_played",
+    "player": "p1",
+    "cards": [48, 49, 50],
+    "card_type": "triple",         // 智能识别的牌型
+    "next_turn": "p2"              // 下一个出牌回合的玩家 ID
+  }
+  ```
+
 ---
 
 ## ⚙️ 运行环境与先决条件 (Prerequisites)
@@ -152,6 +230,7 @@ happy_doudizhu/
 
 ### 3. 前端配置与启动
 
+### 2. 前端配置与启动
 1. 进入前端目录：
    ```bash
    cd frontend
@@ -159,9 +238,6 @@ happy_doudizhu/
 2. 安装项目依赖：
    ```bash
    npm install
-   ```
-3. 启动开发服务器：
-   ```bash
    npm run dev
    ```
 4. 启动成功后，在浏览器访问 `http://localhost:5173` 即可开始对局。
@@ -200,7 +276,7 @@ happy_doudizhu/
 
 ---
 
-## 🧪 单元测试
+## 🏆 独特排位头衔系统 (Rank System)
 
 运行以下命令执行全自动单元测试，验证核心领域规则：
 
