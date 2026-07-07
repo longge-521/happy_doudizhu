@@ -19,7 +19,7 @@
 ![实时对局房间](docs/images/game.png)
 
 ### 4. 调试控制台与 Mock 模式
-为开发与运维人员量身打造的控制台。支持 WebSocket 文本消息调试、广播站内信发送与接收、大文件并发分片上传进度条展示以及系统审计日志的高级筛选与气泡预览。
+为开发与运维人员量言打造的控制台。支持 WebSocket 文本消息调试、广播站内信发送与接收、大文件并发分片上传进度条展示以及系统审计日志的高级筛选与气泡预览。
 ```text
 体验开发 Mock 模式：
 如果在前端开发环境下，在 URL 后面附带 `?mock=true` 参数，例如：
@@ -46,24 +46,55 @@ http://localhost:5173/lobby?mock=true
 
 ```text
 happy_doudizhu/
-├── backend/                 # FastAPI 异步后端服务
+├── backend/                        # 后端项目根目录 (FastAPI + SQLAlchemy)
+│   ├── alembic/                    # 数据库迁移脚本及历史版本
+│   │   └── versions/               # 具体迁移版本脚本文件
 │   ├── app/
-│   │   ├── domain/          # 领域层：纯业务规则、牌型判定、叫地主/出牌状态机
-│   │   ├── application/     # 应用层：对局匹配编排、AI 自动回合驱动
-│   │   ├── infrastructure/  # 基础设施层：数据库/Redis/RabbitMQ驱动、鉴权与安全
-│   │   └── interfaces/      # 接口层：REST API 路由与 WebSocket 对局/调试网关
-│   ├── alembic/             # 数据库迁移脚本
-│   ├── tests/               # pytest 自动化测试用例
-│   └── main.py              # 后端服务启动入口
-├── frontend/                # Vue 3 + Vite 前端客户端
+│   │   ├── domain/                 # 领域层：纯业务逻辑与核心规则 (无技术细节依赖)
+│   │   │   ├── game/               # 游戏核心逻辑
+│   │   │   │   ├── card.py         # 扑克牌编码、排序与洗牌发牌规则
+│   │   │   │   ├── card_type.py    # 14种牌型智能判定与压制(can_beat)算法
+│   │   │   │   └── room.py         # 游戏房间状态机 (五大生命周期阶段流转控制)
+│   │   │   └── audit_log/          # 审计日志领域对象及仓储契约
+│   │   ├── application/            # 应用层：业务流程编排与用例驱动 (协调指挥官)
+│   │   │   ├── game/
+│   │   │   │   └── game_app_service.py # 玩家匹配、开局、出牌流程及托管 AI 决策编排
+│   │   │   └── audit_log/          # 审计日志记录应用服务
+│   │   ├── infrastructure/         # 基础设施层：具体技术选型与工具落地
+│   │   │   ├── database/           # 关系型数据库 MySQL 读写实现
+│   │   │   │   ├── models.py       # SQLAlchemy 数据库映射模型 (已统一 ddz_ 表前缀及注释)
+│   │   │   │   ├── session.py      # 数据库连接池与初始化管理 (含库表自愈机制)
+│   │   │   │   └── game_repository.py # SQL 战绩、积分、个人档案物理存取
+│   │   │   ├── mq/                 # 站内信 RabbitMQ 适配器与消费者
+│   │   │   └── redis/              # Redis 高性能匹配队列与对局房间状态缓存
+│   │   └── interfaces/             # 接口层：对外的 API 网关与协议解析
+│   │       ├── api/                # REST 接口 (玩家账号、战绩查询、审计检索、分片上传)
+│   │       └── websocket/          # 对局长连接网关 (处理 WebSocket 握手与心跳)
+│   ├── tests/                      # pytest 单元测试目录 (覆盖率达 90% 以上)
+│   └── main.py                     # 后端服务入口 (负责 Lifespan 初始化、CORS 与路由挂载)
+├── frontend/                       # 前端项目根目录 (Vue 3 + Vite + Pinia)
 │   ├── src/
-│   │   ├── views/           # 页面视图（Login、Lobby、GameRoom、DebugConsole 等）
-│   │   ├── components/      # UI 组件（扑克牌 PokerCard、手牌 HandCards 等）
-│   │   ├── stores/          # Pinia 状态管理（playerStore、gameStore）
-│   │   └── utils/           # 前端扑克牌与牌型判定工具
-│   └── vite.config.ts       # 前端构建与开发反向代理配置
-├── docs/                    # 设计规格说明书与实施计划文档
-└── AGENTS.md                # 智能体协同开发指南
+│   │   ├── assets/                 # 音频 (出牌、加倍、叫分音效) 与图片静态资源
+│   │   ├── components/             # 可复用游戏 UI 元素组件
+│   │   │   ├── PokerCard.vue       # 单张扑克牌渲染与高亮选取动画
+│   │   │   ├── HandCards.vue       # 玩家当前手牌水平排列、排列间距及滑选控制
+│   │   │   └── PlayerSeat.vue      # 玩家座席头像、倒计时、叫加倍提示及聊天气泡
+│   │   ├── composables/            # 组合式函数封装
+│   │   │   └── useGameWebSocket.ts # 斗地主对局 WebSocket 通信与掉线指数退避重连机制
+│   │   ├── stores/                 # Pinia 状态管理中心
+│   │   │   ├── playerStore.ts      # 管理玩家个人档案、欢乐豆及排位段位变动
+│   │   │   └── gameStore.ts        # 全局对局状态、出牌响应及动画状态映射
+│   │   ├── views/                  # 页面级视图组件
+│   │   │   ├── LoginView.vue       # 登录与快速注册页面
+│   │   │   ├── LobbyView.vue       # 多人游戏大厅 (选择低分场次、全局富豪排行榜)
+│   │   │   ├── GameRoomView.vue    # 实战对局房间 (抢地主、加倍、对局出牌及结算弹窗)
+│   │   │   └── DebugConsoleView.vue # 调试控制台 (实时WS消息调试、大文件分片上传测试)
+│   │   └── utils/                  # 辅助工具函数
+│   │       └── cardUtils.ts        # 前端手牌大小排序与基础出牌校验
+│   ├── package.json                # 前端工程依赖与运行指令配置
+│   └── vite.config.ts              # Vite 编译与开发服务器反向代理设置
+├── docs/                           # 系统历史设计规格书与实施计划文档
+└── AGENTS.md                       # 协同开发智能体的操作约束说明
 ```
 
 ---
@@ -73,7 +104,6 @@ happy_doudizhu/
 在本地运行或开发本项目之前，请确保您的系统已安装以下软件环境：
 
 * **Python**: 3.10.20 (**强制使用项目专用 conda 环境 `hmp_ai`**)
-  > ⚠️ **重要警告**：本地默认全局 Python 3.13 解释器与项目依赖 `SQLAlchemy 2.0.25` 存在已知的类声明兼容性问题（如 `__static_attributes__` 和 `__firstlineno__` 缺失报错）。请确保后端始终使用专用解释器路径：`D:\ProgramData\miniconda3\envs\hmp_ai\python.exe` 运行。
 * **Node.js**: 18.0+ (推荐 v20.x 或以上)
 * **MySQL**: 5.7+ 或 8.0+
 * **Redis**: 6.0+ (用于存放匹配队列和房间状态)
@@ -135,6 +165,55 @@ happy_doudizhu/
    npm run dev
    ```
 4. 启动成功后，在浏览器访问 `http://localhost:5173` 即可开始对局。
+
+### 4. 数据库版本管理与迁移 (Alembic)
+
+项目配置了 Alembic 作为数据库物理表结构的迁移和演进工具。为了保障安全性，Alembic 在 `backend/alembic/env.py` 中被配置为**动态从后端 `.env` 中加载 `DATABASE_URL`**，无需在 `alembic.ini` 中配置任何明文密码。
+
+如果未来您修改了 `backend/app/infrastructure/database/models.py` 中的表模型结构，可以通过以下命令进行迁移操作：
+
+1. **自动比对并生成迁移版本脚本** (开发环境)：
+   ```powershell
+   cd backend
+   # 使用 hmp_ai 专属环境的 Python 运行 alembic
+   D:\ProgramData\miniconda3\envs\hmp_ai\python.exe -m alembic revision --autogenerate -m "描述你的表结构变更"
+   ```
+   > 运行后会在 `backend/alembic/versions/` 下生成一个新的 `.py` 变更历史脚本。请仔细核对脚本中的 `upgrade()` 和 `downgrade()` 逻辑。
+
+2. **应用迁移更新数据库表结构** (生产/开发环境升级)：
+   ```powershell
+   cd backend
+   D:\ProgramData\miniconda3\envs\hmp_ai\python.exe -m alembic upgrade head
+   ```
+
+3. **回滚最近一次数据库迁移**：
+   ```powershell
+   cd backend
+   D:\ProgramData\miniconda3\envs\hmp_ai\python.exe -m alembic downgrade -1
+   ```
+
+4. **查看历史迁移记录列表**：
+   ```powershell
+   cd backend
+   D:\ProgramData\miniconda3\envs\hmp_ai\python.exe -m alembic history
+   ```
+
+---
+
+## 🧪 单元测试
+
+运行以下命令执行全自动单元测试，验证核心领域规则：
+
+* **后端测试** (覆盖领域模型、AI 叫牌判定、大文件安全分片等)：
+   ```powershell
+   # 使用 hmp_ai 专属环境的 Python 运行测试
+   D:\ProgramData\miniconda3\envs\hmp_ai\python.exe -m pytest backend/tests/ -v
+   ```
+* **前端测试**：
+   ```bash
+   cd frontend
+   npm run test:unit
+   ```
 
 ---
 
@@ -281,130 +360,9 @@ sequenceDiagram
 * **[tiangolo/fastapi](https://github.com/tiangolo/fastapi)** — 高性能、易学、快速编写代码的异步 Web 框架。
 * **[sqlalchemy/sqlalchemy](https://github.com/sqlalchemy/sqlalchemy)** — 极具工业强度且设计优雅的 Python SQL 工具包与 ORM 映射器。
 * **[redis/redis-py](https://github.com/redis/redis-py)** — 强大的 Redis 异步 Python 客户端驱动，提供了极其稳定的连接池管理。
-* **[mosbrupture/aio-pika](https://github.com/mosbrupture/aio-pika)** — 专为 asyncio 打造 of RabbitMQ 异步驱动。
+* **[mosbrupture/aio-pika](https://github.com/mosbrupture/aio-pika)** — 专为 asyncio 打造的 RabbitMQ 异步驱动。
 
 ### 3. 前端响应式生态依赖
 * **[vuejs/core](https://github.com/vuejs/core)** — 渐进式 JavaScript 框架。
 * **[vitejs/vite](https://github.com/vitejs/vite)** — 极速的下一代前端开发与构建工具。
 * **[vuejs/pinia](https://github.com/vuejs/pinia)** — 专为 Vue 打造的轻量状态管理库。
-
----
-
-## 🧪 单元测试
-
-运行以下命令执行全自动单元测试，验证核心领域规则：
-
-* **后端测试** (覆盖领域模型、AI 叫牌判定、大文件安全分片等)：
-  ```powershell
-  cd backend
-  D:\ProgramData\miniconda3\envs\hmp_ai\python.exe -m pytest tests/ -v
-  ```
-* **前端测试**：
-  ```bash
-  cd frontend
-  npm run test:unit
-  ```
-
----
-
-## ⚙️ 部署与生产运行指南 (Linux Deployment Guide)
-
-本节介绍如何将“欢乐斗地主网络对战系统”在 Linux 服务器环境下进行生产级常驻部署，保证服务的稳定性和开机自启能力。
-
-### 1. 后端后台常驻服务管理 (Systemd)
-
-在生产环境下，推荐使用 Linux 系统自带的 **Systemd** 管理 Python 后端进程，实现开机自启、崩溃自动重启以及统一的日志管理。
-
-1. **创建服务文件**：在 `/etc/systemd/system/` 目录下创建服务配置文件 `happy_doudizhu.service`：
-   ```ini
-   [Unit]
-   Description=Happy Doudizhu FastAPI Service
-   After=network.target mysql.service redis.service
-
-   [Service]
-   User=www-data
-   Group=www-data
-   WorkingDirectory=/var/www/happy_doudizhu/backend
-   # 假定您在 Linux 环境下使用 venv 虚拟环境管理依赖
-   ExecStart=/var/www/happy_doudizhu/backend/venv/bin/uvicorn main:app --host 127.0.0.1 --port 18088 --workers 4
-   Restart=always
-   RestartSec=5
-   Environment="PATH=/var/www/happy_doudizhu/backend/venv/bin"
-
-   [Install]
-   WantedBy=multi-user.target
-   ```
-2. **启用并启动服务**：
-   ```bash
-   sudo systemctl daemon-reload
-   sudo systemctl start happy_doudizhu
-   sudo systemctl enable happy_doudizhu
-   ```
-3. **查看服务状态**：
-   ```bash
-   sudo systemctl status happy_doudizhu
-   ```
-
----
-
-### 2. 前端静态资源生产构建
-
-进入前端目录，进行生产打包编译：
-```bash
-cd frontend
-npm install
-npm run build
-```
-打包成功后，前端会在 `frontend/dist` 目录下生成静态文件包。将其复制到您的 Linux 托管路径下，例如：`/var/www/happy_doudizhu/frontend/dist`。
-
----
-
-### 3. Linux Nginx 反向代理与托管
-
-推荐使用 Nginx 托管前端静态资源，并将后端的 REST API 与 WebSocket 网关进行反向代理。
-
-1. 在 Nginx 配置目录（例如 `/etc/nginx/sites-available/happy_doudizhu`）中创建配置文件：
-   ```nginx
-   server {
-       listen       80;
-       server_name  yourdomain.com; # 替换为您的域名或公网 IP
-
-       # 1. 托管 Vue 前端静态文件
-       location / {
-           root   /var/www/happy_doudizhu/frontend/dist; # 前端静态包的存放绝对路径
-           index  index.html index.htm;
-           try_files $uri $uri/ /index.html; # 支持 Vue Router 的 History 模式
-       }
-
-       # 2. 反向代理后端 REST API
-       location /api/ {
-           proxy_pass http://127.0.0.1:18088;
-           proxy_set_header Host $host;
-           proxy_set_header X-Real-IP $remote_addr;
-           proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-           proxy_set_header X-Forwarded-Proto $scheme;
-           client_max_body_size 100m; # 允许大文件分片上传的切片大小上限
-       }
-
-       # 3. 反向代理 WebSocket 实时对局网关
-       location /ws/ {
-           proxy_pass http://127.0.0.1:18088;
-           proxy_http_version 1.1;
-           proxy_set_header Upgrade $http_upgrade;
-           proxy_set_header Connection "Upgrade";
-           proxy_set_header Host $host;
-           proxy_read_timeout 600s; # 较长的读取超时以支持长连接对局维持
-       }
-
-       # 4. 后端静态资源目录代理
-       location /static/ {
-           proxy_pass http://127.0.0.1:18088;
-       }
-   }
-   ```
-2. **启用并重载 Nginx**：
-   ```bash
-   sudo ln -s /etc/nginx/sites-available/happy_doudizhu /etc/nginx/sites-enabled/
-   sudo nginx -t
-   sudo systemctl reload nginx
-   ```

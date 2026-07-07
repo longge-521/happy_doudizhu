@@ -101,6 +101,21 @@ class SQLGameRepository:
             orm.avatar_url = avatar_url
             self._db.commit()
 
+    def update_nickname(self, player_id: str, nickname: str) -> None:
+        orm = self._db.query(PlayerProfileORM).filter_by(player_id=player_id).first()
+        if orm:
+            orm.nickname = nickname.strip()
+            self._db.commit()
+
+    def get_user_by_player_id(self, player_id: str) -> Optional[UserORM]:
+        return self._db.query(UserORM).filter_by(player_id=player_id).first()
+
+    def update_user_password(self, player_id: str, new_password_hash: str) -> None:
+        user = self.get_user_by_player_id(player_id)
+        if user:
+            user.password = new_password_hash
+            self._db.commit()
+
     def update_rank_profile(self, player_id: str, rank_id: int, sub_rank: int, stars: int) -> None:
         orm = self._db.query(PlayerProfileORM).filter_by(player_id=player_id).first()
         if orm:

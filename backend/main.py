@@ -61,6 +61,12 @@ from fastapi.staticfiles import StaticFiles
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 
+# 挂载上传文件目录，以便访问上传的本地头像
+uploads_dir = os.path.join(BASE_DIR, "uploads")
+if not os.path.exists(uploads_dir):
+    os.makedirs(uploads_dir)
+app.mount("/api/uploads", StaticFiles(directory=uploads_dir), name="uploads")
+
 # 注册所有模块化路由
 app.include_router(index_router)
 app.include_router(message_router)

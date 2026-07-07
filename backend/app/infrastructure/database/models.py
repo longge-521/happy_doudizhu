@@ -17,11 +17,13 @@ class SiteMessageORM(Base):
 
     __table_args__ = (
         Index("idx_receiver_is_read_created_at", "receiver", "is_read", "created_at"),
+        {"comment": "站内信消息表"},
     )
 
 
 class UploadedFileORM(Base):
     __tablename__ = "ddz_uploaded_file"
+    __table_args__ = {"comment": "已上传文件记录表"}
     id = Column(Integer, primary_key=True, index=True, autoincrement=True, comment="主键ID")
     filename = Column(String(255), nullable=False, unique=True, comment="文件名称")
     file_path = Column(String(500), nullable=False, comment="文件物理路径")
@@ -31,6 +33,7 @@ class UploadedFileORM(Base):
 
 class AuditLogORM(Base):
     __tablename__ = "ddz_audit_log"
+    __table_args__ = {"comment": "系统审计日志表"}
     id = Column(Integer, primary_key=True, index=True, autoincrement=True, comment="主键ID")
     operator = Column(String(100), nullable=True, index=True, comment="操作人/账号")
     action = Column(String(100), nullable=False, index=True, comment="操作动作")
@@ -48,6 +51,7 @@ class AuditLogORM(Base):
 
 class PlayerProfileORM(Base):
     __tablename__ = "ddz_player_profile"
+    __table_args__ = {"comment": "玩家个人档案与段位数据表"}
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     player_id = Column(String(100), nullable=False, unique=True, index=True, comment="玩家ID")
     nickname = Column(String(100), nullable=False, comment="昵称")
@@ -63,6 +67,7 @@ class PlayerProfileORM(Base):
 
 class UserORM(Base):
     __tablename__ = "ddz_user_account"
+    __table_args__ = {"comment": "用户登录账号与Player绑定表"}
     id = Column(Integer, primary_key=True, index=True, autoincrement=True, comment="主键ID")
     username = Column(String(100), nullable=False, unique=True, index=True, comment="账号")
     password = Column(String(255), nullable=False, comment="密码")
@@ -73,6 +78,7 @@ class UserORM(Base):
 
 class GameRecordORM(Base):
     __tablename__ = "ddz_game_record"
+    __table_args__ = {"comment": "对局战绩记录表"}
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     room_id = Column(String(100), nullable=False, index=True, comment="房间ID")
     player_id = Column(String(100), nullable=False, index=True, comment="玩家ID")
