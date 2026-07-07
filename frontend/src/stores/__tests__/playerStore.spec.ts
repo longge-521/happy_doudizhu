@@ -56,13 +56,16 @@ describe('playerStore avatar profile state', () => {
 
     expect(result.ok).toBe(true)
     expect(store.avatarUrl).toBe('https://example.com/new-avatar.png')
-    expect(fetch).toHaveBeenCalledWith('/api/game/profile/player123/avatar', {
+    expect(fetch).toHaveBeenCalledWith('/api/game/profile/player123/update', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: 'Bearer token123',
       },
-      body: JSON.stringify({ avatar_url: 'https://example.com/new-avatar.png' }),
+      body: JSON.stringify({
+        nickname: 'TestNick',
+        avatar_url: 'https://example.com/new-avatar.png',
+      }),
     })
   })
 

@@ -20,6 +20,21 @@ from app.infrastructure.database.session import get_db
 
 router = APIRouter(prefix="/api/game", tags=["Game API"], route_class=AuditLogRoute)
 
+AVATAR_MAX_BYTES = 2 * 1024 * 1024
+AVATAR_ALLOWED_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+
+
+def is_allowed_avatar_content(content: bytes, file_ext: str) -> bool:
+    if file_ext == ".png":
+        return content.startswith(b"\x89PNG\r\n\x1a\n")
+    if file_ext in {".jpg", ".jpeg"}:
+        return content.startswith(b"\xff\xd8\xff")
+    if file_ext == ".gif":
+        return content.startswith((b"GIF87a", b"GIF89a"))
+    if file_ext == ".webp":
+        return len(content) >= 12 and content.startswith(b"RIFF") and content[8:12] == b"WEBP"
+    return False
+
 
 def ensure_player_access(player_id: str, current_player_id: str) -> None:
     if player_id != current_player_id:
@@ -273,19 +288,28 @@ async def upload_player_avatar(
     if not content_type or not content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="只允许上传图片格式的文件")
 
+    file_ext = os.path.splitext(file.filename or "")[1].lower()
+    if file_ext not in AVATAR_ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="只允许上传 png、jpg、jpeg、gif 或 webp 头像")
+
+    content = await file.read(AVATAR_MAX_BYTES + 1)
+    if len(content) > AVATAR_MAX_BYTES:
+        raise HTTPException(status_code=400, detail="头像文件不能超过 2MB")
+
+    if not is_allowed_avatar_content(content, file_ext):
+        raise HTTPException(status_code=400, detail="头像文件内容不是支持的图片格式")
+
     base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
     upload_dir = settings.UPLOAD_DIR or os.path.join(base_dir, "uploads")
     avatar_dir = os.path.join(upload_dir, "avatars")
     if not os.path.exists(avatar_dir):
         os.makedirs(avatar_dir)
 
-    file_ext = os.path.splitext(file.filename)[1] or ".png"
     import uuid
     unique_filename = f"avatar_{player_id}_{uuid.uuid4().hex}{file_ext}"
     dest_path = os.path.join(avatar_dir, unique_filename)
 
     with open(dest_path, "wb") as f:
-        content = await file.read()
         f.write(content)
 
     avatar_url = f"/api/uploads/avatars/{unique_filename}"

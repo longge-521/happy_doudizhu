@@ -89,7 +89,7 @@ def test_upload_player_avatar_success(mock_db):
          patch("app.interfaces.api.game_routes.os.path.exists", return_value=True):
         
         # 准备一个内存里的模拟图片文件
-        file_data = b"fake-image-bytes"
+        file_data = b"\x89PNG\r\n\x1a\nfake-image-bytes"
         file_obj = io.BytesIO(file_data)
         
         response = client.post(
@@ -119,6 +119,36 @@ def test_upload_player_avatar_invalid_mime(mock_db):
     
     assert response.status_code == 400
     assert response.json()["detail"] == "只允许上传图片格式的文件"
+
+
+def test_upload_player_avatar_rejects_oversized_file(mock_db):
+    client = TestClient(app)
+    token = create_game_auth_token("player123")
+    oversized = io.BytesIO(b"\x89PNG\r\n\x1a\n" + b"x" * (2 * 1024 * 1024 + 1))
+
+    response = client.post(
+        "/api/game/profile/player123/upload-avatar",
+        files={"file": ("big.png", oversized, "image/png")},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 400
+    assert "头像文件不能超过" in response.json()["detail"]
+
+
+def test_upload_player_avatar_rejects_fake_image_payload(mock_db):
+    client = TestClient(app)
+    token = create_game_auth_token("player123")
+    fake_image = io.BytesIO(b"not-an-image")
+
+    response = client.post(
+        "/api/game/profile/player123/upload-avatar",
+        files={"file": ("fake.png", fake_image, "image/png")},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "头像文件内容不是支持的图片格式"
 
 
 def test_update_player_password_success(mock_db):

@@ -10,6 +10,14 @@ logger = logging.getLogger("happy_doudizhu")
 ROOM_KEY_PREFIX = "game:room:"
 PLAYER_ROOM_PREFIX = "game:player_room:"
 MATCH_QUEUE_KEY = "game:match_queue"
+POP_MATCH_PLAYERS_SCRIPT = """
+local count = tonumber(ARGV[1])
+local players = redis.call('LRANGE', KEYS[1], 0, count - 1)
+if #players > 0 then
+    redis.call('LTRIM', KEYS[1], #players, -1)
+end
+return players
+"""
 ROOM_TTL = 7200       # 房间状态 2 小时过期
 PLAYER_ROOM_TTL = 3600  # 玩家映射 1 小时过期
 
@@ -73,12 +81,10 @@ class RedisGameRepository:
 
     async def pop_match_players(self, count: int = 3, base_score: int = 10) -> List[str]:
         """原子性地从队列头部弹出 count 个玩家"""
-        players = []
         key = self._get_queue_key(base_score)
-        for _ in range(count):
-            pid = await self._redis.lpop(key)
-            if pid is None:
-                break
+        raw_players = await self._redis.eval(POP_MATCH_PLAYERS_SCRIPT, 1, key, count)
+        players = []
+        for pid in raw_players:
             if isinstance(pid, bytes):
                 pid = pid.decode("utf-8")
             players.append(pid)
