@@ -148,10 +148,25 @@ function pickSingleSideCards(
   count: number,
 ): number[] | null {
   const picked: number[] = []
-  const ranks = [...groups.keys()].sort((a, b) => a - b)
-  for (const rank of ranks) {
+  const candidates: { rank: number; cards: number[] }[] = []
+  for (const [rank, cards] of groups.entries()) {
     if (excludedRanks.has(rank)) continue
-    for (const cardId of groups.get(rank) || []) {
+    if (cards.length === 4) continue // 避免拆炸弹
+    if (cards.length > 0) {
+      candidates.push({ rank, cards })
+    }
+  }
+
+  // 优先按拥有张数升序，张数相同则按 rank 升序
+  candidates.sort((a, b) => {
+    if (a.cards.length !== b.cards.length) {
+      return a.cards.length - b.cards.length
+    }
+    return a.rank - b.rank
+  })
+
+  for (const item of candidates) {
+    for (const cardId of item.cards) {
       picked.push(cardId)
       if (picked.length === count) return picked
     }
@@ -165,14 +180,26 @@ function pickPairSideCards(
   pairCount: number,
 ): number[] | null {
   const picked: number[] = []
-  const ranks = [...groups.keys()].sort((a, b) => a - b)
-  for (const rank of ranks) {
+  const candidates: { rank: number; cards: number[] }[] = []
+  for (const [rank, cards] of groups.entries()) {
     if (excludedRanks.has(rank)) continue
-    const cards = groups.get(rank) || []
+    if (cards.length === 4) continue // 避免拆炸弹
     if (cards.length >= 2) {
-      picked.push(...cards.slice(0, 2))
-      if (picked.length === pairCount * 2) return picked
+      candidates.push({ rank, cards })
     }
+  }
+
+  // 优先按拥有张数升序（如2张优先于3张，因为3张可能是三条），张数相同按 rank 升序
+  candidates.sort((a, b) => {
+    if (a.cards.length !== b.cards.length) {
+      return a.cards.length - b.cards.length
+    }
+    return a.rank - b.rank
+  })
+
+  for (const item of candidates) {
+    picked.push(...item.cards.slice(0, 2))
+    if (picked.length === pairCount * 2) return picked
   }
   return null
 }
@@ -452,6 +479,302 @@ export function findSuggestedPlay(hand: number[], lastCards: number[] = []): num
   }
 
   return []
+}
+
+export function findAllPlayableHints(hand: number[], lastCards: number[] = []): number[][] {
+  const groups = groupCardsByRank(hand)
+  const ranks = [...groups.keys()].sort((a, b) => a - b)
+  const hints: number[][] = []
+
+  const lastPlay = detectCardPlay(lastCards)
+
+  if (!lastPlay) {
+    // 自由出牌模式
+    const hasRocket = hand.includes(52) && hand.includes(53)
+
+    // 1. 单张（如果有王炸，大小王不作独立单张首发）
+    for (const rank of ranks) {
+      if (hasRocket && (rank === 13 || rank === 14)) continue
+      hints.push(groups.get(rank)!.slice(0, 1))
+    }
+
+    // 2. 对子
+    for (const rank of ranks) {
+      if (groups.get(rank)!.length >= 2) {
+        hints.push(groups.get(rank)!.slice(0, 2))
+      }
+    }
+
+    // 3. 顺子（长度从 5 到 12，且 rank < 12 也就是最大到 A）
+    const straightRanks = getRanksWithAtLeast(groups, 1)
+    for (let len = 5; len <= 12; len++) {
+      for (let start = 0; start <= 12 - len; start++) {
+        const wanted = Array.from({ length: len }, (_, i) => start + i)
+        if (wanted.every(r => straightRanks.includes(r))) {
+          hints.push(wanted.flatMap(r => groups.get(r)!.slice(0, 1)))
+        }
+      }
+    }
+
+    // 4. 连对（长度从 3 到 10 对，且 rank < 12 也就是最大到 A）
+    const doubleStraightRanks = getRanksWithAtLeast(groups, 2)
+    for (let len = 3; len <= 10; len++) {
+      for (let start = 0; start <= 12 - len; start++) {
+        const wanted = Array.from({ length: len }, (_, i) => start + i)
+        if (wanted.every(r => doubleStraightRanks.includes(r))) {
+          hints.push(wanted.flatMap(r => groups.get(r)!.slice(0, 2)))
+        }
+      }
+    }
+
+    // 5. 三条
+    for (const rank of ranks) {
+      if (groups.get(rank)!.length >= 3) {
+        hints.push(groups.get(rank)!.slice(0, 3))
+      }
+    }
+
+    // 6. 三带一
+    for (const rank of ranks) {
+      if (groups.get(rank)!.length >= 3) {
+        const side = pickSingleSideCards(groups, new Set([rank]), 1)
+        if (side) {
+          hints.push([...groups.get(rank)!.slice(0, 3), ...side])
+        }
+      }
+    }
+
+    // 7. 三带二
+    for (const rank of ranks) {
+      if (groups.get(rank)!.length >= 3) {
+        const side = pickPairSideCards(groups, new Set([rank]), 1)
+        if (side) {
+          hints.push([...groups.get(rank)!.slice(0, 3), ...side])
+        }
+      }
+    }
+
+    // 8. 飞机不带（长度从 2 开始，且 rank < 12 也就是最大到 A）
+    const airplaneRanks = getRanksWithAtLeast(groups, 3)
+    for (let len = 2; len <= 6; len++) {
+      for (let start = 0; start <= 12 - len; start++) {
+        const wanted = Array.from({ length: len }, (_, i) => start + i)
+        if (wanted.every(r => airplaneRanks.includes(r))) {
+          hints.push(wanted.flatMap(r => groups.get(r)!.slice(0, 3)))
+        }
+      }
+    }
+
+    // 9. 飞机带单
+    for (let len = 2; len <= 5; len++) {
+      for (let start = 0; start <= 12 - len; start++) {
+        const wanted = Array.from({ length: len }, (_, i) => start + i)
+        if (wanted.every(r => airplaneRanks.includes(r))) {
+          const mainCards = wanted.flatMap(r => groups.get(r)!.slice(0, 3))
+          const side = pickSingleSideCards(groups, new Set(wanted), len)
+          if (side) {
+            hints.push([...mainCards, ...side])
+          }
+        }
+      }
+    }
+
+    // 10. 飞机带双
+    for (let len = 2; len <= 4; len++) {
+      for (let start = 0; start <= 12 - len; start++) {
+        const wanted = Array.from({ length: len }, (_, i) => start + i)
+        if (wanted.every(r => airplaneRanks.includes(r))) {
+          const mainCards = wanted.flatMap(r => groups.get(r)!.slice(0, 3))
+          const side = pickPairSideCards(groups, new Set(wanted), len)
+          if (side) {
+            hints.push([...mainCards, ...side])
+          }
+        }
+      }
+    }
+
+    // 11. 炸弹
+    for (const rank of ranks) {
+      if (groups.get(rank)!.length === 4) {
+        hints.push(groups.get(rank)!.slice(0, 4))
+      }
+    }
+
+    // 12. 王炸
+    if (hasRocket) {
+      hints.push([52, 53])
+    }
+
+  } else {
+    // 跟牌模式
+    const lastMainRank = lastPlay.mainRank
+
+    switch (lastPlay.kind) {
+      case 'single':
+        for (const rank of ranks) {
+          if (rank > lastMainRank) {
+            hints.push(groups.get(rank)!.slice(0, 1))
+          }
+        }
+        break
+
+      case 'pair':
+        for (const rank of ranks) {
+          if (rank > lastMainRank && groups.get(rank)!.length >= 2) {
+            hints.push(groups.get(rank)!.slice(0, 2))
+          }
+        }
+        break
+
+      case 'triple':
+        for (const rank of ranks) {
+          if (rank > lastMainRank && groups.get(rank)!.length >= 3) {
+            hints.push(groups.get(rank)!.slice(0, 3))
+          }
+        }
+        break
+
+      case 'triple_one':
+        for (const rank of ranks) {
+          if (rank > lastMainRank && groups.get(rank)!.length >= 3) {
+            const side = pickSingleSideCards(groups, new Set([rank]), 1)
+            if (side) {
+              hints.push([...groups.get(rank)!.slice(0, 3), ...side])
+            }
+          }
+        }
+        break
+
+      case 'triple_two':
+        for (const rank of ranks) {
+          if (rank > lastMainRank && groups.get(rank)!.length >= 3) {
+            const side = pickPairSideCards(groups, new Set([rank]), 1)
+            if (side) {
+              hints.push([...groups.get(rank)!.slice(0, 3), ...side])
+            }
+          }
+        }
+        break
+
+      case 'straight': {
+        const straightRanks = getRanksWithAtLeast(groups, 1)
+        const len = lastPlay.length
+        for (let start = lastMainRank + 1; start <= 12 - len; start++) {
+          const wanted = Array.from({ length: len }, (_, i) => start + i)
+          if (wanted.every(r => straightRanks.includes(r))) {
+            hints.push(wanted.flatMap(r => groups.get(r)!.slice(0, 1)))
+          }
+        }
+        break
+      }
+
+      case 'double_straight': {
+        const doubleStraightRanks = getRanksWithAtLeast(groups, 2)
+        const len = lastPlay.length
+        for (let start = lastMainRank + 1; start <= 12 - len; start++) {
+          const wanted = Array.from({ length: len }, (_, i) => start + i)
+          if (wanted.every(r => doubleStraightRanks.includes(r))) {
+            hints.push(wanted.flatMap(r => groups.get(r)!.slice(0, 2)))
+          }
+        }
+        break
+      }
+
+      case 'airplane': {
+        const airplaneRanks = getRanksWithAtLeast(groups, 3)
+        const len = lastPlay.length
+        for (let start = lastMainRank + 1; start <= 12 - len; start++) {
+          const wanted = Array.from({ length: len }, (_, i) => start + i)
+          if (wanted.every(r => airplaneRanks.includes(r))) {
+            hints.push(wanted.flatMap(r => groups.get(r)!.slice(0, 3)))
+          }
+        }
+        break
+      }
+
+      case 'airplane_single': {
+        const airplaneRanks = getRanksWithAtLeast(groups, 3)
+        const len = lastPlay.length
+        for (let start = lastMainRank + 1; start <= 12 - len; start++) {
+          const wanted = Array.from({ length: len }, (_, i) => start + i)
+          if (wanted.every(r => airplaneRanks.includes(r))) {
+            const mainCards = wanted.flatMap(r => groups.get(r)!.slice(0, 3))
+            const side = pickSingleSideCards(groups, new Set(wanted), len)
+            if (side) {
+              hints.push([...mainCards, ...side])
+            }
+          }
+        }
+        break
+      }
+
+      case 'airplane_pair': {
+        const airplaneRanks = getRanksWithAtLeast(groups, 3)
+        const len = lastPlay.length
+        for (let start = lastMainRank + 1; start <= 12 - len; start++) {
+          const wanted = Array.from({ length: len }, (_, i) => start + i)
+          if (wanted.every(r => airplaneRanks.includes(r))) {
+            const mainCards = wanted.flatMap(r => groups.get(r)!.slice(0, 3))
+            const side = pickPairSideCards(groups, new Set(wanted), len)
+            if (side) {
+              hints.push([...mainCards, ...side])
+            }
+          }
+        }
+        break
+      }
+
+      case 'four_two_single':
+        for (const rank of ranks) {
+          if (rank > lastMainRank && groups.get(rank)!.length === 4) {
+            const side = pickSingleSideCards(groups, new Set([rank]), 2)
+            if (side) {
+              hints.push([...groups.get(rank)!.slice(0, 4), ...side])
+            }
+          }
+        }
+        break
+
+      case 'four_two_pair':
+        for (const rank of ranks) {
+          if (rank > lastMainRank && groups.get(rank)!.length === 4) {
+            const side = pickPairSideCards(groups, new Set([rank]), 2)
+            if (side) {
+              hints.push([...groups.get(rank)!.slice(0, 4), ...side])
+            }
+          }
+        }
+        break
+
+      case 'bomb':
+        for (const rank of ranks) {
+          if (rank > lastMainRank && groups.get(rank)!.length === 4) {
+            hints.push(groups.get(rank)!.slice(0, 4))
+          }
+        }
+        break
+    }
+
+    // 炸弹和王炸跟牌兜底
+    if (lastPlay.kind !== 'rocket') {
+      for (const rank of ranks) {
+        const isLargerBomb = lastPlay.kind === 'bomb' ? rank > lastMainRank : true
+        if (groups.get(rank)!.length === 4 && isLargerBomb) {
+          const bombCards = groups.get(rank)!.slice(0, 4)
+          // 避免与同牌型中的炸弹重复添加
+          if (!hints.some(h => h.length === 4 && getCardRank(h[0]) === rank)) {
+            hints.push(bombCards)
+          }
+        }
+      }
+      if (hand.includes(52) && hand.includes(53)) {
+        hints.push([52, 53])
+      }
+    }
+  }
+
+  // 排序每个提示结果
+  return hints.map(h => sortCardIds(h))
 }
 
 export function getPlayKindLabel(kind: CardPlayKind): string {

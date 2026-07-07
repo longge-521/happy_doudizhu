@@ -10,6 +10,7 @@ import {
   canBeatCardPlay,
   detectCardPlay,
   findSuggestedPlay,
+  findAllPlayableHints,
   formatCardIds,
   getCardDisplay,
   getPlayKindLabel,
@@ -195,6 +196,13 @@ const canPass = computed(() => {
 const lastCardsToBeat = computed(() => {
   if (!gameStore.lastPlay.player || gameStore.lastPlay.player === playerStore.playerId) return []
   return gameStore.lastPlay.cards || []
+})
+
+const hintState = ref<{ allHints: number[][]; currentIndex: number } | null>(null)
+
+const hintButtonText = computed(() => {
+  if (!hintState.value || hintState.value.allHints.length === 0) return '提示'
+  return `提示 ${hintState.value.currentIndex + 1}/${hintState.value.allHints.length}`
 })
 
 const playSuggestion = computed(() => {
@@ -412,9 +420,24 @@ function handlePass(isAuto = false) {
 }
 
 function applySuggestion() {
-  if (!playSuggestion.value?.canPlay) return
+  if (gameStore.gamePhase !== 'PLAYING' || !gameStore.isMyTurn) return
   playSound('btnClick')
-  gameStore.selectCards(playSuggestion.value.cards)
+
+  const lastCards = lastCardsToBeat.value
+
+  if (!hintState.value) {
+    const allHints = findAllPlayableHints(gameStore.myHand, lastCards)
+    if (allHints.length === 0) return
+    hintState.value = { allHints, currentIndex: 0 }
+  } else {
+    hintState.value.currentIndex =
+      (hintState.value.currentIndex + 1) % hintState.value.allHints.length
+  }
+
+  const currentHint = hintState.value.allHints[hintState.value.currentIndex]
+  if (currentHint) {
+    gameStore.selectCards(currentHint)
+  }
 }
 
 // 发送聊天短语
@@ -473,7 +496,16 @@ watch(
   [() => gameStore.currentTurn, () => gameStore.gamePhase],
   () => {
     hasHandledTimeout.value = false
+    hintState.value = null
   }
+)
+
+watch(
+  () => gameStore.myHand,
+  () => {
+    hintState.value = null
+  },
+  { deep: true }
 )
 
 // 闁烩晜鍨甸幆澶愭煂瀹ュ棙鐓€婵炲弶顨堟晶?
@@ -762,7 +794,7 @@ watch(
               :disabled="!playSuggestion?.canPlay"
               @click="applySuggestion"
             >
-              提示
+              {{ hintButtonText }}
             </button>
             
             <button
