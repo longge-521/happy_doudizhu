@@ -16,12 +16,37 @@ const { playSound, startBgm, stopBgm, unlock: unlockAudio } = useSoundEngine()
 
 const isMockMode = new URLSearchParams(window.location.search).get('mock') === 'true'
 
+interface LeaderboardEntry {
+  rank?: number
+  player_id: string
+  nickname: string
+  beans: number
+  rank_title: string
+  win_rate: number
+  total_games: number
+}
+
+interface SidebarItem {
+  name: string
+  badge: string
+  active?: boolean
+}
+
+interface Tier {
+  id: string
+  name: string
+  baseScore: number
+  limit: string
+  online: number
+  colorClass: string
+}
+
 // 校验登录状态
 if (!isMockMode && (!playerStore.playerId || !playerStore.nickname)) {
   router.push('/login')
 }
 
-const leaderboard = ref<any[]>([])
+const leaderboard = ref<LeaderboardEntry[]>([])
 const showLeaderboard = ref(false)
 const matchingCount = ref(0)
 const matchTime = ref(0)
@@ -35,7 +60,7 @@ const featureNotice = ref({
 let matchTimer: number | null = null
 
 // 场次定义
-const TIERS = [
+const TIERS: Tier[] = [
   { id: 'novice', name: '新手场', baseScore: 20, limit: '1千-10万', online: 124331, colorClass: 'tier-novice' },
   { id: 'primary', name: '初级场', baseScore: 80, limit: '3千-40万', online: 25346, colorClass: 'tier-primary' },
   { id: 'common', name: '普通场', baseScore: 300, limit: '8千-150万', online: 5852, colorClass: 'tier-common' },
@@ -140,7 +165,7 @@ function handleHelpClick() {
   openFeatureNotice('玩法帮助', '玩法说明和新手引导正在完善中，敬请期待！')
 }
 
-function handleSidebarClick(item: any) {
+function handleSidebarClick(item: SidebarItem) {
   if (item.active) {
     openFeatureNotice('经典玩法', '当前已经在经典玩法大厅。')
     return
@@ -304,7 +329,7 @@ async function handleSaveBeans() {
   }
 }
 
-function selectTier(tier: any) {
+function selectTier(tier: Tier) {
   const minRequired = TIER_MIN_BEANS[tier.baseScore] || 0
   if (playerStore.beans < minRequired) {
     openFeatureNotice('欢乐豆不足', `您的欢乐豆不足以进入【${tier.name}】！入场门槛为 ${formatBeans(minRequired)} 欢乐豆。`)
@@ -453,7 +478,7 @@ function formatTime(seconds: number): string {
 }
 
 // 侧边栏菜单列表
-const sidebarItems = [
+const sidebarItems: SidebarItem[] = [
   { name: '510K', badge: '热门' },
   { name: '不洗牌', badge: '' },
   { name: '欢乐经典', badge: '' },

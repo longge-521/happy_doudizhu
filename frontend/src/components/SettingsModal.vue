@@ -1,6 +1,6 @@
 <!-- frontend/src/components/SettingsModal.vue -->
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, type Ref } from 'vue'
 import { usePlayerStore } from '@/stores/playerStore'
 import { useSoundEngine } from '@/composables/useSoundEngine'
 
@@ -24,6 +24,16 @@ const {
 
 // 选项卡状态
 type TabName = 'sound' | 'game' | 'privacy' | 'feedback' | 'version'
+type PrivacyStorageKey =
+  | 'hmp_privacy_show_record'
+  | 'hmp_privacy_receive_emoji'
+  | 'hmp_privacy_show_honor'
+  | 'hmp_privacy_show_rank'
+  | 'hmp_privacy_show_geo'
+  | 'hmp_privacy_recommend_friend'
+  | 'hmp_privacy_friend_apply'
+  | 'hmp_privacy_nearby_invite'
+
 const activeTab = ref<TabName>('sound')
 
 // 获取与加载声音设置状态
@@ -94,6 +104,16 @@ const showGeo = ref(true)
 const recommendFriend = ref(true)
 const friendApply = ref(true)
 const nearbyInvite = ref(true)
+const privacyRefs: Record<PrivacyStorageKey, Ref<boolean>> = {
+  hmp_privacy_show_record: showRecord,
+  hmp_privacy_receive_emoji: receiveEmoji,
+  hmp_privacy_show_honor: showHonor,
+  hmp_privacy_show_rank: showRank,
+  hmp_privacy_show_geo: showGeo,
+  hmp_privacy_recommend_friend: recommendFriend,
+  hmp_privacy_friend_apply: friendApply,
+  hmp_privacy_nearby_invite: nearbyInvite,
+}
 
 function loadPrivacySettings() {
   showRecord.value = localStorage.getItem('hmp_privacy_show_record') !== 'false'
@@ -106,7 +126,8 @@ function loadPrivacySettings() {
   nearbyInvite.value = localStorage.getItem('hmp_privacy_nearby_invite') !== 'false'
 }
 
-function togglePrivacy(key: string, refObj: any) {
+function togglePrivacy(key: PrivacyStorageKey) {
+  const refObj = privacyRefs[key]
   playSound('btnClick')
   refObj.value = !refObj.value
   localStorage.setItem(key, refObj.value ? 'true' : 'false')
@@ -335,35 +356,35 @@ onMounted(() => {
               <div class="settings-section-row grid-2">
                 <div class="setting-item-toggle">
                   <span>显示我的战绩</span>
-                  <div class="original-switch" :class="{ open: showRecord }" @click="togglePrivacy('hmp_privacy_show_record', showRecord)">
+                  <div class="original-switch" :class="{ open: showRecord }" @click="togglePrivacy('hmp_privacy_show_record')">
                     <div class="switch-ball">♠</div>
                     <span class="switch-txt">{{ showRecord ? '开' : '关' }}</span>
                   </div>
                 </div>
                 <div class="setting-item-toggle">
                   <span>接收互动表情</span>
-                  <div class="original-switch" :class="{ open: receiveEmoji }" @click="togglePrivacy('hmp_privacy_receive_emoji', receiveEmoji)">
+                  <div class="original-switch" :class="{ open: receiveEmoji }" @click="togglePrivacy('hmp_privacy_receive_emoji')">
                     <div class="switch-ball">♠</div>
                     <span class="switch-txt">{{ receiveEmoji ? '开' : '关' }}</span>
                   </div>
                 </div>
                 <div class="setting-item-toggle">
                   <span>显示历史荣誉</span>
-                  <div class="original-switch" :class="{ open: showHonor }" @click="togglePrivacy('hmp_privacy_show_honor', showHonor)">
+                  <div class="original-switch" :class="{ open: showHonor }" @click="togglePrivacy('hmp_privacy_show_honor')">
                     <div class="switch-ball">♠</div>
                     <span class="switch-txt">{{ showHonor ? '开' : '关' }}</span>
                   </div>
                 </div>
                 <div class="setting-item-toggle">
                   <span>显示我的排名</span>
-                  <div class="original-switch" :class="{ open: showRank }" @click="togglePrivacy('hmp_privacy_show_rank', showRank)">
+                  <div class="original-switch" :class="{ open: showRank }" @click="togglePrivacy('hmp_privacy_show_rank')">
                     <div class="switch-ball">♠</div>
                     <span class="switch-txt">{{ showRank ? '开' : '关' }}</span>
                   </div>
                 </div>
                 <div class="setting-item-toggle">
                   <span>显示地理位置</span>
-                  <div class="original-switch" :class="{ open: showGeo }" @click="togglePrivacy('hmp_privacy_show_geo', showGeo)">
+                  <div class="original-switch" :class="{ open: showGeo }" @click="togglePrivacy('hmp_privacy_show_geo')">
                     <div class="switch-ball">♠</div>
                     <span class="switch-txt">{{ showGeo ? '开' : '关' }}</span>
                   </div>
@@ -381,7 +402,7 @@ onMounted(() => {
               <div class="settings-section-row grid-2">
                 <div class="setting-item-toggle">
                   <span>推荐好友提示</span>
-                  <div class="original-switch" :class="{ open: recommendFriend }" @click="togglePrivacy('hmp_privacy_recommend_friend', recommendFriend)">
+                  <div class="original-switch" :class="{ open: recommendFriend }" @click="togglePrivacy('hmp_privacy_recommend_friend')">
                     <div class="switch-ball">♠</div>
                     <span class="switch-txt">{{ recommendFriend ? '开' : '关' }}</span>
                   </div>
@@ -389,14 +410,14 @@ onMounted(() => {
                 </div>
                 <div class="setting-item-toggle">
                   <span>好友申请</span>
-                  <div class="original-switch" :class="{ open: friendApply }" @click="togglePrivacy('hmp_privacy_friend_apply', friendApply)">
+                  <div class="original-switch" :class="{ open: friendApply }" @click="togglePrivacy('hmp_privacy_friend_apply')">
                     <div class="switch-ball">♠</div>
                     <span class="switch-txt">{{ friendApply ? '开' : '关' }}</span>
                   </div>
                 </div>
                 <div class="setting-item-toggle">
                   <span>附近的人邀请</span>
-                  <div class="original-switch" :class="{ open: nearbyInvite }" @click="togglePrivacy('hmp_privacy_nearby_invite', nearbyInvite)">
+                  <div class="original-switch" :class="{ open: nearbyInvite }" @click="togglePrivacy('hmp_privacy_nearby_invite')">
                     <div class="switch-ball">♠</div>
                     <span class="switch-txt">{{ nearbyInvite ? '开' : '关' }}</span>
                   </div>
