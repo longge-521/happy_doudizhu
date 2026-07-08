@@ -1,6 +1,11 @@
 // frontend/src/composables/useGameWebSocket.ts
 import { ref } from 'vue'
-import { useGameStore } from '@/stores/gameStore'
+import {
+  useGameStore,
+  type DoublingChoice,
+  type RoomStatePayload,
+  type RoomStatePlayerPayload,
+} from '@/stores/gameStore'
 import { usePlayerStore } from '@/stores/playerStore'
 import {
   clearCardPresentationEffectTimer,
@@ -9,7 +14,11 @@ import {
   playDoubleChoiceSound,
   playQuickChatMessage,
 } from './gameWebSocketEffects'
-import { notifyVoiceSignal, notifyVoiceState } from './gameVoiceEvents'
+import {
+  type VoiceSignalType,
+  notifyVoiceSignal,
+  notifyVoiceState,
+} from './gameVoiceEvents'
 import { useSoundEngine } from './useSoundEngine'
 
 const isConnected = ref(false)
@@ -19,6 +28,89 @@ let reconnectTimer: number | null = null
 let manuallyClosed = false
 let socketPlayerId = ''
 let gameOverTimer: number | null = null
+
+type WinnerSide = 'landlord' | 'farmer'
+
+type BaseRoomStateEvent<TEvent extends string> = {
+  event: TEvent
+  room_state?: RoomStatePayload
+}
+
+type GameStartEvent = {
+  event: 'game_start'
+  room_id?: string
+  hand: number[]
+  current_turn: string
+  turn_deadline?: number
+  players?: RoomStatePlayerPayload[]
+}
+
+type DoubleChosenEvent = BaseRoomStateEvent<'double_chosen'> & {
+  player: string
+  choice: DoublingChoice
+  label?: string
+  multiplier?: number
+}
+
+type CardsPlayedEvent = BaseRoomStateEvent<'cards_played'> & {
+  player: string
+  cards: number[]
+}
+
+type GameOverRoomState = RoomStatePayload & {
+  phase?: 'PLAYING'
+}
+
+type GameOverEvent = {
+  event: 'game_over'
+  winner: string
+  winner_side: WinnerSide
+  scores: Record<string, number>
+  multiplier: number
+  all_hands?: Record<string, number[]>
+  room_state?: GameOverRoomState
+}
+
+type VoiceSignalEvent = {
+  event: 'voice_signal'
+  player: string
+  target_player: string
+  signal_type: VoiceSignalType
+  payload: Record<string, unknown>
+}
+
+type VoiceStateEvent = {
+  event: 'voice_state'
+  player: string
+  enabled: boolean
+}
+
+type GameServerEvent =
+  | { event: 'match_waiting' }
+  | { event: 'match_cancelled' }
+  | (BaseRoomStateEvent<'match_success'> & { room_id: string })
+  | GameStartEvent
+  | (BaseRoomStateEvent<'call_made'> & { player: string })
+  | (BaseRoomStateEvent<'call_skipped'> & { player: string })
+  | (BaseRoomStateEvent<'landlord_decided'> & {
+      landlord: string
+      bottom_cards?: number[]
+      multiplier?: number
+    })
+  | DoubleChosenEvent
+  | (BaseRoomStateEvent<'doubling_finished'> & {
+      current_turn?: string | null
+      multiplier?: number
+    })
+  | BaseRoomStateEvent<'redeal'>
+  | CardsPlayedEvent
+  | (BaseRoomStateEvent<'turn_passed'> & { player: string })
+  | GameOverEvent
+  | { event: 'chat_msg'; player: string; msg_id: number }
+  | VoiceSignalEvent
+  | VoiceStateEvent
+  | (RoomStatePayload & { event: 'reconnected' })
+  | { event: 'error'; msg?: string }
 
 function debugLog(...args: unknown[]) {
   if (import.meta.env.DEV) {
@@ -69,7 +161,7 @@ export function useGameWebSocket() {
 
     socket.onmessage = (event) => {
       try {
-        const data = JSON.parse(event.data)
+        const data = JSON.parse(event.data) as GameServerEvent
         handleEvent(data)
       } catch (e) {
         console.error('WebSocket: Failed to parse event data:', e)
@@ -138,7 +230,7 @@ export function useGameWebSocket() {
     }
   }
 
-  function handleEvent(data: any) {
+  function handleEvent(data: GameServerEvent) {
     const gameStore = useGameStore()
     const event = data.event
 
@@ -171,7 +263,7 @@ export function useGameWebSocket() {
         gameStore.playerActions = {}
         gameStore.playerPlayedCards = {}
         if (data.players) {
-          gameStore.players = data.players.map((p: any) => ({
+          gameStore.players = data.players.map((p) => ({
             id: p.id, nickname: p.nickname, isAi: p.is_ai,
             isOnline: p.is_online, remaining: p.remaining,
             isSelf: p.is_self,
