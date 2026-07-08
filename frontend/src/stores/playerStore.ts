@@ -20,6 +20,22 @@ export const usePlayerStore = defineStore('player', () => {
     return authToken.value ? { Authorization: `Bearer ${authToken.value}` } : {}
   }
 
+  function getErrorMessage(error: unknown, fallback: string): string {
+    if (error instanceof Error && error.message) {
+      return error.message
+    }
+    if (
+      typeof error === 'object' &&
+      error !== null &&
+      'message' in error &&
+      typeof error.message === 'string' &&
+      error.message
+    ) {
+      return error.message
+    }
+    return fallback
+  }
+
   function setSession(id: string, name: string, accountName: string, token: string) {
     playerId.value = id
     nickname.value = name
@@ -97,8 +113,8 @@ export const usePlayerStore = defineStore('player', () => {
         return { ok: true }
       }
       return { ok: false, error: '注册返回异常' }
-    } catch (e: any) {
-      return { ok: false, error: e.message || '网络连接失败' }
+    } catch (e: unknown) {
+      return { ok: false, error: getErrorMessage(e, '网络连接失败') }
     }
   }
 
@@ -131,8 +147,8 @@ export const usePlayerStore = defineStore('player', () => {
         return { ok: true }
       }
       return { ok: false, error: '登录返回异常' }
-    } catch (e: any) {
-      return { ok: false, error: e.message || '网络连接失败' }
+    } catch (e: unknown) {
+      return { ok: false, error: getErrorMessage(e, '网络连接失败') }
     }
   }
 
@@ -166,8 +182,8 @@ export const usePlayerStore = defineStore('player', () => {
       const data = await res.json()
       beans.value = data.beans
       return { ok: true }
-    } catch (e: any) {
-      return { ok: false, error: e.message || '网络连接失败' }
+    } catch (e: unknown) {
+      return { ok: false, error: getErrorMessage(e, '网络连接失败') }
     }
   }
 
@@ -188,8 +204,8 @@ export const usePlayerStore = defineStore('player', () => {
       stars.value = data.stars
       await fetchProfile()
       return { ok: true }
-    } catch (e: any) {
-      return { ok: false, error: e.message || '网络连接失败' }
+    } catch (e: unknown) {
+      return { ok: false, error: getErrorMessage(e, '网络连接失败') }
     }
   }
 
@@ -217,8 +233,8 @@ export const usePlayerStore = defineStore('player', () => {
         localStorage.removeItem('hmp_avatar_url')
       }
       return { ok: true }
-    } catch (e: any) {
-      return { ok: false, error: e.message || '网络连接失败' }
+    } catch (e: unknown) {
+      return { ok: false, error: getErrorMessage(e, '网络连接失败') }
     }
   }
 
@@ -238,8 +254,8 @@ export const usePlayerStore = defineStore('player', () => {
       }
       const data = await res.json()
       return { ok: true, avatarUrl: data.avatar_url }
-    } catch (e: any) {
-      return { ok: false, error: e.message || '网络连接失败' }
+    } catch (e: unknown) {
+      return { ok: false, error: getErrorMessage(e, '网络连接失败') }
     }
   }
 
@@ -255,8 +271,8 @@ export const usePlayerStore = defineStore('player', () => {
         return { ok: false, error: errData.detail || '修改密码失败' }
       }
       return { ok: true }
-    } catch (e: any) {
-      return { ok: false, error: e.message || '网络连接失败' }
+    } catch (e: unknown) {
+      return { ok: false, error: getErrorMessage(e, '网络连接失败') }
     }
   }
 
