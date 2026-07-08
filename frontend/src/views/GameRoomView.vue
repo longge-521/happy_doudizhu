@@ -1689,15 +1689,17 @@ watch(
 }
 
 .play-seat-zone.left {
-  left: 20px;
-  top: 15%;
+  left: 140px;
+  top: -50px;
   justify-content: flex-start;
+  z-index: 20;
 }
 
 .play-seat-zone.right {
-  right: 20px;
-  top: 15%;
+  right: 140px;
+  top: -50px;
   justify-content: flex-end;
+  z-index: 20;
 }
 
 .play-seat-zone.bottom {
