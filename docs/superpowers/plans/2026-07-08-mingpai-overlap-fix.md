@@ -46,8 +46,8 @@
   在 `PlayerSeat.vue` 中对头像尺寸进行微缩，并对明牌负边距及定位进行调整；同时对 `.played-cards-row` 启用条件换行限制：
   ```css
   .avatar-block {
-    width: 80px;
-    padding: 10px 4px;
+    width: 88px;
+    padding: 10px 6px;
     gap: 6px;
   }
   .avatar-icon-circle {
@@ -56,7 +56,10 @@
   }
   .seat-name {
     font-size: 0.82rem;
-    max-width: 72px;
+    max-width: 80px;
+  }
+  .doubling-badge {
+    white-space: nowrap;
   }
   .player-seat.left .shown-cards-row {
     position: absolute;

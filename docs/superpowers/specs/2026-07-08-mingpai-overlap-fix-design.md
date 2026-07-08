@@ -35,8 +35,8 @@
 将左右两侧 AI 头像面板的宽度与内边距缩减，圆形头像从 `50px` 缩至 `42px`：
 ```css
 .avatar-block {
-  width: 80px;
-  padding: 10px 4px;
+  width: 88px;
+  padding: 10px 6px;
   gap: 6px;
 }
 .avatar-icon-circle {
@@ -45,7 +45,10 @@
 }
 .seat-name {
   font-size: 0.82rem;
-  max-width: 72px;
+  max-width: 80px;
+}
+.doubling-badge {
+  white-space: nowrap;
 }
 ```
 

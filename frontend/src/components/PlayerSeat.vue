@@ -123,8 +123,8 @@ defineProps<{
 
 /* 头像面板 */
 .avatar-block {
-  width: 80px;
-  padding: 10px 4px;
+  width: 88px;
+  padding: 10px 6px;
   text-align: center;
   display: flex;
   flex-direction: column;
@@ -167,7 +167,7 @@ defineProps<{
 
 .seat-name {
   font-size: 0.82rem;
-  max-width: 72px;
+  max-width: 80px;
   font-weight: 800;
   color: #fff;
   text-shadow: 0 1px 2px rgba(0,0,0,0.8);
@@ -211,6 +211,7 @@ defineProps<{
   box-shadow: 0 2px 4px rgba(0,0,0,0.3);
   text-shadow: none;
   animation: pulse 1s infinite alternate;
+  white-space: nowrap;
 }
 
 .doubling-badge.super {
