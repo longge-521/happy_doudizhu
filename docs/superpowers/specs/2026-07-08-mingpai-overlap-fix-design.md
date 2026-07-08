@@ -29,34 +29,55 @@
     justify-content: flex-end;
   }
   ```
-* **修改为**：
-  ```css
-  .play-seat-zone.right {
-    right: 140px; /* 往内侧移动 120px 避开明牌 */
-    top: -50px;   /* 向上移动错开高度 */
-    justify-content: flex-end;
-    z-index: 20;  /* 确保在明牌上层 */
-  }
-  ```
+* **重构优化为如下三层联合方案**：
 
-### 3.2 `play-seat-zone.left` (左侧玩家出牌区样式)
-* **原样式**：
-  ```css
-  .play-seat-zone.left {
-    left: 20px;
-    top: 15%;
-    justify-content: flex-start;
-  }
-  ```
-* **修改为**：
-  ```css
-  .play-seat-zone.left {
-    left: 140px;  /* 往内侧移动 120px 避开明牌 */
-    top: -50px;   /* 向上移动错开高度 */
-    justify-content: flex-start;
-    z-index: 20;  /* 确保在明牌上层 */
-  }
-  ```
+#### 3.1.1 头像层 (缩小 20%)
+将左右两侧 AI 头像面板的宽度与内边距缩减，圆形头像从 `50px` 缩至 `42px`：
+```css
+.avatar-block {
+  width: 80px;
+  padding: 10px 4px;
+  gap: 6px;
+}
+.avatar-icon-circle {
+  width: 42px;
+  height: 42px;
+}
+.seat-name {
+  font-size: 0.82rem;
+  max-width: 72px;
+}
+```
+
+#### 3.1.2 明牌层 (悬浮置顶 + 可读间距)
+将明牌手牌容器定位到头像上方 `145px` 的无遮挡空档区，且将扑克牌重叠负左边距设为 `-34px`，确保数值花色清晰可见：
+```css
+.player-seat.left .shown-cards-row {
+  position: absolute;
+  top: -145px;
+  left: 0;
+}
+.player-seat.right .shown-cards-row {
+  position: absolute;
+  top: -145px;
+  right: 0;
+}
+```
+
+#### 3.1.3 出牌层 (双行折行 + 宽度限制)
+保留父级容器 `.play-seat-zone` 样式在原本的 `left/right: 20px; top: 15%;` 处（使加倍等动作提示文字不偏位），同时在 `.played-cards-row` 上限制最大宽度为 `252px`（最多并排 4 张牌）并支持 `flex-wrap: wrap` 折行展示：
+```css
+.played-cards-row {
+  display: flex;
+  flex-wrap: wrap;
+  max-width: 252px;
+  gap: 3px;
+}
+/* 右侧玩家折行出牌靠右对齐 */
+.player-seat.right .played-cards-row {
+  justify-content: flex-end;
+}
+```
 
 ---
 

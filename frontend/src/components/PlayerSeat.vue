@@ -62,7 +62,7 @@ defineProps<{
           :no-hover="true"
           size="sm"
           class="shown-card"
-          :style="{ marginLeft: index === 0 ? '0px' : '-38px', zIndex: index }"
+          :style="{ marginLeft: index === 0 ? '0px' : '-34px', zIndex: index }"
         />
       </div>
       <div v-else-if="player.remaining !== undefined" class="card-back-count">
@@ -119,13 +119,13 @@ defineProps<{
 
 /* 头像面板 */
 .avatar-block {
-  width: 96px;
-  padding: 14px 6px;
+  width: 80px;
+  padding: 10px 4px;
   text-align: center;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   position: relative;
   transition: all 0.25s ease;
   background: rgba(0, 0, 0, 0.45);
@@ -140,8 +140,8 @@ defineProps<{
 
 /* 圆形头像 */
 .avatar-icon-circle {
-  width: 50px;
-  height: 50px;
+  width: 42px;
+  height: 42px;
   border-radius: 50%;
   background: rgba(255, 255, 255, 0.15);
   border: 2px solid rgba(255, 255, 255, 0.4);
@@ -162,8 +162,8 @@ defineProps<{
 }
 
 .seat-name {
-  font-size: 0.85rem;
-  max-width: 85px;
+  font-size: 0.82rem;
+  max-width: 72px;
   font-weight: 800;
   color: #fff;
   text-shadow: 0 1px 2px rgba(0,0,0,0.8);
@@ -304,11 +304,17 @@ defineProps<{
 
 .played-cards-row {
   display: flex;
+  flex-wrap: wrap;
   gap: 3px;
   background: rgba(0, 0, 0, 0.35);
   padding: 6px;
   border-radius: 6px;
   border: 1px solid rgba(255,255,255,0.08);
+  max-width: 252px;
+}
+
+.player-seat.right .played-cards-row {
+  justify-content: flex-end;
 }
 
 .shown-cards-row {
@@ -324,5 +330,17 @@ defineProps<{
 
 .shown-card {
   transition: transform 0.2s ease;
+}
+
+.player-seat.left .shown-cards-row {
+  position: absolute;
+  top: -145px;
+  left: 0;
+}
+
+.player-seat.right .shown-cards-row {
+  position: absolute;
+  top: -145px;
+  right: 0;
 }
 </style>

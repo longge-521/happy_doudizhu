@@ -1689,17 +1689,15 @@ watch(
 }
 
 .play-seat-zone.left {
-  left: 140px;
-  top: -50px;
+  left: 20px;
+  top: 15%;
   justify-content: flex-start;
-  z-index: 20;
 }
 
 .play-seat-zone.right {
-  right: 140px;
-  top: -50px;
+  right: 20px;
+  top: 15%;
   justify-content: flex-end;
-  z-index: 20;
 }
 
 .play-seat-zone.bottom {
@@ -1797,16 +1795,20 @@ watch(
   to { left: 110%; opacity: 0; }
 }
 
-/* 濡炪倕鎼悺娆撴煂閹达絽顥忔繛缈犵閸樻粓骞嶉銉х畺 */
 .played-cards-row {
   position: relative;
-  overflow: hidden;
   display: flex;
+  flex-wrap: wrap;
   gap: 3px;
   background: rgba(0, 0, 0, 0.35);
   padding: 6px;
   border-radius: 6px;
   border: 1px solid rgba(255,255,255,0.08);
+  max-width: 252px;
+}
+
+.play-seat-zone.right .played-cards-row {
+  justify-content: flex-end;
 }
 .poker-effects-layer + .played-cards-row::after,
 .shimmer-active::after {

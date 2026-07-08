@@ -41,21 +41,41 @@
   }
   ```
 
-- [ ] **Step 2: 修改为错位及内移样式**
+- [ ] **Step 2: 头像缩小、明牌上移与出牌自折行**
   将上述样式替换为：
+  在 `PlayerSeat.vue` 中对头像尺寸进行微缩，并对明牌负边距及定位进行调整；同时对 `.played-cards-row` 启用换行限制：
   ```css
-  .play-seat-zone.left {
-    left: 130px;
-    top: -20px;
-    justify-content: flex-start;
-    z-index: 20;
+  .avatar-block {
+    width: 80px;
+    padding: 10px 4px;
+    gap: 6px;
   }
-
-  .play-seat-zone.right {
-    right: 130px;
-    top: -20px;
+  .avatar-icon-circle {
+    width: 42px;
+    height: 42px;
+  }
+  .seat-name {
+    font-size: 0.82rem;
+    max-width: 72px;
+  }
+  .player-seat.left .shown-cards-row {
+    position: absolute;
+    top: -145px;
+    left: 0;
+  }
+  .player-seat.right .shown-cards-row {
+    position: absolute;
+    top: -145px;
+    right: 0;
+  }
+  .played-cards-row {
+    display: flex;
+    flex-wrap: wrap;
+    max-width: 252px;
+    gap: 3px;
+  }
+  .player-seat.right .played-cards-row {
     justify-content: flex-end;
-    z-index: 20;
   }
   ```
 
