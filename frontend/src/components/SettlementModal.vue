@@ -7,7 +7,7 @@ import { getCardDisplay, sortCardIds, sortPlayedCards } from '@/utils/cardUtils'
 
 const props = defineProps<{
   settlement: GameSettlement
-  players: Array<Pick<PlayerInfo, 'id' | 'nickname' | 'isLandlord'>>
+  players: Array<Pick<PlayerInfo, 'id' | 'nickname' | 'isLandlord' | 'showMultiplier'>>
   lastPlayedCards?: Record<string, number[]>
 }>()
 
@@ -172,6 +172,7 @@ const starChangeDesc = computed(() => {
               <span v-if="p.isLandlord" class="role-hat">👑</span>
               <span v-else class="role-hat">👨‍🌾</span>
               <span class="player-name truncate">{{ p.nickname }}</span>
+              <span v-if="p.showMultiplier" class="settle-show-cards-badge">明牌×{{ p.showMultiplier }}</span>
             </div>
 
             <!-- 底分 -->
@@ -597,4 +598,16 @@ const starChangeDesc = computed(() => {
   border: 1px solid rgba(28, 28, 30, 0.15);
 }
 
+.settle-show-cards-badge {
+  background: linear-gradient(135deg, #ff5722 0%, #bf360c 100%);
+  color: #ffffff;
+  font-size: 0.65rem;
+  font-weight: bold;
+  padding: 1px 4px;
+  border-radius: 4px;
+  margin-left: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  display: inline-block;
+  line-height: 1.2;
+}
 </style>

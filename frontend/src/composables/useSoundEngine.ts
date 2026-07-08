@@ -13,6 +13,8 @@ export type SoundName =
   | 'redeal'
   | 'btnClick'
   | 'doubling'
+  | 'showCards'
+  | 'mingpai'
   | 'callLandlord'
   // 人声及特殊牌型
   | 'callLandlord'
@@ -319,6 +321,27 @@ function playLocalMatchSuccess(ctx: AudioContext, dest: AudioNode) {
   })
 }
 
+// 明牌音效：一个亮丽、上扬的和弦音效加上翻牌的感觉
+function playLocalShowCards(ctx: AudioContext, dest: AudioNode) {
+  const t = ctx.currentTime
+  const notes = [587.33, 739.99, 880.00, 1174.66] // D5, F#5, A5, D6
+  notes.forEach((freq, idx) => {
+    const osc = ctx.createOscillator()
+    const gain = ctx.createGain()
+    osc.type = 'triangle'
+    osc.frequency.setValueAtTime(freq, t + idx * 0.06)
+    
+    gain.gain.setValueAtTime(0, t + idx * 0.06)
+    gain.gain.linearRampToValueAtTime(0.12, t + idx * 0.06 + 0.01)
+    gain.gain.exponentialRampToValueAtTime(0.001, t + idx * 0.06 + 0.3)
+    
+    osc.connect(gain)
+    gain.connect(dest)
+    osc.start(t + idx * 0.06)
+    osc.stop(t + idx * 0.06 + 0.35)
+  })
+}
+
 // 经典的清脆金币撞击声（加倍）
 function playLocalDoubling(ctx: AudioContext, dest: AudioNode) {
   const t = ctx.currentTime
@@ -598,6 +621,7 @@ export function useSoundEngine() {
       case 'double_straight': return `${genderFolder}continuous_pair.ogg`
       case 'three_one': return `${genderFolder}three_with_one.ogg`
       case 'three_two': return `${genderFolder}three_with_one_pair.ogg`
+      case 'mingpai': return `${genderFolder}mingpai.ogg`
       case 'jiabei': {
         const ext = genderFolder.includes('female') ? 'mp3' : 'ogg'
         return `${genderFolder}jiabei.${ext}`
@@ -679,6 +703,10 @@ export function useSoundEngine() {
       playLocalDoubling(ctx, sfxGain)
       return
     }
+    if (name === 'showCards') {
+      playLocalShowCards(ctx, sfxGain)
+      return
+    }
     if (name === 'chatMsg') {
       playLocalChatMsg(ctx, sfxGain)
       return
@@ -740,6 +768,9 @@ export function useSoundEngine() {
       if (name === 'jiabei') playLocalJiabei(ctx, sfxGain)
       else if (name === 'superDouble') playLocalSuperDouble(ctx, sfxGain)
       else if (name === 'bujiabei') playLocalBujiabei(ctx, sfxGain)
+      else if (name === 'mingpai') {
+        playSpeechSynthesis('明牌', getSpeechGender(playerId))
+      }
     }
   }
 

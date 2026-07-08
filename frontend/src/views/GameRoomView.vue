@@ -331,7 +331,12 @@ onMounted(() => {
 
       // 鐟滅増鎸搁埀顒佸笩椤撴悂寮捄铏圭Ш闂傚棙婀圭粭鏍嫉婢跺﹦绐″璺哄閹﹪鎮╅懜纰樺亾娴ｈ顦?
       if (newTimeLeft === 0) {
-        if (showDoublingPanel.value) {
+        if (gameStore.gamePhase === 'LANDLORD_CONFIRM' && gameStore.awaitingLandlordShow) {
+          if (gameStore.landlord === playerStore.playerId && !hasHandledTimeout.value) {
+            hasHandledTimeout.value = true
+            handleLandlordShow(false)
+          }
+        } else if (showDoublingPanel.value) {
           // 加倍阶段超时，自动选择“不加倍”
           if (!hasHandledTimeout.value) {
             hasHandledTimeout.value = true
@@ -395,6 +400,21 @@ function handleSkipCall(isAuto = false) {
     idleRoundCount.value = 0
   }
   sendAction({ action: 'skip_call' })
+}
+
+function handleShowCards(multiplier: number) {
+  playSound('btnClick')
+  sendAction({ action: 'show_cards', multiplier })
+}
+
+function handleLandlordShow(show: boolean) {
+  playSound('btnClick')
+  sendAction({ action: 'landlord_show', show })
+}
+
+function getLandlordNickname() {
+  const l = gameStore.players.find(p => p.id === gameStore.landlord)
+  return l ? l.nickname : '地主'
 }
 
 // 闁告垼娅ｆ晶婵嬪箼瀹ュ嫮绋?
@@ -707,9 +727,55 @@ watch(
       />
     </div>
 
-    <!-- 閹煎瓨娲熼崕鎾箼瀹ュ嫮绋婇柛鏍〃缁楀矂骞嶇€ｎ剙顤傞柛?-->
+    <!-- 玩家操作栏区域 -->
     <div class="player-bottom-area">
-      <!-- 闁告梻濮撮埀顒€绉撮崰鍛驳閺嶎剦鏀介柛鏂诲姂濞间即寮?-->
+      <!-- 发牌阶段随时可选的明牌按钮 -->
+      <div v-if="gameStore.showCardsAvailableMultiplier !== null && !gameStore.showCardsPlayers[playerStore.playerId]" class="action-bar-row">
+        <button
+          class="btn-action-call"
+          style="background: linear-gradient(135deg, #ff7043 0%, #d84315 100%); border-color: #ffab91;"
+          @click="handleShowCards(gameStore.showCardsAvailableMultiplier!)"
+        >
+          ⚡ 确认明牌 ×{{ gameStore.showCardsAvailableMultiplier }}
+        </button>
+      </div>
+
+      <!-- 地主明牌确认面板 -->
+      <div v-if="gameStore.gamePhase === 'LANDLORD_CONFIRM' && gameStore.awaitingLandlordShow" class="action-bar-row">
+        <div v-if="gameStore.landlord === playerStore.playerId" class="actions-group">
+          <button
+            class="btn-action-call"
+            style="background: linear-gradient(135deg, #42a5f5 0%, #1565c0 100%); border-color: #90caf9;"
+            @click="handleLandlordShow(true)"
+          >
+            明 牌
+          </button>
+          
+          <div class="turn-alarm-clock">
+            <div class="clock-icon">⏰</div>
+            <span class="time-left-digits">{{ timeLeft }}</span>
+          </div>
+
+          <button
+            class="btn-action-call"
+            style="background: linear-gradient(135deg, #ff7043 0%, #d84315 100%); border-color: #ffab91;"
+            @click="handleLandlordShow(false)"
+          >
+            出 牌
+          </button>
+        </div>
+        <div v-else class="waiting-hint-text-wrapper">
+          <div class="turn-alarm-clock inline-clock">
+            <div class="clock-icon">⏰</div>
+            <span class="time-left-digits">{{ timeLeft }}</span>
+          </div>
+          <div class="waiting-hint-text">
+            等待地主 ({{ getLandlordNickname() }}) 选择...
+          </div>
+        </div>
+      </div>
+
+      <!-- 麦克风/叫地主操作 -->
       <div v-if="showDoublingPanel" class="action-bar-row">
         <div class="play-action-panel">
           <div class="actions-group">
@@ -2075,5 +2141,24 @@ watch(
   height: 4px;
   accent-color: #ffe082;
   cursor: pointer;
+}
+
+.waiting-hint-text {
+  color: #a5d6a7;
+  font-size: 1.05rem;
+  font-weight: 800;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+}
+
+.waiting-hint-text-wrapper {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.inline-clock {
+  margin: 0 auto;
 }
 </style>

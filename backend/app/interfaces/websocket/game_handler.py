@@ -219,6 +219,43 @@ class GameWebSocketHandler:
                     # 随后继续处理 AI 回合
                     await self._process_ai_turns(room)
 
+        elif action == "show_cards":
+            show_multiplier = data.get("multiplier", 2)
+            result = await self.service.handle_show_cards(self.player_id, show_multiplier)
+            if result.get("error") or result.get("success") is False:
+                await self._send({"event": "error", "msg": result.get("error", "明牌失败")})
+            else:
+                room = result.get("room")
+                if room:
+                    event = {
+                        "event": "cards_shown",
+                        "player": self.player_id,
+                        "cards": result.get("cards", []),
+                        "show_multiplier": result.get("show_multiplier", 2),
+                        "total_multiplier": result.get("total_multiplier", room.multiplier),
+                    }
+                    await self._broadcast_room_event(room, event)
+
+        elif action == "landlord_show":
+            show = data.get("show", False)
+            result = await self.service.handle_landlord_show(self.player_id, show)
+            if result.get("error") or result.get("success") is False:
+                await self._send({"event": "error", "msg": result.get("error", "地主明牌操作失败")})
+            else:
+                room = result.get("room")
+                if room:
+                    show_result = result.get("show_result")
+                    event = {
+                        "event": "landlord_show_decided",
+                        "player": self.player_id,
+                        "show": show,
+                        "multiplier": result.get("multiplier", room.multiplier),
+                    }
+                    if show and show_result:
+                        event["cards"] = show_result.get("cards", [])
+                    await self._broadcast_room_event(room, event)
+                    await self._process_ai_turns(room)
+
         elif action == "choose_double":
             choice = data.get("choice", "none")
             result = await self.service.handle_double_choice(self.player_id, choice)
@@ -236,11 +273,14 @@ class GameWebSocketHandler:
                     }
                     await self._broadcast_room_event(room, event)
                     if result.get("doubling_finished"):
-                        await self._broadcast_room_event(room, {
+                        event_data = {
                             "event": "doubling_finished",
                             "current_turn": result.get("next_turn"),
                             "multiplier": result.get("multiplier", room.multiplier),
-                        })
+                        }
+                        if result.get("landlord_confirm_required"):
+                            event_data["landlord_confirm_required"] = True
+                        await self._broadcast_room_event(room, event_data)
                     await self._process_ai_turns(room)
 
         elif action == "play_cards":
@@ -337,6 +377,22 @@ class GameWebSocketHandler:
                         "players": view["players"],
                         "current_turn": room.current_turn,
                     })
+
+            # 评估 AI 发牌阶段明牌
+            ai_show_results = self.service.evaluate_ai_dealing_show(room)
+            if ai_show_results:
+                await self.service._repo.save_room(room)
+                for show_result in ai_show_results:
+                    await asyncio.sleep(1.0)
+                    show_event = {
+                        "event": "cards_shown",
+                        "player": show_result["player_id"],
+                        "cards": show_result["cards"],
+                        "show_multiplier": show_result["show_multiplier"],
+                        "total_multiplier": show_result["total_multiplier"],
+                    }
+                    await self._broadcast_room_event(room, show_event)
+
             # 如果首位叫牌者是 AI，等待前端发牌动画播放结束（2.5秒）后再执行 AI 回合
             current = room.current_turn
             current_player = next((p for p in room.players if p.id == current), None)
@@ -359,7 +415,8 @@ class GameWebSocketHandler:
     async def _do_process_ai_turns(self, room):
         """循环处理 AI 回合，直到轮到真人玩家"""
         logger.info(f"游戏WS [room={room.room_id}]: 开始 _do_process_ai_turns. 阶段={room.phase.value}, 当前回合={room.current_turn}")
-        # 1. 优先处理并行的加倍阶段 (DOUBLING)
+        
+        # 0. 优先处理并行的加倍阶段 (DOUBLING)
         if room.phase == GamePhase.DOUBLING:
             # 找到所有尚未做出加倍选择的 AI 玩家并依次处理
             for p in room.players:
@@ -397,14 +454,64 @@ class GameWebSocketHandler:
                         }
                         await self._broadcast_room_event(room, event)
                         if result.get("doubling_finished"):
-                            logger.info(f"游戏WS [room={room.room_id}]: 加倍确认完毕，进入 PLAYING 阶段")
-                            await self._broadcast_room_event(room, {
+                            logger.info(f"游戏WS [room={room.room_id}]: 加倍确认完毕")
+                            event_data = {
                                 "event": "doubling_finished",
                                 "current_turn": result.get("next_turn"),
                                 "multiplier": result.get("multiplier", room.multiplier),
-                            })
-                            # 若加倍结束切到了 PLAYING 且当前出牌人是 AI，则继续调用 _do_process_ai_turns 处理其出牌
+                            }
+                            if result.get("landlord_confirm_required"):
+                                event_data["landlord_confirm_required"] = True
+                            await self._broadcast_room_event(room, event_data)
+                            # 继续处理后续阶段（LANDLORD_CONFIRM 或 PLAYING）
                             await self._do_process_ai_turns(room)
+            return
+
+        # 1. 处理地主明牌确认阶段 (LANDLORD_CONFIRM)
+        if room.phase == GamePhase.LANDLORD_CONFIRM:
+            current = room.current_turn
+            current_player = next((p for p in room.players if p.id == current), None)
+            if current_player and current_player.is_ai:
+                await asyncio.sleep(1.5)
+                try:
+                    result = await self.service.handle_ai_turn(room)
+                except Exception as e:
+                    import traceback
+                    logger.error(f"游戏WS: AI 地主明牌自动处理异常 [room={room.room_id}]: {e}\n{traceback.format_exc()}")
+                    # 出错时直接跳过明牌确认进入出牌
+                    room.finish_landlord_confirm()
+                    await self.service._repo.save_room(room)
+                    result = {"room": room, "show": False}
+                
+                room = result.get("room", room)
+                show = result.get("show", False)
+                show_result = result.get("show_result")
+                
+                # 如果 AI 选择了明牌，先广播明牌事件
+                if show and show_result:
+                    show_event = {
+                        "event": "cards_shown",
+                        "player": current,
+                        "cards": show_result.get("cards", []),
+                        "show_multiplier": show_result.get("show_multiplier", 2),
+                        "total_multiplier": show_result.get("total_multiplier", room.multiplier),
+                    }
+                    await self._broadcast_room_event(room, show_event)
+                    await asyncio.sleep(0.5)
+                
+                # 广播地主明牌确认结束
+                event = {
+                    "event": "landlord_show_decided",
+                    "player": current,
+                    "show": show,
+                    "multiplier": room.multiplier,
+                }
+                if show and show_result:
+                    event["cards"] = show_result.get("cards", [])
+                await self._broadcast_room_event(room, event)
+                
+                # 继续处理后续阶段（PLAYING）
+                await self._do_process_ai_turns(room)
             return
 
         # 2. 轮流处理叫地主 and 出牌阶段
@@ -463,6 +570,9 @@ class GameWebSocketHandler:
                         "multiplier": result.get("multiplier", 1),
                     }
                     await self._broadcast_room_event(room, decided_event)
+                    # AI 获得地主身份，需在当前 AI 回合内递归调用处理后续的地主明牌/加倍等流程，防止退出循环导致流程卡死
+                    await self._do_process_ai_turns(room)
+                    break
             elif result.get("cards_played"):
                 event = {
                     "event": "cards_played",
