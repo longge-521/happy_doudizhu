@@ -64,16 +64,20 @@
 }
 ```
 
-#### 3.1.3 出牌层 (双行折行 + 宽度限制)
-保留父级容器 `.play-seat-zone` 样式在原本的 `left/right: 20px; top: 15%;` 处（使加倍等动作提示文字不偏位），同时在 `.played-cards-row` 上限制最大宽度为 `252px`（最多并排 4 张牌）并支持 `flex-wrap: wrap` 折行展示：
+#### 3.1.3 出牌层 (少牌单行，多牌 wrap-cards 折行)
+保留父级容器 `.play-seat-zone` 样式在原本的 `left/right: 20px; top: 15%;` 处（使加倍等动作提示文字不偏位），同时在 `.played-cards-row` 容器上限制：
+* 普通出牌保持自适应单行排列。
+* 仅在左右侧 AI 玩家打出张数大于 8 张且绑定了 `.wrap-cards` 类时，才限制最大宽度 `252px` 并开启 `flex-wrap: wrap` 折行展示。
 ```css
 .played-cards-row {
   display: flex;
-  flex-wrap: wrap;
-  max-width: 252px;
   gap: 3px;
 }
-/* 右侧玩家折行出牌靠右对齐 */
+.played-cards-row.wrap-cards {
+  flex-wrap: wrap;
+  max-width: 252px;
+}
+/* 右侧玩家出牌靠右对齐 */
 .player-seat.right .played-cards-row {
   justify-content: flex-end;
 }

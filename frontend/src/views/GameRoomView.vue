@@ -696,7 +696,10 @@ watch(
           <div
             v-else-if="gameStore.playerPlayedCards[seat.player.id] && gameStore.playerPlayedCards[seat.player.id]!.length > 0"
             class="played-cards-row"
-            :class="{ 'shimmer-active': gameStore.activeEffect === 'shimmer' && gameStore.lastPlay.player === seat.player.id }"
+            :class="[
+              { 'shimmer-active': gameStore.activeEffect === 'shimmer' && gameStore.lastPlay.player === seat.player.id },
+              { 'wrap-cards': seat.position !== 'bottom' && gameStore.playerPlayedCards[seat.player.id]!.length > 8 }
+            ]"
           >
             <PokerCard
               v-for="cId in sortPlayedCards(gameStore.playerPlayedCards[seat.player.id] || [])"
@@ -1798,12 +1801,15 @@ watch(
 .played-cards-row {
   position: relative;
   display: flex;
-  flex-wrap: wrap;
   gap: 3px;
   background: rgba(0, 0, 0, 0.35);
   padding: 6px;
   border-radius: 6px;
   border: 1px solid rgba(255,255,255,0.08);
+}
+
+.played-cards-row.wrap-cards {
+  flex-wrap: wrap;
   max-width: 252px;
 }
 

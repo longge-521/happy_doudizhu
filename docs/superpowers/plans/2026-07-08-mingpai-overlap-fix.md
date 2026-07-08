@@ -43,7 +43,7 @@
 
 - [ ] **Step 2: 头像缩小、明牌上移与出牌自折行**
   将上述样式替换为：
-  在 `PlayerSeat.vue` 中对头像尺寸进行微缩，并对明牌负边距及定位进行调整；同时对 `.played-cards-row` 启用换行限制：
+  在 `PlayerSeat.vue` 中对头像尺寸进行微缩，并对明牌负边距及定位进行调整；同时对 `.played-cards-row` 启用条件换行限制：
   ```css
   .avatar-block {
     width: 80px;
@@ -70,9 +70,11 @@
   }
   .played-cards-row {
     display: flex;
+    gap: 3px;
+  }
+  .played-cards-row.wrap-cards {
     flex-wrap: wrap;
     max-width: 252px;
-    gap: 3px;
   }
   .player-seat.right .played-cards-row {
     justify-content: flex-end;

@@ -76,7 +76,11 @@ defineProps<{
       <div v-if="lastActionText" class="bubble-action" :class="{ pass: lastActionText === '不出' }">
         {{ lastActionText }}
       </div>
-      <div v-else-if="lastPlayedCards && lastPlayedCards.length > 0" class="played-cards-row">
+      <div
+        v-else-if="lastPlayedCards && lastPlayedCards.length > 0"
+        class="played-cards-row"
+        :class="{ 'wrap-cards': position !== 'bottom' && lastPlayedCards.length > 8 }"
+      >
         <PokerCard
           v-for="cId in lastPlayedCards"
           :key="cId"
@@ -304,12 +308,15 @@ defineProps<{
 
 .played-cards-row {
   display: flex;
-  flex-wrap: wrap;
   gap: 3px;
   background: rgba(0, 0, 0, 0.35);
   padding: 6px;
   border-radius: 6px;
   border: 1px solid rgba(255,255,255,0.08);
+}
+
+.played-cards-row.wrap-cards {
+  flex-wrap: wrap;
   max-width: 252px;
 }
 
