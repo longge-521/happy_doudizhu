@@ -126,4 +126,19 @@ describe('gameStore room state mapping', () => {
     expect(store.multiplier).toBe(1)
     expect(store.doublingChoices).toEqual({})
   })
+
+  it('resets typed settlement data to null', () => {
+    const store = useGameStore()
+    store.settlement = {
+      winner: 'p1',
+      winnerSide: 'landlord',
+      scores: { p1: 80, p2: -40, p3: -40 },
+      multiplier: 4,
+      allHands: { p2: [3, 4] },
+    }
+
+    store.reset()
+
+    expect(store.settlement).toBeNull()
+  })
 })

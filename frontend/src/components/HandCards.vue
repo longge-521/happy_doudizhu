@@ -3,6 +3,7 @@
 import { ref, onUnmounted, watch } from 'vue'
 import { useGameStore } from '@/stores/gameStore'
 import { useSoundEngine } from '@/composables/useSoundEngine'
+import { debugLog } from '@/utils/debugLog'
 import PokerCard from './PokerCard.vue'
 
 const props = defineProps<{
@@ -14,12 +15,6 @@ const props = defineProps<{
 const gameStore = useGameStore()
 const { playSound } = useSoundEngine()
 
-function debugLog(...args: unknown[]) {
-  if (import.meta.env.DEV) {
-    console.log(...args)
-  }
-}
-
 // 滑动选择状态
 const isSelecting = ref(false)
 const startIndex = ref(-1)
@@ -28,8 +23,8 @@ const currentIndex = ref(-1)
 // 动态点亮计数器（用于发牌横向平滑点亮）
 const visibleCount = ref(0)
 const isDealing = ref(false)
-let animateTimer = ref<any>(null)
-let isDealingTimeout = ref<any>(null)
+let animateTimer = ref<ReturnType<typeof window.setInterval> | null>(null)
+let isDealingTimeout = ref<ReturnType<typeof window.setTimeout> | null>(null)
 let hasAnimatedInThisDeal = false
 
 function clearAnimateTimer() {

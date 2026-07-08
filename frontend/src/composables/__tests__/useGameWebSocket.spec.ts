@@ -18,12 +18,15 @@ class MockWebSocket {
   onmessage: ((event: MessageEvent) => void) | null = null
   onclose: CloseHandler = null
   onerror: ((event: Event) => void) | null = null
+  sentMessages: string[] = []
 
   constructor(public url: string) {
     MockWebSocket.instances.push(this)
   }
 
-  send() {}
+  send(message: string) {
+    this.sentMessages.push(message)
+  }
 
   close() {
     this.onclose?.(new CloseEvent('close', { code: 1000 }))
@@ -141,6 +144,24 @@ describe('useGameWebSocket', () => {
     expect(stateListener).toHaveBeenCalledWith({ player: 'p1', enabled: true })
     unsubscribeSignal()
     unsubscribeState()
+  })
+
+  it('serializes typed client actions before sending them', () => {
+    const playerStore = usePlayerStore()
+    playerStore.playerId = 'p1'
+    playerStore.authToken = 'token'
+
+    const { connect, disconnect, sendAction } = useGameWebSocket()
+    connect()
+    const socket = MockWebSocket.instances[0]!
+    socket.readyState = MockWebSocket.OPEN
+
+    sendAction({ action: 'play_cards', cards: [3, 4, 5] })
+
+    expect(socket.sentMessages).toEqual([
+      JSON.stringify({ action: 'play_cards', cards: [3, 4, 5] }),
+    ])
+    disconnect()
   })
 
   it('plays quick chat voice without showing chat text on the table', async () => {

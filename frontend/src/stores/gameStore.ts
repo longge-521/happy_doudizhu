@@ -24,6 +24,16 @@ export type GamePhase = 'IDLE' | 'MATCHING' | 'DEALING' | 'CALLING' | 'DOUBLING'
 
 export type DoublingChoice = 'double' | 'super' | 'none'
 
+export type WinnerSide = 'landlord' | 'farmer'
+
+export interface GameSettlement {
+  winner: string
+  winnerSide: WinnerSide
+  scores: Record<string, number>
+  multiplier: number
+  allHands?: Record<string, number[]>
+}
+
 export interface RoomStatePlayerPayload {
   id: string
   nickname: string
@@ -76,7 +86,7 @@ export const useGameStore = defineStore('game', () => {
   const callScores = ref<Record<string, number>>({})
   const firstBidder = ref('')
   const landlord = ref('')
-  const settlement = ref<any>(null)
+  const settlement = ref<GameSettlement | null>(null)
   const errorMsg = ref('')
   const playerActions = ref<Record<string, string>>({})
   const playerPlayedCards = ref<Record<string, number[]>>({})

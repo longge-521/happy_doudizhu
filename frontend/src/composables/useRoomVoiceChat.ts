@@ -1,4 +1,5 @@
 import { ref } from 'vue'
+import type { GameClientAction } from './useGameWebSocket'
 import {
   type VoiceSignalEvent,
   type VoiceSignalType,
@@ -9,7 +10,7 @@ import {
 interface UseRoomVoiceChatOptions {
   selfPlayerId: string
   roomPlayerIds: () => string[]
-  sendAction: (payload: Record<string, unknown>) => void
+  sendAction: (payload: Extract<GameClientAction, { action: 'voice_signal' | 'voice_state' }>) => void
 }
 
 type VoiceSignalPayload = Record<string, unknown> | RTCSessionDescriptionInit | RTCIceCandidateInit

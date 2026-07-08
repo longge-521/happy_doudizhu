@@ -3,10 +3,13 @@ import { ref } from 'vue'
 import {
   useGameStore,
   type DoublingChoice,
+  type GameSettlement,
   type RoomStatePayload,
   type RoomStatePlayerPayload,
+  type WinnerSide,
 } from '@/stores/gameStore'
 import { usePlayerStore } from '@/stores/playerStore'
+import { debugLog } from '@/utils/debugLog'
 import {
   clearCardPresentationEffectTimer,
   getDoubleChoiceLabel,
@@ -28,8 +31,6 @@ let reconnectTimer: number | null = null
 let manuallyClosed = false
 let socketPlayerId = ''
 let gameOverTimer: number | null = null
-
-type WinnerSide = 'landlord' | 'farmer'
 
 type BaseRoomStateEvent<TEvent extends string> = {
   event: TEvent
@@ -85,6 +86,24 @@ type VoiceStateEvent = {
   enabled: boolean
 }
 
+export type GameClientAction =
+  | { action: 'join_match'; nickname: string; base_score: number }
+  | { action: 'cancel_match' }
+  | { action: 'sync_room_state' }
+  | { action: 'call_landlord'; score: number }
+  | { action: 'skip_call' }
+  | { action: 'play_cards'; cards: number[] }
+  | { action: 'pass_turn' }
+  | { action: 'chat'; msg_id: number }
+  | { action: 'choose_double'; choice: DoublingChoice }
+  | { action: 'voice_state'; enabled: boolean }
+  | {
+      action: 'voice_signal'
+      target_player: string
+      signal_type: VoiceSignalType
+      payload: Record<string, unknown>
+    }
+
 type GameServerEvent =
   | { event: 'match_waiting' }
   | { event: 'match_cancelled' }
@@ -111,12 +130,6 @@ type GameServerEvent =
   | VoiceStateEvent
   | (RoomStatePayload & { event: 'reconnected' })
   | { event: 'error'; msg?: string }
-
-function debugLog(...args: unknown[]) {
-  if (import.meta.env.DEV) {
-    console.log(...args)
-  }
-}
 
 export { playDoubleChoiceSound }
 
@@ -222,7 +235,7 @@ export function useGameWebSocket() {
     }, delay)
   }
 
-  function sendAction(action: Record<string, any>) {
+  function sendAction(action: GameClientAction) {
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(action))
     } else {
@@ -384,7 +397,7 @@ export function useGameWebSocket() {
           }
         }
 
-        const settlementData = {
+        const settlementData: GameSettlement = {
           winner: data.winner,
           winnerSide: data.winner_side,
           scores: data.scores,
