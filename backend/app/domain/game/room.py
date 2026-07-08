@@ -3,7 +3,7 @@
 import time
 from dataclasses import dataclass, field, asdict
 from enum import Enum
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Set
 from app.domain.game.card import shuffle_and_deal, sort_cards, Card
 from app.domain.game.card_type import detect_card_type, can_beat, CardPlay
 
@@ -12,6 +12,7 @@ class GamePhase(Enum):
     MATCHING = "MATCHING"
     DEALING = "DEALING"
     CALLING = "CALLING"
+    LANDLORD_CONFIRM = "LANDLORD_CONFIRM"
     DOUBLING = "DOUBLING"
     PLAYING = "PLAYING"
     SETTLING = "SETTLING"
@@ -56,11 +57,13 @@ class GameRoom:
         self.pass_count: int = 0  # 连续不出次数
         self.multiplier: int = 1
         self.doubling_choices: Dict[str, str] = {}
+        self.show_cards_players: Dict[str, int] = {}
         self.redeal_count: int = 0
         self.created_at: str = ""
         self.base_score: int = 10
         self.all_played_cards: List[int] = []
         self.play_history: List[Dict[str, Any]] = []
+        self.auto_play_players: Set[str] = set()
 
         # 叫地主状态
         self._call_index: int = 0       # 当前叫地主的玩家索引
@@ -104,8 +107,10 @@ class GameRoom:
         self.last_play = LastPlay()
         self.pass_count = 0
         self.doubling_choices = {}
+        self.show_cards_players = {}
         self.all_played_cards = []
         self.play_history = []
+        self.auto_play_players = set()
         self._call_index = 0
         self._call_scores = {}
         self._call_round = 1
@@ -166,6 +171,61 @@ class GameRoom:
         self._call_scores[player_id] = 0
         return self._advance_bidding(player_id)
 
+    def show_cards(self, player_id: str, show_multiplier: int) -> dict:
+        """玩家在发牌阶段选择明牌"""
+        if self.phase != GamePhase.CALLING:
+            return {"success": False, "error": "当前阶段不允许明牌"}
+        if player_id not in self._player_ids():
+            return {"success": False, "error": "玩家不在当前房间"}
+        if player_id in self.show_cards_players:
+            return {"success": False, "error": "你已经明牌了"}
+        if show_multiplier not in (2, 3, 4):
+            return {"success": False, "error": "无效的明牌倍数"}
+
+        self.show_cards_players[player_id] = show_multiplier
+        self.multiplier *= show_multiplier
+        return {
+            "success": True,
+            "player_id": player_id,
+            "cards": self.hands[player_id],
+            "show_multiplier": show_multiplier,
+            "total_multiplier": self.multiplier,
+        }
+
+    def landlord_show_cards(self, player_id: str) -> dict:
+        """地主在确认阶段选择明牌（固定2倍）"""
+        if self.phase != GamePhase.LANDLORD_CONFIRM:
+            return {"success": False, "error": "当前不在地主明牌确认阶段"}
+        if player_id != self.landlord:
+            return {"success": False, "error": "只有地主可以在此阶段明牌"}
+        if player_id in self.show_cards_players:
+            return {"success": False, "error": "你已经明牌了"}
+
+        self.show_cards_players[player_id] = 2
+        self.multiplier *= 2
+        self.phase = GamePhase.PLAYING
+        self.current_turn = self.landlord
+        self.turn_deadline = time.time() + 30
+        return {
+            "success": True,
+            "player_id": player_id,
+            "cards": self.hands[player_id],
+            "show_multiplier": 2,
+            "total_multiplier": self.multiplier,
+        }
+
+    def finish_landlord_confirm(self) -> dict:
+        """地主选择出牌（不明牌），进入出牌阶段"""
+        if self.phase != GamePhase.LANDLORD_CONFIRM:
+            return {"success": False, "error": "当前不在明牌选择阶段"}
+        self.phase = GamePhase.PLAYING
+        self.current_turn = self.landlord
+        self.turn_deadline = time.time() + 30
+        return {
+            "success": True,
+            "multiplier": self.multiplier,
+        }
+
     def _advance_bidding(self, current_player_id: str) -> dict:
         """推进叫牌/抢地主流程"""
         ids = self._player_ids()
@@ -214,7 +274,7 @@ class GameRoom:
                 return self._set_landlord(self.landlord)
 
     def _set_landlord(self, player_id: str) -> dict:
-        """确定地主，分配底牌，进入加倍确认阶段"""
+        """确定地主，分配底牌，进入加倍阶段"""
         self.landlord = player_id
         # 底牌给地主
         self.hands[player_id] = sort_cards(self.hands[player_id] + self.bottom_cards)
@@ -259,15 +319,26 @@ class GameRoom:
         return result
 
     def _finish_doubling(self) -> dict:
-        """所有玩家完成加倍确认后，进入出牌阶段"""
-        self.phase = GamePhase.PLAYING
-        self.current_turn = self.landlord
-        self.turn_deadline = time.time() + 15
-        return {
-            "doubling_finished": True,
-            "next_turn": self.current_turn,
-            "multiplier": self.multiplier,
-        }
+        """所有玩家完成加倍确认后，决定下一阶段"""
+        if self.landlord in self.show_cards_players:
+            self.phase = GamePhase.PLAYING
+            self.current_turn = self.landlord
+            self.turn_deadline = time.time() + 30
+            return {
+                "doubling_finished": True,
+                "next_turn": self.current_turn,
+                "multiplier": self.multiplier,
+            }
+        else:
+            self.phase = GamePhase.LANDLORD_CONFIRM
+            self.current_turn = self.landlord
+            self.turn_deadline = time.time() + 30
+            return {
+                "doubling_finished": True,
+                "landlord_confirm_required": True,
+                "next_turn": self.current_turn,
+                "multiplier": self.multiplier,
+            }
 
     # ── 出牌 ──
 
@@ -424,6 +495,8 @@ class GameRoom:
             "play_history": self.play_history,
             "grab_count": self._grab_count,
             "declined_players": list(self._declined_players),
+            "show_cards_players": self.show_cards_players,
+            "auto_play_players": list(self.auto_play_players),
         }
 
     @classmethod
@@ -464,9 +537,11 @@ class GameRoom:
         room._round2_scores = data.get("round2_scores", {})
         room._grab_count = data.get("grab_count", {})
         room._declined_players = set(data.get("declined_players", []))
+        room.show_cards_players = data.get("show_cards_players", {})
         room.base_score = data.get("base_score", 10)
         room.all_played_cards = data.get("all_played_cards", [])
         room.play_history = data.get("play_history", [])
+        room.auto_play_players = set(data.get("auto_play_players", []))
         return room
 
     def get_player_view(self, player_id: str) -> dict:
@@ -480,6 +555,10 @@ class GameRoom:
             if p.id == player_id:
                 pv["is_self"] = True
             pv["remaining"] = len(self.hands.get(p.id, []))
+            # 明牌玩家的手牌对所有人可见
+            if p.id in self.show_cards_players:
+                pv["shown_cards"] = sort_cards(self.hands.get(p.id, []))
+                pv["show_multiplier"] = self.show_cards_players[p.id]
             
             # 只有地主最终敲定后才设置 is_landlord 标志
             if is_landlord_decided:
@@ -506,6 +585,8 @@ class GameRoom:
             "landlord": self.landlord,
             "base_score": self.base_score,
             "all_played_cards": self.all_played_cards,
+            "show_cards_players": dict(self.show_cards_players),
+            "auto_play_players": list(self.auto_play_players),
         }
         # 地主确定后且非叫地主阶段才公开底牌，否则为 []
         if is_landlord_decided:

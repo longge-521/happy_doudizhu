@@ -5,7 +5,7 @@ import uuid
 import logging
 from typing import Optional, List, Dict
 from app.domain.game.room import GameRoom, Player, GamePhase
-from app.domain.game.ai_strategy import ai_decide_call, ai_decide_play, build_ai_context
+from app.domain.game.ai_strategy import ai_decide_call, ai_decide_play, ai_rank_play_candidates, build_ai_context
 from app.infrastructure.redis_game_repository import RedisGameRepository
 
 logger = logging.getLogger("happy_doudizhu")
@@ -149,6 +149,36 @@ class GameAppService:
         result["room"] = room
         return result
 
+    async def handle_show_cards(self, player_id: str, show_multiplier: int) -> dict:
+        """处理玩家发牌阶段明牌"""
+        room = await self._get_player_room(player_id)
+        if not room:
+            return {"error": "你不在任何房间中"}
+        result = room.show_cards(player_id, show_multiplier)
+        await self._repo.save_room(room)
+        result["room"] = room
+        return result
+
+    async def handle_landlord_show(self, player_id: str, show: bool) -> dict:
+        """处理地主明牌确认"""
+        room = await self._get_player_room(player_id)
+        if not room:
+            return {"error": "你不在任何房间中"}
+        show_result = None
+        if show:
+            show_result = room.landlord_show_cards(player_id)
+            if not show_result.get("success"):
+                await self._repo.save_room(room)
+                return show_result
+        confirm_result = room.finish_landlord_confirm()
+        await self._repo.save_room(room)
+        return {
+            "room": room,
+            "show": show,
+            "show_result": show_result,
+            "multiplier": room.multiplier,
+        }
+
 
     async def handle_play(self, player_id: str, card_ids: List[int]) -> dict:
         """处理出牌"""
@@ -168,6 +198,59 @@ class GameAppService:
         result = room.pass_turn(player_id)
         await self._repo.save_room(room)
         result["room"] = room
+        return result
+
+    async def get_ai_play_hints(self, player_id: str) -> dict:
+        """获取当前玩家的 DouZero 出牌候选提示"""
+        room = await self._get_player_room(player_id)
+        if not room:
+            return {"error": "你不在任何房间中"}
+        if room.phase != GamePhase.PLAYING:
+            return {"error": "当前不在出牌阶段"}
+        if room.current_turn != player_id:
+            return {"error": "当前还没轮到你出牌"}
+
+        hand = room.hands.get(player_id, [])
+        last_cp = room.last_play.card_play
+        must_play = room.last_play.player is None
+        ctx = build_ai_context(room, player_id)
+        candidates = ai_rank_play_candidates(hand, last_cp, must_play, ctx)
+        return {"candidates": candidates, "source": "douzero", "room": room}
+
+    async def set_auto_play(self, player_id: str, enabled: bool) -> dict:
+        """设置真人玩家托管状态"""
+        room = await self._get_player_room(player_id)
+        if not room:
+            return {"error": "你不在任何房间中"}
+        if enabled:
+            room.auto_play_players.add(player_id)
+        else:
+            room.auto_play_players.discard(player_id)
+        await self._repo.save_room(room)
+        return {"room": room, "player": player_id, "enabled": enabled}
+
+    async def handle_auto_play_turn(self, room: GameRoom) -> dict:
+        """处理真人玩家托管出牌回合"""
+        player_id = room.current_turn
+        if room.phase != GamePhase.PLAYING:
+            return {"error": "托管只处理出牌阶段"}
+        if player_id not in room.auto_play_players:
+            return {"error": "当前玩家未开启托管"}
+
+        hand = room.hands.get(player_id, [])
+        last_cp = room.last_play.card_play
+        must_play = room.last_play.player is None
+        ctx = build_ai_context(room, player_id)
+        candidates = ai_rank_play_candidates(hand, last_cp, must_play, ctx, limit=1)
+        cards = candidates[0] if candidates else None
+
+        if cards:
+            result = room.play_cards(player_id, cards)
+        else:
+            result = room.pass_turn(player_id)
+        await self._repo.save_room(room)
+        result["room"] = room
+        result["auto_player"] = player_id
         return result
 
     async def handle_ai_turn(self, room: GameRoom) -> dict:
@@ -201,6 +284,24 @@ class GameAppService:
             result["ai_player"] = ai_id
             result["score"] = score_res
             return result
+
+        elif room.phase == GamePhase.LANDLORD_CONFIRM:
+            await asyncio.sleep(1.5)
+            # AI 地主明牌决策：牌力极强时明牌
+            should_show = self._should_ai_show_cards(room, ai_id)
+            show_result = None
+            if should_show:
+                show_result = room.landlord_show_cards(ai_id)
+            confirm_result = room.finish_landlord_confirm()
+            await self._repo.save_room(room)
+            return {
+                "room": room,
+                "ai_player": ai_id,
+                "landlord_show": True,
+                "show": should_show,
+                "show_result": show_result,
+                "multiplier": room.multiplier,
+            }
 
         elif room.phase == GamePhase.DOUBLING:
             await asyncio.sleep(1.0)
@@ -239,6 +340,37 @@ class GameAppService:
         if is_landlord or high_cards >= 3:
             return "double"
         return "none"
+
+    def _should_ai_show_cards(self, room: GameRoom, ai_id: str) -> bool:
+        """AI 明牌决策：仅在牌力极强时选择明牌"""
+        hand = room.hands.get(ai_id, [])
+        has_big_joker = 53 in hand   # 大王
+        has_small_joker = 52 in hand  # 小王
+        # 统计大牌（2, A, K）
+        bomb_count = self._count_bombs(hand)
+        # 条件：有王炸 + 至少1个炸弹，或者有3个以上炸弹
+        if has_big_joker and has_small_joker and bomb_count >= 1:
+            return True
+        if bomb_count >= 3:
+            return True
+        return False
+
+    def _count_bombs(self, hand: List[int]) -> int:
+        """统计手牌中的炸弹数量"""
+        from collections import Counter
+        rank_counts = Counter(c // 4 for c in hand if c < 52)
+        return sum(1 for count in rank_counts.values() if count == 4)
+
+    def evaluate_ai_dealing_show(self, room: GameRoom) -> List[dict]:
+        """评估 AI 玩家是否在发牌阶段明牌，返回明牌的 AI 列表"""
+        results = []
+        for p in room.players:
+            if p.is_ai and p.id not in room.show_cards_players:
+                if self._should_ai_show_cards(room, p.id):
+                    result = room.show_cards(p.id, 4)  # AI 发牌阶段明牌用最高倍数
+                    if result.get("success"):
+                        results.append(result)
+        return results
 
     async def get_room_state(self, player_id: str) -> Optional[dict]:
         """获取玩家可见的房间状态 (用于断线重连)"""

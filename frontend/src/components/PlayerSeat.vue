@@ -11,6 +11,8 @@ defineProps<{
     remaining?: number
     isLandlord?: boolean
     doubling?: string
+    shownCards?: number[]
+    showMultiplier?: number
   }
   position: 'left' | 'right' | 'bottom'
   isCurrentTurn: boolean
@@ -40,14 +42,30 @@ defineProps<{
       <div v-if="player.doubling" class="doubling-badge" :class="{ 'super': player.doubling.includes('超级') }">
         ⚡ {{ player.doubling }}
       </div>
+
+      <!-- 明牌倍数状态标识 -->
+      <div v-if="player.showMultiplier" class="doubling-badge super" style="margin-top: 4px;">
+        📢 明牌 ×{{ player.showMultiplier }}
+      </div>
       
       <!-- 断线状态提示 -->
       <div v-if="!player.isOnline" class="offline-badge">断线</div>
     </div>
 
-    <!-- 剩余手牌数量指示（仅左/右侧玩家显示） -->
-    <div v-if="position !== 'bottom' && player.remaining !== undefined" class="cards-indicator">
-      <div class="card-back-count">
+    <!-- 剩余手牌数量指示或明牌手牌展示（仅左/右侧玩家显示） -->
+    <div v-if="position !== 'bottom'" class="cards-indicator">
+      <div v-if="player.shownCards && player.shownCards.length > 0" class="shown-cards-row">
+        <PokerCard
+          v-for="(cId, index) in player.shownCards"
+          :key="cId"
+          :card-id="cId"
+          :no-hover="true"
+          size="sm"
+          class="shown-card"
+          :style="{ marginLeft: index === 0 ? '0px' : '-38px', zIndex: index }"
+        />
+      </div>
+      <div v-else-if="player.remaining !== undefined" class="card-back-count">
         <PokerCard :card-id="0" :face-down="true" size="sm" />
         <span class="count-badge">{{ player.remaining }}</span>
       </div>
@@ -291,5 +309,20 @@ defineProps<{
   padding: 6px;
   border-radius: 6px;
   border: 1px solid rgba(255,255,255,0.08);
+}
+
+.shown-cards-row {
+  display: flex;
+  align-items: center;
+  max-width: 320px;
+  background: rgba(0, 0, 0, 0.45);
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.1), 0 4px 10px rgba(0,0,0,0.3);
+}
+
+.shown-card {
+  transition: transform 0.2s ease;
 }
 </style>

@@ -9,8 +9,6 @@ import { useSoundEngine } from '@/composables/useSoundEngine'
 import {
   canBeatCardPlay,
   detectCardPlay,
-  findSuggestedPlay,
-  findAllPlayableHints,
   formatCardIds,
   getCardDisplay,
   getPlayKindLabel,
@@ -94,7 +92,9 @@ const idleRoundCount = ref(0)
 const isAutoPlay = ref(false)
 
 function toggleAutoplay() {
-  isAutoPlay.value = !isAutoPlay.value
+  const next = !isAutoPlay.value
+  isAutoPlay.value = next
+  sendAction({ action: 'set_auto_play', enabled: next })
 }
 
 // 濞撴熬绠戦幆澶愬箥濡⒈鍚€闁告瑥锕ょ紞瀣礈瀹ュ懏绀€闁告艾鐗忔慨鎼佸箑娓氬﹦绀夐柤濂変簻婵晜绂掗敐鍡椻叺
@@ -102,12 +102,16 @@ watch(
   [() => gameStore.isMyTurn, isAutoPlay],
   ([isMyTurn, autoPlay]) => {
     if (isMyTurn && autoPlay) {
-      setTimeout(() => {
-        if (gameStore.isMyTurn && isAutoPlay.value) {
-          handleTimeout()
-        }
-      }, 500)
+      sendAction({ action: 'set_auto_play', enabled: true })
     }
+  },
+  { immediate: true }
+)
+
+watch(
+  () => gameStore.autoPlayPlayers,
+  (players) => {
+    isAutoPlay.value = players.includes(playerStore.playerId)
   },
   { immediate: true }
 )
@@ -199,6 +203,7 @@ const lastCardsToBeat = computed(() => {
 })
 
 const hintState = ref<{ allHints: number[][]; currentIndex: number } | null>(null)
+const isHintLoading = ref(false)
 
 const hintButtonText = computed(() => {
   if (!hintState.value || hintState.value.allHints.length === 0) return '提示'
@@ -208,7 +213,7 @@ const hintButtonText = computed(() => {
 const playSuggestion = computed(() => {
   if (gameStore.gamePhase !== 'PLAYING' || !gameStore.isMyTurn) return null
 
-  const cards = findSuggestedPlay(gameStore.myHand, lastCardsToBeat.value)
+  const cards = gameStore.aiHintCandidates.find((candidate) => candidate.length > 0) || []
   const play = detectCardPlay(cards)
   const isLeading = lastCardsToBeat.value.length === 0
 
@@ -224,7 +229,7 @@ const playSuggestion = computed(() => {
   return {
     canPlay: true,
     cards,
-    text: `${isLeading ? '建议先出' : '要得起，建议出'}：${formatCardIds(cards)}（${label}）`,
+    text: `${isLeading ? 'AI 建议先出' : 'AI 建议出'}：${formatCardIds(cards)}（${label}）`,
   }
 })
 
@@ -331,7 +336,12 @@ onMounted(() => {
 
       // 鐟滅増鎸搁埀顒佸笩椤撴悂寮捄铏圭Ш闂傚棙婀圭粭鏍嫉婢跺﹦绐″璺哄閹﹪鎮╅懜纰樺亾娴ｈ顦?
       if (newTimeLeft === 0) {
-        if (showDoublingPanel.value) {
+        if (gameStore.gamePhase === 'LANDLORD_CONFIRM' && gameStore.awaitingLandlordShow) {
+          if (gameStore.landlord === playerStore.playerId && !hasHandledTimeout.value) {
+            hasHandledTimeout.value = true
+            handleLandlordShow(false)
+          }
+        } else if (showDoublingPanel.value) {
           // 加倍阶段超时，自动选择“不加倍”
           if (!hasHandledTimeout.value) {
             hasHandledTimeout.value = true
@@ -361,23 +371,19 @@ function handleTimeout() {
     idleRoundCount.value++
     if (idleRoundCount.value >= 2) {
       isAutoPlay.value = true // 累计两轮无操作，自动进入托管模式
+      sendAction({ action: 'set_auto_play', enabled: true })
+      return
     }
   }
   if (gameStore.gamePhase === 'CALLING') {
     // 叫地主阶段超时，自动选择“不叫”
     handleSkipCall(true)
   } else if (gameStore.gamePhase === 'PLAYING') {
-    // 出牌阶段超时：若能要得起，则自动出推荐的牌型；要不起才过牌
-    if (suggestedCards.value && suggestedCards.value.length > 0) {
-      sendAction({
-        action: 'play_cards',
-        cards: suggestedCards.value
-      })
-      gameStore.clearSelection()
-    } else {
-      // 确实要不起，或者只能过牌
-      handlePass(true)
+    if (isAutoPlay.value) {
+      sendAction({ action: 'set_auto_play', enabled: true })
+      return
     }
+    handlePass(true)
   }
 }
 
@@ -395,6 +401,21 @@ function handleSkipCall(isAuto = false) {
     idleRoundCount.value = 0
   }
   sendAction({ action: 'skip_call' })
+}
+
+function handleShowCards(multiplier: number) {
+  playSound('btnClick')
+  sendAction({ action: 'show_cards', multiplier })
+}
+
+function handleLandlordShow(show: boolean) {
+  playSound('btnClick')
+  sendAction({ action: 'landlord_show', show })
+}
+
+function getLandlordNickname() {
+  const l = gameStore.players.find(p => p.id === gameStore.landlord)
+  return l ? l.nickname : '地主'
 }
 
 // 闁告垼娅ｆ晶婵嬪箼瀹ュ嫮绋?
@@ -419,25 +440,31 @@ function handlePass(isAuto = false) {
   gameStore.clearSelection()
 }
 
+function selectHintAt(index: number) {
+  const playableHints = gameStore.aiHintCandidates.filter((cards) => cards.length > 0)
+  if (playableHints.length === 0) return
+  hintState.value = {
+    allHints: playableHints,
+    currentIndex: index % playableHints.length,
+  }
+  gameStore.selectCards(playableHints[hintState.value.currentIndex] || [])
+}
+
 function applySuggestion() {
-  if (gameStore.gamePhase !== 'PLAYING' || !gameStore.isMyTurn) return
+  if (gameStore.gamePhase !== 'PLAYING' || !gameStore.isMyTurn || isHintLoading.value) return
   playSound('btnClick')
 
-  const lastCards = lastCardsToBeat.value
-
-  if (!hintState.value) {
-    const allHints = findAllPlayableHints(gameStore.myHand, lastCards)
-    if (allHints.length === 0) return
-    hintState.value = { allHints, currentIndex: 0 }
-  } else {
-    hintState.value.currentIndex =
-      (hintState.value.currentIndex + 1) % hintState.value.allHints.length
+  if (!hintState.value || hintState.value.allHints.length === 0) {
+    if (gameStore.aiHintCandidates.length > 0) {
+      selectHintAt(0)
+      return
+    }
+    isHintLoading.value = true
+    sendAction({ action: 'get_ai_hints' })
+    return
   }
 
-  const currentHint = hintState.value.allHints[hintState.value.currentIndex]
-  if (currentHint) {
-    gameStore.selectCards(currentHint)
-  }
+  selectHintAt(hintState.value.currentIndex + 1)
 }
 
 // 发送聊天短语
@@ -491,19 +518,44 @@ watch(
   }
 )
 
+function clearHintCache() {
+  hintState.value = null
+  isHintLoading.value = false
+  gameStore.clearAiHintCandidates()
+}
+
+watch(
+  () => gameStore.aiHintCandidates,
+  (candidates) => {
+    isHintLoading.value = false
+    if (gameStore.gamePhase === 'PLAYING' && gameStore.isMyTurn && candidates.length > 0 && !hintState.value) {
+      selectHintAt(0)
+    }
+  },
+  { deep: true }
+)
+
 // 闁烩晜鍨甸幆澶愬炊閻愬弶鍊ら柟瀛樼墬閻栧爼骞嬭箛娑欌枆婵炲牆鐏氶弫濂稿矗濮楀牏绀夊璺虹С缂嶅懐鎼鹃崨顔筋槯濠㈣泛瀚幃濠囧冀閸ヮ亶鍞?
 watch(
   [() => gameStore.currentTurn, () => gameStore.gamePhase],
   () => {
     hasHandledTimeout.value = false
-    hintState.value = null
+    clearHintCache()
   }
 )
 
 watch(
   () => gameStore.myHand,
   () => {
-    hintState.value = null
+    clearHintCache()
+  },
+  { deep: true }
+)
+
+watch(
+  () => gameStore.lastPlay,
+  () => {
+    clearHintCache()
   },
   { deep: true }
 )
@@ -707,9 +759,55 @@ watch(
       />
     </div>
 
-    <!-- 閹煎瓨娲熼崕鎾箼瀹ュ嫮绋婇柛鏍〃缁楀矂骞嶇€ｎ剙顤傞柛?-->
+    <!-- 玩家操作栏区域 -->
     <div class="player-bottom-area">
-      <!-- 闁告梻濮撮埀顒€绉撮崰鍛驳閺嶎剦鏀介柛鏂诲姂濞间即寮?-->
+      <!-- 发牌阶段随时可选的明牌按钮 -->
+      <div v-if="gameStore.showCardsAvailableMultiplier !== null && !gameStore.showCardsPlayers[playerStore.playerId]" class="action-bar-row">
+        <button
+          class="btn-action-call"
+          style="background: linear-gradient(135deg, #ff7043 0%, #d84315 100%); border-color: #ffab91;"
+          @click="handleShowCards(gameStore.showCardsAvailableMultiplier!)"
+        >
+          ⚡ 确认明牌 ×{{ gameStore.showCardsAvailableMultiplier }}
+        </button>
+      </div>
+
+      <!-- 地主明牌确认面板 -->
+      <div v-if="gameStore.gamePhase === 'LANDLORD_CONFIRM' && gameStore.awaitingLandlordShow" class="action-bar-row">
+        <div v-if="gameStore.landlord === playerStore.playerId" class="actions-group">
+          <button
+            class="btn-action-call"
+            style="background: linear-gradient(135deg, #42a5f5 0%, #1565c0 100%); border-color: #90caf9;"
+            @click="handleLandlordShow(true)"
+          >
+            明 牌
+          </button>
+          
+          <div class="turn-alarm-clock">
+            <div class="clock-icon">⏰</div>
+            <span class="time-left-digits">{{ timeLeft }}</span>
+          </div>
+
+          <button
+            class="btn-action-call"
+            style="background: linear-gradient(135deg, #ff7043 0%, #d84315 100%); border-color: #ffab91;"
+            @click="handleLandlordShow(false)"
+          >
+            出 牌
+          </button>
+        </div>
+        <div v-else class="waiting-hint-text-wrapper">
+          <div class="turn-alarm-clock inline-clock">
+            <div class="clock-icon">⏰</div>
+            <span class="time-left-digits">{{ timeLeft }}</span>
+          </div>
+          <div class="waiting-hint-text">
+            等待地主 ({{ getLandlordNickname() }}) 选择...
+          </div>
+        </div>
+      </div>
+
+      <!-- 麦克风/叫地主操作 -->
       <div v-if="showDoublingPanel" class="action-bar-row">
         <div class="play-action-panel">
           <div class="actions-group">
@@ -791,7 +889,7 @@ watch(
 
             <button
               class="btn-action-hint"
-              :disabled="!playSuggestion?.canPlay"
+              :disabled="gameStore.gamePhase !== 'PLAYING' || !gameStore.isMyTurn || isHintLoading"
               @click="applySuggestion"
             >
               {{ hintButtonText }}
@@ -2075,5 +2173,24 @@ watch(
   height: 4px;
   accent-color: #ffe082;
   cursor: pointer;
+}
+
+.waiting-hint-text {
+  color: #a5d6a7;
+  font-size: 1.05rem;
+  font-weight: 800;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+}
+
+.waiting-hint-text-wrapper {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.inline-clock {
+  margin: 0 auto;
 }
 </style>

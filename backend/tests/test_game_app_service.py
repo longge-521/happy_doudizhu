@@ -153,3 +153,68 @@ class TestGameAppService:
             result = await service.match_ai_for_player("p1", "玩家1", base_score=10)
             mock_fill.assert_called_once_with(["p1", "p2"], base_score=10)
             assert result == {"status": "room_created"}
+
+
+def test_game_room_serializes_auto_play_players():
+    room = GameRoom.create(
+        "room_auto",
+        [
+            Player(id="p1", nickname="玩家1"),
+            Player(id="p2", nickname="玩家2"),
+            Player(id="p3", nickname="玩家3"),
+        ],
+    )
+    room.auto_play_players.add("p1")
+
+    restored = GameRoom.from_dict(room.to_dict())
+
+    assert restored.auto_play_players == {"p1"}
+    assert "p1" in restored.get_player_view("p1")["auto_play_players"]
+
+
+@pytest.mark.asyncio
+async def test_get_ai_play_hints_returns_ranked_candidates(service, mock_repo):
+    room = GameRoom.create(
+        "room_hint",
+        [
+            Player(id="p1", nickname="玩家1"),
+            Player(id="p2", nickname="玩家2"),
+            Player(id="p3", nickname="玩家3"),
+        ],
+    )
+    room.phase = GamePhase.PLAYING
+    room.landlord = "p1"
+    room.current_turn = "p1"
+    room.hands = {"p1": [0, 1, 2, 3], "p2": [4], "p3": [8]}
+    mock_repo.get_player_room.return_value = "room_hint"
+    mock_repo.get_room.return_value = room
+
+    with patch("app.application.game.game_app_service.ai_rank_play_candidates", return_value=[[0, 1, 2, 3], [0]]):
+        result = await service.get_ai_play_hints("p1")
+
+    assert result["candidates"] == [[0, 1, 2, 3], [0]]
+    assert result["source"] == "douzero"
+
+
+@pytest.mark.asyncio
+async def test_handle_auto_play_turn_uses_first_ai_candidate(service, mock_repo):
+    room = GameRoom.create(
+        "room_auto_turn",
+        [
+            Player(id="p1", nickname="玩家1"),
+            Player(id="p2", nickname="玩家2"),
+            Player(id="p3", nickname="玩家3"),
+        ],
+    )
+    room.phase = GamePhase.PLAYING
+    room.landlord = "p1"
+    room.current_turn = "p1"
+    room.hands = {"p1": [0, 1, 2, 3, 4], "p2": [5], "p3": [8]}
+    room.auto_play_players.add("p1")
+
+    with patch("app.application.game.game_app_service.ai_rank_play_candidates", return_value=[[0, 1]]):
+        result = await service.handle_auto_play_turn(room)
+
+    assert result["auto_player"] == "p1"
+    assert result["cards_played"] == [0, 1]
+    mock_repo.save_room.assert_awaited()

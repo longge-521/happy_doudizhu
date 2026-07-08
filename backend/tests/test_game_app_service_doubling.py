@@ -30,6 +30,7 @@ def make_room():
     room._call_index = 0
     room.current_turn = "p1"
     room._set_landlord("p1")
+    room.finish_landlord_confirm()
     return room
 
 

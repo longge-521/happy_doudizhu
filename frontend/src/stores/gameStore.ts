@@ -12,6 +12,8 @@ export interface PlayerInfo {
   remaining?: number
   isLandlord?: boolean
   isSelf?: boolean
+  shownCards?: number[]
+  showMultiplier?: number
 }
 
 export interface LastPlay {
@@ -20,7 +22,7 @@ export interface LastPlay {
   cardType: string | null
 }
 
-export type GamePhase = 'IDLE' | 'MATCHING' | 'DEALING' | 'CALLING' | 'DOUBLING' | 'PLAYING' | 'SETTLING'
+export type GamePhase = 'IDLE' | 'MATCHING' | 'DEALING' | 'CALLING' | 'LANDLORD_CONFIRM' | 'DOUBLING' | 'PLAYING' | 'SETTLING'
 
 export type DoublingChoice = 'double' | 'super' | 'none'
 
@@ -42,6 +44,8 @@ export interface RoomStatePlayerPayload {
   remaining?: number
   is_landlord?: boolean
   is_self?: boolean
+  shown_cards?: number[]
+  show_multiplier?: number
 }
 
 export interface RoomStateLastPlayPayload {
@@ -67,6 +71,8 @@ export interface RoomStatePayload {
   base_score?: number
   all_played_cards?: number[]
   doubling_choices?: Record<string, DoublingChoice> | null
+  show_cards_players?: Record<string, number> | null
+  auto_play_players?: string[]
 }
 
 export const useGameStore = defineStore('game', () => {
@@ -99,6 +105,12 @@ export const useGameStore = defineStore('game', () => {
   const gameOverTitle = ref('')
   const showRedealNotice = ref(false)
   const activeEffect = ref<'bomb' | 'plane' | 'shimmer' | ''>('')
+  const showCardsPlayers = ref<Record<string, number>>({})
+  const showCardsAvailableMultiplier = ref<number | null>(null)
+  const awaitingLandlordShow = ref(false)
+  const aiHintCandidates = ref<number[][]>([])
+  const aiHintSource = ref('')
+  const autoPlayPlayers = ref<string[]>([])
 
   const isMyTurn = computed(() => {
     const playerStore = usePlayerStore()
@@ -122,6 +134,23 @@ export const useGameStore = defineStore('game', () => {
     selectedCards.value = [...cardIds]
   }
 
+  function setAiHintCandidates(candidates: number[][], source: string) {
+    aiHintCandidates.value = candidates.map((cards) => sortCardIds(cards))
+    aiHintSource.value = source
+  }
+
+  function clearAiHintCandidates() {
+    aiHintCandidates.value = []
+    aiHintSource.value = ''
+  }
+
+  function setAutoPlayPlayer(playerId: string, enabled: boolean) {
+    const next = new Set(autoPlayPlayers.value)
+    if (enabled) next.add(playerId)
+    else next.delete(playerId)
+    autoPlayPlayers.value = [...next]
+  }
+
   function updateFromRoomState(state: RoomStatePayload) {
     if (state.room_id) roomId.value = state.room_id
     if (state.phase) gamePhase.value = state.phase
@@ -129,6 +158,8 @@ export const useGameStore = defineStore('game', () => {
       id: p.id, nickname: p.nickname, isAi: p.is_ai, isOnline: p.is_online,
       remaining: p.remaining !== undefined ? p.remaining : (p.is_self ? (state.hand ? state.hand.length : 0) : 0),
       isLandlord: p.is_landlord, isSelf: p.is_self,
+      shownCards: p.shown_cards,
+      showMultiplier: p.show_multiplier,
     }))
     if (state.hand !== undefined) {
       myHand.value = sortCardIds(state.hand)
@@ -149,6 +180,8 @@ export const useGameStore = defineStore('game', () => {
     if (state.base_score !== undefined) baseScore.value = state.base_score
     if (state.all_played_cards !== undefined) allPlayedCards.value = state.all_played_cards
     if (state.doubling_choices !== undefined) doublingChoices.value = state.doubling_choices || {}
+    if (state.show_cards_players !== undefined) showCardsPlayers.value = state.show_cards_players || {}
+    if (state.auto_play_players !== undefined) autoPlayPlayers.value = state.auto_play_players
   }
 
   function reset() {
@@ -179,6 +212,12 @@ export const useGameStore = defineStore('game', () => {
     gameOverTitle.value = ''
     showRedealNotice.value = false
     activeEffect.value = ''
+    showCardsPlayers.value = {}
+    showCardsAvailableMultiplier.value = null
+    awaitingLandlordShow.value = false
+    aiHintCandidates.value = []
+    aiHintSource.value = ''
+    autoPlayPlayers.value = []
   }
 
   return {
@@ -186,7 +225,9 @@ export const useGameStore = defineStore('game', () => {
     bottomCards, lastPlay, currentTurn, turnDeadline, turnTimeout, multiplier,
     callRound, callScores, firstBidder, landlord, settlement, errorMsg, isMyTurn, playerActions, playerPlayedCards,
     allPlayedCards, baseScore, doublingChoices, showAllHands, showGameOverBanner, showWinnerBanner, gameOverTitle,
-    showRedealNotice, activeEffect,
-    toggleCard, clearSelection, selectCards, updateFromRoomState, reset,
+    showRedealNotice, activeEffect, showCardsPlayers, showCardsAvailableMultiplier, awaitingLandlordShow,
+    aiHintCandidates, aiHintSource, autoPlayPlayers,
+    toggleCard, clearSelection, selectCards, setAiHintCandidates, clearAiHintCandidates, setAutoPlayPlayer,
+    updateFromRoomState, reset,
   }
 })

@@ -365,7 +365,7 @@ async function loadLobbyData() {
 
 // 自动重连或进入房间检测
 watch(() => gameStore.gamePhase, (newPhase) => {
-  if (['CALLING', 'PLAYING', 'SETTLING'].includes(newPhase)) {
+  if (newPhase !== 'IDLE' && newPhase !== 'MATCHING') {
     stopMatchTimer()
     showSuccessState.value = true
     stopBgm()

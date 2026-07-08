@@ -3,7 +3,7 @@ import pytest
 from app.domain.game.ai_strategy import (
     ai_decide_call, ai_decide_play, build_ai_context,
     _decompose_hand, _pick_lead_play, _pick_follow_play, _should_use_bomb,
-    AIContext, HandPlan
+    AIContext, HandPlan, ai_rank_play_candidates
 )
 from app.domain.game.card_type import detect_card_type, CardType
 
@@ -224,6 +224,71 @@ class TestBombUsage:
         follow = _pick_follow_play(hand, plan, last_play, "landlord_up", ctx)
         # Should hold the bomb and pass
         assert follow is None
+
+
+def test_ai_rank_play_candidates_orders_by_douzero_score():
+    from unittest.mock import patch
+    import numpy as np
+    import torch
+
+    hand = [0, 1, 2, 3]
+    ctx = AIContext(
+        ai_id="test_ai",
+        role="landlord",
+        landlord_id="test_ai",
+        teammate_id=None,
+        landlord_remaining=4,
+        teammate_remaining=0,
+        last_play_from=None,
+        is_last_play_teammate=False,
+        is_last_play_landlord=False,
+        play_history=[{"player": "farmer1", "cards": [4]}],
+        player_ids=["test_ai", "farmer1", "farmer2"],
+    )
+
+    with patch("app.domain.game.ai_strategy.douzero_manager") as mock_manager:
+        mock_manager.is_available.return_value = True
+        mock_manager.get_action_value.return_value = torch.tensor([[0.1], [0.9], [0.5]])
+
+        with patch("app.domain.game.ai_strategy.generate_legal_actions_dz") as mock_legal:
+            mock_legal.return_value = [[0], [0, 1, 2, 3], []]
+
+            with patch("app.domain.game.ai_strategy.get_obs_for_douzero") as mock_obs:
+                mock_obs.return_value = {
+                    "x_batch": np.zeros((3, 373)),
+                    "z_batch": np.zeros((3, 5, 162)),
+                    "legal_actions": [[3], [3, 3, 3, 3], []],
+                }
+
+                ranked = ai_rank_play_candidates(hand, last_play=None, must_play=True, ctx=ctx)
+
+    assert ranked[0] == [0, 1, 2, 3]
+    assert ranked[1] == []
+    assert ranked[2] == [0]
+
+
+def test_ai_rank_play_candidates_falls_back_to_rule_engine_when_douzero_unavailable():
+    from unittest.mock import patch
+
+    hand = [0, 4, 8, 12, 16]
+    ctx = AIContext(
+        ai_id="test_ai",
+        role="landlord",
+        landlord_id="test_ai",
+        teammate_id=None,
+        landlord_remaining=5,
+        teammate_remaining=0,
+        last_play_from=None,
+        is_last_play_teammate=False,
+        is_last_play_landlord=False,
+    )
+
+    with patch("app.domain.game.ai_strategy.douzero_manager") as mock_manager:
+        mock_manager.is_available.return_value = False
+        ranked = ai_rank_play_candidates(hand, last_play=None, must_play=True, ctx=ctx)
+
+    assert ranked
+    assert detect_card_type(ranked[0]) is not None
 
 
 def test_ai_decide_play_fallback():

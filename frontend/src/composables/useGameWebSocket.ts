@@ -86,6 +86,18 @@ type VoiceStateEvent = {
   enabled: boolean
 }
 
+type AiHintsEvent = {
+  event: 'ai_hints'
+  candidates: number[][]
+  source?: string
+}
+
+type AutoPlayChangedEvent = {
+  event: 'auto_play_changed'
+  player: string
+  enabled: boolean
+}
+
 export type GameClientAction =
   | { action: 'join_match'; nickname: string; base_score: number }
   | { action: 'cancel_match' }
@@ -94,6 +106,8 @@ export type GameClientAction =
   | { action: 'skip_call' }
   | { action: 'play_cards'; cards: number[] }
   | { action: 'pass_turn' }
+  | { action: 'get_ai_hints' }
+  | { action: 'set_auto_play'; enabled: boolean }
   | { action: 'chat'; msg_id: number }
   | { action: 'choose_double'; choice: DoublingChoice }
   | { action: 'voice_state'; enabled: boolean }
@@ -103,6 +117,8 @@ export type GameClientAction =
       signal_type: VoiceSignalType
       payload: Record<string, unknown>
     }
+  | { action: 'show_cards'; multiplier: number }
+  | { action: 'landlord_show'; show: boolean }
 
 type GameServerEvent =
   | { event: 'match_waiting' }
@@ -120,16 +136,31 @@ type GameServerEvent =
   | (BaseRoomStateEvent<'doubling_finished'> & {
       current_turn?: string | null
       multiplier?: number
+      landlord_confirm_required?: boolean
     })
   | BaseRoomStateEvent<'redeal'>
   | CardsPlayedEvent
   | (BaseRoomStateEvent<'turn_passed'> & { player: string })
   | GameOverEvent
   | { event: 'chat_msg'; player: string; msg_id: number }
+  | AiHintsEvent
+  | AutoPlayChangedEvent
   | VoiceSignalEvent
   | VoiceStateEvent
   | (RoomStatePayload & { event: 'reconnected' })
   | { event: 'error'; msg?: string }
+  | (BaseRoomStateEvent<'cards_shown'> & {
+      player: string
+      cards: number[]
+      show_multiplier: number
+      total_multiplier: number
+    })
+  | (BaseRoomStateEvent<'landlord_show_decided'> & {
+      player: string
+      show: boolean
+      cards?: number[]
+      multiplier: number
+    })
 
 export { playDoubleChoiceSound }
 
@@ -310,6 +341,46 @@ export function useGameWebSocket() {
         gameStore.playerActions = {}
         break
       }
+      case 'cards_shown': {
+        const { playSound: playSoundShow } = useSoundEngine()
+        playSoundShow('showCards')
+        setTimeout(() => playSoundShow('mingpai', data.player), 120)
+        if (data.room_state) gameStore.updateFromRoomState(data.room_state)
+        gameStore.showCardsPlayers = { ...gameStore.showCardsPlayers, [data.player]: data.show_multiplier }
+        // 找到该玩家并更新 shownCards
+        const playerIdx = gameStore.players.findIndex(p => p.id === data.player)
+        if (playerIdx >= 0) {
+          const player = gameStore.players[playerIdx]
+          if (player) {
+            player.shownCards = data.cards
+            player.showMultiplier = data.show_multiplier
+          }
+        }
+        if (data.total_multiplier !== undefined) gameStore.multiplier = data.total_multiplier
+        gameStore.playerActions = { ...gameStore.playerActions, [data.player]: `明牌 ×${data.show_multiplier}` }
+        break
+      }
+      case 'landlord_show_decided': {
+        const { playSound: playSoundLS } = useSoundEngine()
+        if (data.show) {
+          playSoundLS('showCards')
+          setTimeout(() => playSoundLS('mingpai', data.player), 120)
+          gameStore.showCardsPlayers = { ...gameStore.showCardsPlayers, [data.player]: 2 }
+          const pIdx = gameStore.players.findIndex(p => p.id === data.player)
+          if (pIdx >= 0 && data.cards) {
+            const player = gameStore.players[pIdx]
+            if (player) {
+              player.shownCards = data.cards
+              player.showMultiplier = 2
+            }
+          }
+          gameStore.playerActions = { ...gameStore.playerActions, [data.player]: '明牌 ×2' }
+        }
+        if (data.room_state) gameStore.updateFromRoomState(data.room_state)
+        if (data.multiplier !== undefined) gameStore.multiplier = data.multiplier
+        gameStore.awaitingLandlordShow = false
+        break
+      }
       case 'double_chosen': {
         if (data.room_state) gameStore.updateFromRoomState(data.room_state)
         const label = data.label || getDoubleChoiceLabel(data.choice)
@@ -323,11 +394,16 @@ export function useGameWebSocket() {
       }
       case 'doubling_finished': {
         if (data.room_state) gameStore.updateFromRoomState(data.room_state)
-        gameStore.gamePhase = 'PLAYING'
+        if (data.landlord_confirm_required) {
+          gameStore.gamePhase = 'LANDLORD_CONFIRM'
+          gameStore.awaitingLandlordShow = true
+        } else {
+          gameStore.gamePhase = 'PLAYING'
+        }
         if (data.current_turn !== undefined) gameStore.currentTurn = data.current_turn || ''
         if (data.multiplier !== undefined) gameStore.multiplier = data.multiplier
         setTimeout(() => {
-          if (gameStore.gamePhase === 'PLAYING') {
+          if (gameStore.gamePhase === 'PLAYING' || gameStore.gamePhase === 'LANDLORD_CONFIRM') {
             gameStore.playerActions = {}
           }
         }, 2500)
@@ -434,6 +510,12 @@ export function useGameWebSocket() {
       }
       case 'chat_msg':
         playQuickChatMessage(data.msg_id, data.player)
+        break
+      case 'ai_hints':
+        gameStore.setAiHintCandidates(data.candidates, data.source || 'douzero')
+        break
+      case 'auto_play_changed':
+        gameStore.setAutoPlayPlayer(data.player, data.enabled)
         break
       case 'voice_signal':
         notifyVoiceSignal({

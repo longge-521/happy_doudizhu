@@ -99,6 +99,23 @@ watch(() => props.cards, (newCards) => {
   }
 }, { immediate: true })
 
+// 监听发牌动画进度，实时更新可选的明牌倍数（看到0-5张:4倍，6-11张:3倍，12-17张:2倍）
+watch([visibleCount, isDealing], ([vCount, dealing]) => {
+  if (gameStore.gamePhase === 'CALLING' && dealing) {
+    if (vCount <= 5) {
+      gameStore.showCardsAvailableMultiplier = 4
+    } else if (vCount <= 11) {
+      gameStore.showCardsAvailableMultiplier = 3
+    } else if (vCount <= 17) {
+      gameStore.showCardsAvailableMultiplier = 2
+    } else {
+      gameStore.showCardsAvailableMultiplier = null
+    }
+  } else {
+    gameStore.showCardsAvailableMultiplier = null
+  }
+}, { immediate: true })
+
 function startSelection(index: number) {
   isSelecting.value = true
   startIndex.value = index

@@ -35,17 +35,23 @@ class TestGameRoom:
         assert len(room.bottom_cards) == 3
 
     def test_call_landlord(self):
-        """模拟设置地主，进入加倍阶段"""
+        """模拟设置地主，进入加倍阶段，加倍完成后进入确认，然后进入出牌"""
         room = GameRoom.create("room_1", make_players())
         room.deal()
         caller = room.current_turn
         result = room._set_landlord(caller)
         assert room.phase == GamePhase.DOUBLING
         assert room.landlord == caller
-        assert room.multiplier == 1
         # 地主应该有20张牌
         assert len(room.hands[caller]) == 20
+        
+        # 加倍完成后进入确认阶段（未明牌）
         choose_no_doubles(room)
+        assert room.phase == GamePhase.LANDLORD_CONFIRM
+        assert room.current_turn == caller
+        
+        # 结束确认进入出牌
+        room.finish_landlord_confirm()
         assert room.phase == GamePhase.PLAYING
         assert room.current_turn == caller
 
@@ -63,7 +69,7 @@ class TestGameRoom:
         assert room.doubling_choices == {}
         assert len(room.hands[caller]) == 20
 
-    def test_double_choices_update_multiplier_and_finish_to_playing(self):
+    def test_double_choices_update_multiplier_and_finish(self):
         room = GameRoom.create("room_1", make_players())
         room.deal()
         ids = [p.id for p in room.players]
@@ -86,7 +92,8 @@ class TestGameRoom:
             ids[2]: "none",
         }
         assert room.multiplier == 8
-        assert room.phase == GamePhase.PLAYING
+        # 未明牌，加倍完成后进入 LANDLORD_CONFIRM
+        assert room.phase == GamePhase.LANDLORD_CONFIRM
         assert room.current_turn == ids[0]
 
     def test_cannot_play_before_all_players_choose_double(self):
@@ -148,6 +155,7 @@ class TestGameRoom:
         caller = room.current_turn
         room._set_landlord(caller)
         choose_no_doubles(room)
+        room.finish_landlord_confirm()
         # 地主出牌（出最小的一张）
         landlord = room.landlord
         card_to_play = [room.hands[landlord][0]]
@@ -162,6 +170,7 @@ class TestGameRoom:
         caller = room.current_turn
         room._set_landlord(caller)
         choose_no_doubles(room)
+        room.finish_landlord_confirm()
         # 尝试让非当前回合玩家出牌
         other = [p for p in ["p1", "p2", "p3"] if p != room.current_turn][0]
         result = room.play_cards(other, [room.hands[other][0]])
@@ -205,6 +214,8 @@ class TestGameRoom:
         assert room.landlord == p1
         assert room.multiplier == 1
         choose_no_doubles(room)
+        assert room.phase == GamePhase.LANDLORD_CONFIRM
+        room.finish_landlord_confirm()
         assert room.phase == GamePhase.PLAYING
         assert room.current_turn == p1
 
@@ -230,7 +241,6 @@ class TestGameRoom:
         room.skip_call(ids[2])
         assert room.current_turn == ids[0]  # 轮回到首叫者 ids[0]
         
-        # ids[0] 选择抢地主
         room.call_landlord(ids[0], 1)
         
         # 表态结束，ids[0] 成为地主，倍数翻倍为 4
@@ -238,6 +248,8 @@ class TestGameRoom:
         assert room.landlord == ids[0]
         assert room.multiplier == 4
         choose_no_doubles(room)
+        assert room.phase == GamePhase.LANDLORD_CONFIRM
+        room.finish_landlord_confirm()
         assert room.phase == GamePhase.PLAYING
         assert room.current_turn == ids[0]
 
@@ -259,7 +271,6 @@ class TestGameRoom:
         # ids[2] 不抢
         room.skip_call(ids[2])
         
-        # ids[0] 不抢
         room.skip_call(ids[0])
         
         # 表态结束，ids[1] 获得地主，倍数为 2
@@ -267,6 +278,8 @@ class TestGameRoom:
         assert room.landlord == ids[1]
         assert room.multiplier == 2
         choose_no_doubles(room)
+        assert room.phase == GamePhase.LANDLORD_CONFIRM
+        room.finish_landlord_confirm()
         assert room.phase == GamePhase.PLAYING
         assert room.current_turn == ids[1]
 
@@ -287,7 +300,6 @@ class TestGameRoom:
         assert room.multiplier == 1
         assert room.landlord == ids[1]
         
-        # ids[2] 不抢
         room.skip_call(ids[2])
         
         # 表态结束，因为 ids[0] 之前不叫，无权再抢。所以地主直接归 ids[1]
@@ -295,6 +307,8 @@ class TestGameRoom:
         assert room.landlord == ids[1]
         assert room.multiplier == 1
         choose_no_doubles(room)
+        assert room.phase == GamePhase.LANDLORD_CONFIRM
+        room.finish_landlord_confirm()
         assert room.phase == GamePhase.PLAYING
         assert room.current_turn == ids[1]
 
@@ -311,12 +325,14 @@ class TestGameRoom:
         room.call_landlord(ids[0], 1)
         room.skip_call(ids[1])
         result = room.skip_call(ids[2])
-
+ 
         # 只有 1 人叫分，直接成为地主
         assert room.phase == GamePhase.DOUBLING
         assert room.landlord == ids[0]
         assert room.multiplier == 1
         choose_no_doubles(room)
+        assert room.phase == GamePhase.LANDLORD_CONFIRM
+        room.finish_landlord_confirm()
         assert room.phase == GamePhase.PLAYING
         assert room.current_turn == ids[0]
 
@@ -351,8 +367,12 @@ class TestGameRoom:
         room.skip_call(ids[1])
         room.skip_call(ids[2])
         assert room.phase == GamePhase.DOUBLING
+        choose_no_doubles(room)
+        assert room.phase == GamePhase.LANDLORD_CONFIRM
+        room.finish_landlord_confirm()
+        assert room.phase == GamePhase.PLAYING
         
-        # 5. 此时进入 DOUBLING 阶段，底牌应公开，玩家1的 is_landlord 为 True，其它为 False
+        # 5. 此时进入 PLAYING 阶段，底牌应公开，玩家1的 is_landlord 为 True，其它为 False
         view = room.get_player_view(ids[0])
         assert view["bottom_cards"] == room.bottom_cards
         for p in view["players"]:
@@ -360,3 +380,105 @@ class TestGameRoom:
                 assert p["is_landlord"] is True
             else:
                 assert p["is_landlord"] is False
+
+    def test_show_cards_dealing_phase(self):
+        """测试发牌阶段明牌的逻辑"""
+        room = GameRoom.create("room_1", make_players())
+        room.deal()
+        ids = [p.id for p in room.players]
+        
+        # 玩家1明牌 ×4
+        res = room.show_cards(ids[0], 4)
+        assert res["success"] is True
+        assert room.multiplier == 4
+        assert room.show_cards_players == {ids[0]: 4}
+        
+        # 玩家2明牌 ×3
+        res2 = room.show_cards(ids[1], 3)
+        assert res2["success"] is True
+        assert room.multiplier == 12
+        assert room.show_cards_players == {ids[0]: 4, ids[1]: 3}
+        
+        # 验证玩家视角手牌可见度
+        view_of_p3 = room.get_player_view(ids[2])
+        p1_in_view = next(p for p in view_of_p3["players"] if p["id"] == ids[0])
+        p2_in_view = next(p for p in view_of_p3["players"] if p["id"] == ids[1])
+        p3_in_view = next(p for p in view_of_p3["players"] if p["id"] == ids[2])
+        
+        assert "shown_cards" in p1_in_view
+        assert len(p1_in_view["shown_cards"]) == 17
+        assert "shown_cards" in p2_in_view
+        assert len(p2_in_view["shown_cards"]) == 17
+        assert "shown_cards" not in p3_in_view
+
+    def test_landlord_show_cards_confirm_phase(self):
+        """测试地主确认阶段明牌的逻辑"""
+        room = GameRoom.create("room_1", make_players())
+        room.deal()
+        ids = [p.id for p in room.players]
+        room._set_landlord(ids[0])
+        
+        assert room.phase == GamePhase.DOUBLING
+        
+        # 加倍完成后进入确认阶段（未明牌）
+        choose_no_doubles(room)
+        assert room.phase == GamePhase.LANDLORD_CONFIRM
+        
+        # 只有地主可以明牌
+        res_fail = room.landlord_show_cards(ids[1])
+        assert res_fail["success"] is False
+        
+        # 地主明牌 ×2，明牌后直接进入 PLAYING
+        res_ok = room.landlord_show_cards(ids[0])
+        assert res_ok["success"] is True
+        assert room.multiplier == 2
+        assert room.show_cards_players == {ids[0]: 2}
+        assert room.phase == GamePhase.PLAYING
+        
+        # 玩家视角验证
+        view_of_p2 = room.get_player_view(ids[1])
+        p1_in_view = next(p for p in view_of_p2["players"] if p["id"] == ids[0])
+        assert "shown_cards" in p1_in_view
+        assert len(p1_in_view["shown_cards"]) == 20  # 地主拿到3张底牌后是 20 张
+
+    def test_landlord_already_shown_cards_skips_confirm(self):
+        """测试如果地主已在发牌时明牌，加倍完成后直接进入 PLAYING（跳过 LANDLORD_CONFIRM）"""
+        room = GameRoom.create("room_1", make_players())
+        room.deal()
+        ids = [p.id for p in room.players]
+        
+        # 地主 ids[0] 在发牌阶段先明牌 ×4
+        room.show_cards(ids[0], 4)
+        
+        # 确定 ids[0] 为地主，统一进入 DOUBLING
+        result = room._set_landlord(ids[0])
+        assert room.phase == GamePhase.DOUBLING
+        assert room.multiplier == 4
+        
+        # 加倍完成后，因地主已明牌，直接进入 PLAYING
+        choose_no_doubles(room)
+        assert room.phase == GamePhase.PLAYING
+        assert room.current_turn == ids[0]
+
+    def test_no_show_cards_doubling_then_confirm_then_playing(self):
+        """测试未明牌流程：叫地主 → DOUBLING → 加倍完成 → LANDLORD_CONFIRM → PLAYING"""
+        room = GameRoom.create("room_1", make_players())
+        room.deal()
+        ids = [p.id for p in room.players]
+        
+        # 确定 ids[0] 为地主（未明牌）
+        room._set_landlord(ids[0])
+        assert room.phase == GamePhase.DOUBLING
+        
+        # 加倍完成后进入 LANDLORD_CONFIRM
+        choose_no_doubles(room)
+        assert room.phase == GamePhase.LANDLORD_CONFIRM
+        assert room.current_turn == ids[0]
+        
+        # 不明牌，直接出牌
+        result = room.finish_landlord_confirm()
+        assert result["success"] is True
+        assert room.phase == GamePhase.PLAYING
+        assert room.current_turn == ids[0]
+
+

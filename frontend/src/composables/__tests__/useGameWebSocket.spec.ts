@@ -164,6 +164,38 @@ describe('useGameWebSocket', () => {
     disconnect()
   })
 
+  it('stores AI hints and auto-play state from websocket messages', async () => {
+    const playerStore = usePlayerStore()
+    playerStore.playerId = 'p1'
+    playerStore.authToken = 'token'
+
+    const { connect, disconnect } = useGameWebSocket()
+    connect()
+    const socket = MockWebSocket.instances[0]!
+
+    socket.onmessage?.(new MessageEvent('message', {
+      data: JSON.stringify({
+        event: 'ai_hints',
+        candidates: [[0, 1]],
+        source: 'douzero',
+      }),
+    }))
+    socket.onmessage?.(new MessageEvent('message', {
+      data: JSON.stringify({
+        event: 'auto_play_changed',
+        player: 'p1',
+        enabled: true,
+      }),
+    }))
+
+    const { useGameStore } = await import('@/stores/gameStore')
+    const gameStore = useGameStore()
+    expect(gameStore.aiHintCandidates).toEqual([[1, 0]])
+    expect(gameStore.aiHintSource).toBe('douzero')
+    expect(gameStore.autoPlayPlayers).toContain('p1')
+    disconnect()
+  })
+
   it('plays quick chat voice without showing chat text on the table', async () => {
     const playerStore = usePlayerStore()
     playerStore.playerId = 'p1'
