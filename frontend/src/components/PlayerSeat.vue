@@ -62,7 +62,7 @@ defineProps<{
           :no-hover="true"
           size="sm"
           class="shown-card"
-          :style="{ marginLeft: index === 0 ? '0px' : '-38px', zIndex: index }"
+          :style="{ marginLeft: index === 0 ? '0px' : '-34px', zIndex: index }"
         />
       </div>
       <div v-else-if="player.remaining !== undefined" class="card-back-count">
@@ -76,7 +76,11 @@ defineProps<{
       <div v-if="lastActionText" class="bubble-action" :class="{ pass: lastActionText === '不出' }">
         {{ lastActionText }}
       </div>
-      <div v-else-if="lastPlayedCards && lastPlayedCards.length > 0" class="played-cards-row">
+      <div
+        v-else-if="lastPlayedCards && lastPlayedCards.length > 0"
+        class="played-cards-row"
+        :class="{ 'wrap-cards': position !== 'bottom' && lastPlayedCards.length > 8 }"
+      >
         <PokerCard
           v-for="cId in lastPlayedCards"
           :key="cId"
@@ -119,13 +123,13 @@ defineProps<{
 
 /* 头像面板 */
 .avatar-block {
-  width: 96px;
-  padding: 14px 6px;
+  width: 88px;
+  padding: 10px 6px;
   text-align: center;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   position: relative;
   transition: all 0.25s ease;
   background: rgba(0, 0, 0, 0.45);
@@ -140,8 +144,8 @@ defineProps<{
 
 /* 圆形头像 */
 .avatar-icon-circle {
-  width: 50px;
-  height: 50px;
+  width: 42px;
+  height: 42px;
   border-radius: 50%;
   background: rgba(255, 255, 255, 0.15);
   border: 2px solid rgba(255, 255, 255, 0.4);
@@ -162,8 +166,8 @@ defineProps<{
 }
 
 .seat-name {
-  font-size: 0.85rem;
-  max-width: 85px;
+  font-size: 0.82rem;
+  max-width: 80px;
   font-weight: 800;
   color: #fff;
   text-shadow: 0 1px 2px rgba(0,0,0,0.8);
@@ -207,6 +211,7 @@ defineProps<{
   box-shadow: 0 2px 4px rgba(0,0,0,0.3);
   text-shadow: none;
   animation: pulse 1s infinite alternate;
+  white-space: nowrap;
 }
 
 .doubling-badge.super {
@@ -311,6 +316,15 @@ defineProps<{
   border: 1px solid rgba(255,255,255,0.08);
 }
 
+.played-cards-row.wrap-cards {
+  flex-wrap: wrap;
+  max-width: 252px;
+}
+
+.player-seat.right .played-cards-row {
+  justify-content: flex-end;
+}
+
 .shown-cards-row {
   display: flex;
   align-items: center;
@@ -324,5 +338,17 @@ defineProps<{
 
 .shown-card {
   transition: transform 0.2s ease;
+}
+
+.player-seat.left .shown-cards-row {
+  position: absolute;
+  top: -145px;
+  left: 0;
+}
+
+.player-seat.right .shown-cards-row {
+  position: absolute;
+  top: -145px;
+  right: 0;
 }
 </style>

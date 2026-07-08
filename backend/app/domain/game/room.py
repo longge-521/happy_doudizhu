@@ -177,12 +177,12 @@ class GameRoom:
             return {"success": False, "error": "当前阶段不允许明牌"}
         if player_id not in self._player_ids():
             return {"success": False, "error": "玩家不在当前房间"}
-        if player_id in self.show_cards_players:
+        if str(player_id) in self.show_cards_players:
             return {"success": False, "error": "你已经明牌了"}
         if show_multiplier not in (2, 3, 4):
             return {"success": False, "error": "无效的明牌倍数"}
 
-        self.show_cards_players[player_id] = show_multiplier
+        self.show_cards_players[str(player_id)] = show_multiplier
         self.multiplier *= show_multiplier
         return {
             "success": True,
@@ -198,10 +198,10 @@ class GameRoom:
             return {"success": False, "error": "当前不在地主明牌确认阶段"}
         if player_id != self.landlord:
             return {"success": False, "error": "只有地主可以在此阶段明牌"}
-        if player_id in self.show_cards_players:
+        if str(player_id) in self.show_cards_players:
             return {"success": False, "error": "你已经明牌了"}
 
-        self.show_cards_players[player_id] = 2
+        self.show_cards_players[str(player_id)] = 2
         self.multiplier *= 2
         self.phase = GamePhase.PLAYING
         self.current_turn = self.landlord
@@ -320,7 +320,7 @@ class GameRoom:
 
     def _finish_doubling(self) -> dict:
         """所有玩家完成加倍确认后，决定下一阶段"""
-        if self.landlord in self.show_cards_players:
+        if self.landlord and str(self.landlord) in self.show_cards_players:
             self.phase = GamePhase.PLAYING
             self.current_turn = self.landlord
             self.turn_deadline = time.time() + 30

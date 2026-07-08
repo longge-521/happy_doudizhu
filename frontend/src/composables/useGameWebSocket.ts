@@ -394,7 +394,8 @@ export function useGameWebSocket() {
       }
       case 'doubling_finished': {
         if (data.room_state) gameStore.updateFromRoomState(data.room_state)
-        if (data.landlord_confirm_required) {
+        const isLandlordAlreadyShown = gameStore.landlord && gameStore.showCardsPlayers[gameStore.landlord] !== undefined
+        if (data.landlord_confirm_required && !isLandlordAlreadyShown) {
           gameStore.gamePhase = 'LANDLORD_CONFIRM'
           gameStore.awaitingLandlordShow = true
         } else {

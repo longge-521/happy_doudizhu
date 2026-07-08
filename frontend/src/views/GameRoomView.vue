@@ -696,7 +696,10 @@ watch(
           <div
             v-else-if="gameStore.playerPlayedCards[seat.player.id] && gameStore.playerPlayedCards[seat.player.id]!.length > 0"
             class="played-cards-row"
-            :class="{ 'shimmer-active': gameStore.activeEffect === 'shimmer' && gameStore.lastPlay.player === seat.player.id }"
+            :class="[
+              { 'shimmer-active': gameStore.activeEffect === 'shimmer' && gameStore.lastPlay.player === seat.player.id },
+              { 'wrap-cards': seat.position !== 'bottom' && gameStore.playerPlayedCards[seat.player.id]!.length > 8 }
+            ]"
           >
             <PokerCard
               v-for="cId in sortPlayedCards(gameStore.playerPlayedCards[seat.player.id] || [])"
@@ -1795,16 +1798,23 @@ watch(
   to { left: 110%; opacity: 0; }
 }
 
-/* 濡炪倕鎼悺娆撴煂閹达絽顥忔繛缈犵閸樻粓骞嶉銉х畺 */
 .played-cards-row {
   position: relative;
-  overflow: hidden;
   display: flex;
   gap: 3px;
   background: rgba(0, 0, 0, 0.35);
   padding: 6px;
   border-radius: 6px;
   border: 1px solid rgba(255,255,255,0.08);
+}
+
+.played-cards-row.wrap-cards {
+  flex-wrap: wrap;
+  max-width: 252px;
+}
+
+.play-seat-zone.right .played-cards-row {
+  justify-content: flex-end;
 }
 .poker-effects-layer + .played-cards-row::after,
 .shimmer-active::after {
