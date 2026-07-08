@@ -762,7 +762,10 @@ export function findAllPlayableHints(hand: number[], lastCards: number[] = []): 
         if (groups.get(rank)!.length === 4 && isLargerBomb) {
           const bombCards = groups.get(rank)!.slice(0, 4)
           // 避免与同牌型中的炸弹重复添加
-          if (!hints.some(h => h.length === 4 && getCardRank(h[0]) === rank)) {
+          if (!hints.some((h) => {
+            const firstCard = h[0]
+            return h.length === 4 && firstCard !== undefined && getCardRank(firstCard) === rank
+          })) {
             hints.push(bombCards)
           }
         }

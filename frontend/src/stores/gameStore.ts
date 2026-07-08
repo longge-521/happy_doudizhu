@@ -20,12 +20,59 @@ export interface LastPlay {
   cardType: string | null
 }
 
+export type GamePhase = 'IDLE' | 'MATCHING' | 'DEALING' | 'CALLING' | 'DOUBLING' | 'PLAYING' | 'SETTLING'
+
 export type DoublingChoice = 'double' | 'super' | 'none'
+
+export type WinnerSide = 'landlord' | 'farmer'
+
+export interface GameSettlement {
+  winner: string
+  winnerSide: WinnerSide
+  scores: Record<string, number>
+  multiplier: number
+  allHands?: Record<string, number[]>
+}
+
+export interface RoomStatePlayerPayload {
+  id: string
+  nickname: string
+  is_ai: boolean
+  is_online: boolean
+  remaining?: number
+  is_landlord?: boolean
+  is_self?: boolean
+}
+
+export interface RoomStateLastPlayPayload {
+  player: string | null
+  cards?: number[]
+  card_type: string | null
+}
+
+export interface RoomStatePayload {
+  room_id?: string
+  phase?: GamePhase
+  players?: RoomStatePlayerPayload[]
+  hand?: number[]
+  current_turn?: string | null
+  turn_deadline?: number | null
+  multiplier?: number
+  call_round?: number
+  call_scores?: Record<string, number> | null
+  first_bidder?: string | null
+  landlord?: string | null
+  bottom_cards?: number[]
+  last_play?: RoomStateLastPlayPayload | null
+  base_score?: number
+  all_played_cards?: number[]
+  doubling_choices?: Record<string, DoublingChoice> | null
+}
 
 export const useGameStore = defineStore('game', () => {
   const wsConnected = ref(false)
   const roomId = ref('')
-  const gamePhase = ref<string>('IDLE')  // IDLE | MATCHING | DEALING | CALLING | PLAYING | SETTLING
+  const gamePhase = ref<GamePhase>('IDLE')
   const players = ref<PlayerInfo[]>([])
   const myHand = ref<number[]>([])
   const selectedCards = ref<number[]>([])
@@ -39,7 +86,7 @@ export const useGameStore = defineStore('game', () => {
   const callScores = ref<Record<string, number>>({})
   const firstBidder = ref('')
   const landlord = ref('')
-  const settlement = ref<any>(null)
+  const settlement = ref<GameSettlement | null>(null)
   const errorMsg = ref('')
   const playerActions = ref<Record<string, string>>({})
   const playerPlayedCards = ref<Record<string, number[]>>({})
@@ -75,10 +122,10 @@ export const useGameStore = defineStore('game', () => {
     selectedCards.value = [...cardIds]
   }
 
-  function updateFromRoomState(state: any) {
+  function updateFromRoomState(state: RoomStatePayload) {
     if (state.room_id) roomId.value = state.room_id
     if (state.phase) gamePhase.value = state.phase
-    if (state.players) players.value = state.players.map((p: any) => ({
+    if (state.players) players.value = state.players.map((p) => ({
       id: p.id, nickname: p.nickname, isAi: p.is_ai, isOnline: p.is_online,
       remaining: p.remaining !== undefined ? p.remaining : (p.is_self ? (state.hand ? state.hand.length : 0) : 0),
       isLandlord: p.is_landlord, isSelf: p.is_self,

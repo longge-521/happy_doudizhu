@@ -2,17 +2,12 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { usePlayerStore } from '@/stores/playerStore'
+import type { GameSettlement, PlayerInfo } from '@/stores/gameStore'
 import { getCardDisplay, sortCardIds, sortPlayedCards } from '@/utils/cardUtils'
 
 const props = defineProps<{
-  settlement: {
-    winner: string
-    winnerSide: 'landlord' | 'farmer'
-    scores: Record<string, number>
-    multiplier: number
-    allHands?: Record<string, number[]>
-  }
-  players: Array<{ id: string; nickname: string; isLandlord?: boolean }>
+  settlement: GameSettlement
+  players: Array<Pick<PlayerInfo, 'id' | 'nickname' | 'isLandlord'>>
   lastPlayedCards?: Record<string, number[]>
 }>()
 

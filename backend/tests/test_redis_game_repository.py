@@ -71,3 +71,16 @@ class TestRedisGameRepository:
         """从匹配队列移除"""
         await repo.remove_from_match_queue("p1")
         mock_redis.lrem.assert_called_once_with("game:match_queue:10", 1, "p1")
+
+    @pytest.mark.asyncio
+    async def test_pop_match_players_uses_single_atomic_eval(self, repo, mock_redis):
+        mock_redis.eval = AsyncMock(return_value=[b"p1", b"p2", b"p3"])
+
+        players = await repo.pop_match_players(3, base_score=80)
+
+        assert players == ["p1", "p2", "p3"]
+        mock_redis.eval.assert_called_once()
+        args = mock_redis.eval.call_args.args
+        assert args[1] == 1
+        assert args[2] == "game:match_queue:80"
+        assert args[3] == 3

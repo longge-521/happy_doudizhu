@@ -5,6 +5,52 @@ import { useRouter } from 'vue-router'
 
 const router = useRouter()
 
+interface SiteMessage {
+  id: number
+  sender: string
+  receiver?: string
+  content: string
+  is_read: number | boolean
+  created_at: string
+}
+
+interface UploadedFileRecord {
+  id: number
+  filename: string
+  file_size_mb: number
+  created_at: string
+}
+
+interface AuditLogRecord {
+  id: number
+  created_at: string
+  operator: string
+  action: string
+  resource_type?: string
+  ip_address: string
+  status: string
+  execution_time?: number | null
+  method?: string | null
+  request_params?: unknown
+}
+
+interface DebugWsPayload {
+  type?: string
+  data?: SiteMessage
+  upload_id?: string
+  status?: string
+  completed_chunks?: number[]
+  chunk_index?: number
+  filename?: string
+  path?: string
+  message?: string
+  id?: number
+}
+
+type AudioContextWindow = Window & typeof globalThis & {
+  webkitAudioContext?: typeof AudioContext
+}
+
 // Token
 const token = ref(localStorage.getItem('hmp_token') || new URLSearchParams(window.location.search).get('token') || '')
 
@@ -28,7 +74,7 @@ const msgSender = ref('system')
 const msgReceiver = ref(clientId.value)
 const msgContent = ref('')
 const msgFilter = ref<'all' | 'unread' | 'read'>('all')
-const siteMessages = ref<any[]>([])
+const siteMessages = ref<SiteMessage[]>([])
 const unreadCount = ref(0)
 
 // 上传状态 (滑动窗口分片并发 WebSocket 上传)
@@ -38,7 +84,7 @@ const uploadProgress = ref(0)
 const uploadSpeed = ref('0 KB/s')
 const uploadEta = ref('剩余时间: --')
 const uploadRatio = ref('0 MB / 0 MB')
-const uploadedFilesList = ref<any[]>([])
+const uploadedFilesList = ref<UploadedFileRecord[]>([])
 
 const WS_CHUNK_SIZE = 4 * 1024 * 1024 // 4MB 切片大小
 const CONCURRENCY_LIMIT = 3          // 滑动窗口并发数
@@ -54,7 +100,7 @@ let wsStartTime = 0
 let speedSamples: Array<{ time: number; uploaded: number }> = []
 
 // 审计日志状态
-const auditLogs = ref<any[]>([])
+const auditLogs = ref<AuditLogRecord[]>([])
 const auditTotal = ref(0)
 const auditPage = ref(1)
 const auditLimit = ref(10)
@@ -148,7 +194,7 @@ function logToTerminal(text: string, type: 'system' | 'sent' | 'received' | 'err
 }
 
 // WS 业务分发
-function handleWsEvent(payload: any, rawData: string) {
+function handleWsEvent(payload: DebugWsPayload, rawData: string) {
   if (!payload || !payload.type) {
     logToTerminal(rawData, 'received')
     return
@@ -159,6 +205,10 @@ function handleWsEvent(payload: any, rawData: string) {
   if (type === 'site_message') {
     // 收到站内信实时推送
     const msg = payload.data
+    if (!msg) {
+      logToTerminal(rawData, 'received')
+      return
+    }
     logToTerminal(`[收到实时推送消息] 发送人: ${msg.sender}, 内容: ${msg.content}`, 'received')
     unreadCount.value++
     // 播放浏览器简易蜂鸣提示
@@ -234,7 +284,7 @@ function handleWsEvent(payload: any, rawData: string) {
   else if (type === 'upload_chunk_ack') {
     if (isUploading.value && payload.upload_id === wsUploadId && payload.status === 'success') {
       const ackIndex = payload.chunk_index
-      if (!wsUploadFile) return
+      if (!wsUploadFile || ackIndex === undefined) return
 
       const size = Math.min(wsTotalSize - (ackIndex * WS_CHUNK_SIZE), WS_CHUNK_SIZE)
       wsUploadedBytes += size
@@ -386,7 +436,9 @@ function sendPrivateMessage() {
 // 蜂鸣音
 function playBeepSound() {
   try {
-    const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)()
+    const AudioContextConstructor = window.AudioContext || (window as AudioContextWindow).webkitAudioContext
+    if (!AudioContextConstructor) return
+    const audioCtx = new AudioContextConstructor()
     const oscillator = audioCtx.createOscillator()
     const gainNode = audioCtx.createGain()
     oscillator.connect(gainNode)
@@ -519,9 +571,11 @@ function triggerFileInput() {
   document.getElementById('fileInputConsole')?.click()
 }
 
-function handleFileSelect(e: any) {
-  if (e.target.files.length > 0) {
-    handleStartUpload(e.target.files[0])
+function handleFileSelect(event: Event) {
+  const target = event.target as HTMLInputElement | null
+  const file = target?.files?.[0]
+  if (file) {
+    handleStartUpload(file)
   }
 }
 
@@ -609,7 +663,7 @@ async function loadAuditLogs(page: number) {
 }
 
 // 辅助格式化 JSON
-function formatJSON(obj: any): string {
+function formatJSON(obj: unknown): string {
   if (!obj) return ''
   try {
     return JSON.stringify(obj, null, 2)

@@ -56,13 +56,16 @@ describe('playerStore avatar profile state', () => {
 
     expect(result.ok).toBe(true)
     expect(store.avatarUrl).toBe('https://example.com/new-avatar.png')
-    expect(fetch).toHaveBeenCalledWith('/api/game/profile/player123/avatar', {
+    expect(fetch).toHaveBeenCalledWith('/api/game/profile/player123/update', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: 'Bearer token123',
       },
-      body: JSON.stringify({ avatar_url: 'https://example.com/new-avatar.png' }),
+      body: JSON.stringify({
+        nickname: 'TestNick',
+        avatar_url: 'https://example.com/new-avatar.png',
+      }),
     })
   })
 
@@ -114,5 +117,15 @@ describe('playerStore avatar profile state', () => {
     expect(store.playerId).toBe('new-player')
     expect(store.avatarUrl).toBe('')
     expect(localStorage.getItem('hmp_avatar_url')).toBeNull()
+  })
+
+  it('falls back to network error text when rejected value has non-string message', async () => {
+    setActivePinia(createPinia())
+    const store = usePlayerStore()
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue({ message: 123 }))
+
+    const result = await store.login('test-user', 'pass123')
+
+    expect(result).toEqual({ ok: false, error: '网络连接失败' })
   })
 })
