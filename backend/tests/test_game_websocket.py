@@ -19,6 +19,9 @@ def mock_game_service():
     service.handle_play = AsyncMock()
     service.handle_pass = AsyncMock()
     service.handle_ai_turn = AsyncMock()
+    service.handle_auto_play_turn = AsyncMock()
+    service.get_ai_play_hints = AsyncMock(return_value={"candidates": [[0, 1]], "source": "douzero"})
+    service.set_auto_play = AsyncMock()
     return service
 
 
@@ -154,3 +157,35 @@ def test_game_websocket_join_match_insufficient_beans(monkeypatch, mock_game_ser
             assert resp["event"] == "error"
             assert "欢乐豆不足" in resp["msg"]
             mock_game_service.join_match.assert_not_called()
+
+
+def test_game_websocket_get_ai_hints(monkeypatch, mock_game_service):
+    monkeypatch.setattr(auth, "API_TOKEN", "")
+    game_token = auth.create_game_auth_token("player1")
+
+    client = TestClient(app)
+    with client.websocket_connect(f"/ws/game/player1?auth_token={game_token}") as websocket:
+        websocket.send_json({"action": "get_ai_hints"})
+        resp = websocket.receive_json()
+
+    assert resp["event"] == "ai_hints"
+    assert resp["candidates"] == [[0, 1]]
+    assert resp["source"] == "douzero"
+    mock_game_service.get_ai_play_hints.assert_called_once_with("player1")
+
+
+def test_game_websocket_set_auto_play(monkeypatch, mock_game_service):
+    monkeypatch.setattr(auth, "API_TOKEN", "")
+    game_token = auth.create_game_auth_token("player1")
+    room = GameRoom.create("room_auto_ws", [Player(id="player1", nickname="P1")])
+    mock_game_service.set_auto_play.return_value = {"room": room, "player": "player1", "enabled": True}
+
+    client = TestClient(app)
+    with client.websocket_connect(f"/ws/game/player1?auth_token={game_token}") as websocket:
+        websocket.send_json({"action": "set_auto_play", "enabled": True})
+        resp = websocket.receive_json()
+
+    assert resp["event"] == "auto_play_changed"
+    assert resp["player"] == "player1"
+    assert resp["enabled"] is True
+    mock_game_service.set_auto_play.assert_called_once_with("player1", True)

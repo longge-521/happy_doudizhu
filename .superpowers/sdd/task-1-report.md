@@ -1,119 +1,106 @@
-# Task 1 报告
+# Task 1 报告：后端 AI 策略层提供 DouZero 候选排序
 
-## 已实现内容
+## 1. 我实现了什么
 
-本次只改了后端 WebSocket 信令层，完成了两类 WebRTC 相关动作：
+本次仅修改了任务限定的两个代码文件：
 
-1. `voice_state`
-   - 校验房间状态
-   - 将 `enabled` 状态广播给房间内所有在线真人玩家
-   - 广播内容保留玩家自己的房间视角
+- `backend/app/domain/game/ai_strategy.py`
+- `backend/tests/test_ai_strategy.py`
 
-2. `voice_signal`
-   - 校验当前玩家是否在房间内
-   - 校验目标玩家是否属于当前房间内的真人玩家
-   - 校验 `signal_type` 只允许 `offer`、`answer`、`ice_candidate`
-   - 校验 `payload` 必须是对象，且序列化后不超过 `16KB`
-   - 只转发给目标玩家，不保存、不录制、不做音频流处理
+实现内容如下：
 
-另外，为了避免导入 `game_handler.py` 时把 AI / Torch 依赖链提前拉进来，我把 `GameAppService` 改成了类型检查时引用，运行时不再强制导入。
+1. 在 AI 策略层新增 `ai_rank_play_candidates(hand, last_play, must_play, ctx, limit=12)`。
+2. 新增 `_dedupe_candidates()`，用于对候选出牌去重。
+3. 新增 `_rule_decide_play()`，把原有规则引擎决策和“冲刺直接出完”逻辑收拢为独立兜底路径。
+4. 调整 `ai_decide_play()`，改为优先消费 `ai_rank_play_candidates(..., limit=1)` 的第一候选；若无结果，再走 `_rule_decide_play()`。
+5. 补充 DouZero 不可用时的规则兜底测试。
+6. 修复了当前工作区内 `ai_strategy.py` 已存在的编码损坏/导入失败问题，使任务代码可被正常导入和验证。
 
-## RED
+## 2. TDD red/green 证据
 
-执行命令：
+说明：brief 预期的 red 是 “无法导入 `ai_rank_play_candidates`”。但我接手当前工作区时，这两个目标文件里已经存在部分 Task 1 改动，同时 `ai_strategy.py` 被错误编码写坏，导致实际 red 更早发生在模块导入阶段。以下按真实工作区状态记录。
 
-```bash
-& 'D:\\Program Files\\Python3.10\\Scripts\\pytest.exe' backend/tests/test_game_voice_signaling.py -v
-```
+### Red
 
-失败输出摘要：
+命令：
 
-```text
-FAILED backend/tests/test_game_voice_signaling.py::test_voice_state_broadcasts_to_room_players
-FAILED backend/tests/test_game_voice_signaling.py::test_voice_signal_forwards_only_to_target_room_player
-FAILED backend/tests/test_game_voice_signaling.py::test_voice_signal_rejects_non_room_target
-FAILED backend/tests/test_game_voice_signaling.py::test_voice_signal_rejects_invalid_type_and_large_payload
-```
-
-失败原因是预期中的：当时 `voice_state` 和 `voice_signal` 还没有进入 `_handle_message` 分发，服务端仍然把它们当成未知动作处理，所以断言会落到 `未知动作: voice_signal` 这一类错误上。
-
-## GREEN
-
-执行命令：
-
-```bash
-& 'D:\\Program Files\\Python3.10\\Scripts\\pytest.exe' backend/tests/test_game_voice_signaling.py -v
+```powershell
+D:\ProgramData\miniconda3\envs\hmp_ai\python.exe -m pytest backend/tests/test_ai_strategy.py::test_ai_rank_play_candidates_orders_by_douzero_score -q
 ```
 
 结果：
 
 ```text
-4 passed in 1.02s
+ERROR collecting backend/tests/test_ai_strategy.py
+SyntaxError: invalid non-printable character U+E1EE
 ```
 
-## 回归
+结论：
 
-执行命令：
+- 失败已被稳定复现。
+- 根因不是断言失败，而是 `backend/app/domain/game/ai_strategy.py` 存在编码损坏，导致测试文件导入失败。
 
-```bash
-& 'D:\\Program Files\\Python3.10\\Scripts\\pytest.exe' backend/tests/test_game_websocket.py -v
+### Green 1：排序测试通过
+
+命令：
+
+```powershell
+D:\ProgramData\miniconda3\envs\hmp_ai\python.exe -m pytest backend/tests/test_ai_strategy.py::test_ai_rank_play_candidates_orders_by_douzero_score -q
 ```
 
 结果：
 
 ```text
-5 passed in 4.78s
+.                                                                        [100%]
+1 passed in 13.67s
 ```
 
-说明现有游戏 WebSocket 的登录、匹配、叫分、出牌、过牌与欢乐豆校验流程没有被这次改动破坏。
+### Green 2：兜底测试通过
 
-## 修改文件
+命令：
 
-- `backend/tests/test_game_voice_signaling.py`
-- `backend/app/interfaces/websocket/game_handler.py`
+```powershell
+D:\ProgramData\miniconda3\envs\hmp_ai\python.exe -m pytest backend/tests/test_ai_strategy.py::test_ai_rank_play_candidates_falls_back_to_rule_engine_when_douzero_unavailable -q
+```
 
-## 自检结论
+结果：
 
-- 信令只做转发和校验，没有新增任何音频存储、录制、回放或 TURN 逻辑。
-- `voice_signal` 只会发给同房间目标玩家，不会扩散给整间房。
-- 现有 WebSocket 回归测试通过，旧动作分发未受影响。
-- 运行时导入链已收敛，避免了测试阶段提前触发重型 AI 依赖。
+```text
+.                                                                        [100%]
+1 passed in 15.72s
+```
 
-## 关注点
+## 3. 测试运行与结果
 
-- 当前只做了第一版直连信令转发，未接入 TURN，也未做设备选择、输入音量条、说话人检测、服务端录音或历史回放。
-- `payload` 当前按对象校验并限制为 16KB；如果后续前端信令格式变更，需要同步更新这里的校验规则。
-## 修复补充（review findings）
+全量 AI 策略测试命令：
 
-### 本次改动
-- 重写 `backend/tests/test_game_voice_signaling.py`，移除模块级 `torch` stub 注入，不再污染 `sys.modules`。
-- 保留并整理既有 voice signaling 用例，补充以下错误分支覆盖：
-  - 玩家当前不在房间时发送 `voice_state`
-  - 玩家当前不在房间时发送 `voice_signal`
-  - `voice_signal.payload` 不是对象
-- 本次没有修改 `backend/app/interfaces/websocket/game_handler.py` 的语音信令实现，也没有触碰任何非语音玩法逻辑。
+```powershell
+D:\ProgramData\miniconda3\envs\hmp_ai\python.exe -m pytest backend/tests/test_ai_strategy.py -q
+```
 
-### 测试命令与结果
-- RED：
-  - `& 'D:\\Program Files\\Python3.10\\Scripts\\pytest.exe' backend/tests/test_game_voice_signaling.py -v`
-  - 结果：`1 failed, 6 passed`
-  - 失败点：新增“当前不在房间时发送 voice_signal”用例，断言文案写成了“语音信令”，而现有实现实际返回“语音信号”。
-- GREEN：
-  - `& 'D:\\Program Files\\Python3.10\\Scripts\\pytest.exe' backend/tests/test_game_voice_signaling.py -v`
-  - 结果：`7 passed`
-- 回归：
-  - `& 'D:\\Program Files\\Python3.10\\Scripts\\pytest.exe' backend/tests/test_game_websocket.py -v`
-  - 结果：`5 passed`
-- 环境说明：
-  - 直接运行 `python -m pytest ...` 会落到 `D:\\Program Files\\Python27\\python.exe`，该环境没有安装 `pytest`，因此本次实际使用了项目可用的 `D:\\Program Files\\Python3.10\\Scripts\\pytest.exe`。
+结果：
 
-### Reviewer finding 处理说明
-1. `backend/tests/test_game_voice_signaling.py` 全局注入 `torch` stub：
-   - 已处理。当前测试文件不再在模块导入时写入 `sys.modules`，也不再依赖 `torch` stub。
-   - 之所以可以移除，是因为当前 `game_handler.py` 在运行时不再强制导入 `GameAppService` 的重依赖链。
-2. 补齐 non-dict payload 和 no current room 分支：
-   - 已处理。新增了 `voice_signal.payload` 非对象、`voice_state` 无当前房间、`voice_signal` 无当前房间三条覆盖。
-3. 关于 `game_handler.py` 中 unrelated gameplay/AI/doubling diff 的 critical finding：
-   - 本次未处理，也未回退。
-   - 原因是该 finding 明确涉及与 Task 1 语音信令无关的既有未提交改动，而仓库与任务说明都禁止回退自己未引入的改动。
-   - 本次修复仅限测试文件与报告补充，确保不覆盖用户或其他 agent 的工作。
+```text
+.......................                                                  [100%]
+23 passed in 16.08s
+```
+
+## 4. 变更文件
+
+- `backend/app/domain/game/ai_strategy.py`
+- `backend/tests/test_ai_strategy.py`
+
+## 5. 自查结论
+
+自查项：
+
+1. 变更范围是否受控：是，仅落在任务允许的两个代码文件内。
+2. DouZero 排序是否为主路径：是，`ai_decide_play()` 现在优先读取 `ai_rank_play_candidates(..., limit=1)`。
+3. 旧规则是否只作为异常兜底：是，DouZero 不可用、报错或无候选时才回退 `_rule_decide_play()`。
+4. 是否保留后续任务所需边界：是，本任务只做候选排序，不触碰 app service / WebSocket / 前端。
+5. 是否完成验证：是，新增定点测试与整份 `test_ai_strategy.py` 均通过。
+
+## 6. concerns
+
+1. 当前工作区的 red 与 brief 中“预期 import 缺失”不一致，因为我接手时目标文件已经含有部分 Task 1 改动，但同时带入了编码损坏；我按真实状态修复并保留了任务要求的最终行为。
+2. `git diff --stat` 显示 `ai_strategy.py` 变更量较大，主要原因是修复了同一目标文件中已经存在的损坏内容并将 Task 1 改动重建到健康基线上，不涉及任务外文件。

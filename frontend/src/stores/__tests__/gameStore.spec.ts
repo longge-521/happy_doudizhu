@@ -141,4 +141,18 @@ describe('gameStore room state mapping', () => {
 
     expect(store.settlement).toBeNull()
   })
+
+  it('stores AI hint candidates and auto-play players', () => {
+    const store = useGameStore()
+
+    store.setAiHintCandidates([[0, 1], [2, 3]], 'douzero')
+    expect(store.aiHintCandidates).toEqual([[1, 0], [3, 2]])
+    expect(store.aiHintSource).toBe('douzero')
+
+    store.setAutoPlayPlayer('p1', true)
+    expect(store.autoPlayPlayers).toContain('p1')
+
+    store.setAutoPlayPlayer('p1', false)
+    expect(store.autoPlayPlayers).not.toContain('p1')
+  })
 })

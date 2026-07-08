@@ -86,6 +86,18 @@ type VoiceStateEvent = {
   enabled: boolean
 }
 
+type AiHintsEvent = {
+  event: 'ai_hints'
+  candidates: number[][]
+  source?: string
+}
+
+type AutoPlayChangedEvent = {
+  event: 'auto_play_changed'
+  player: string
+  enabled: boolean
+}
+
 export type GameClientAction =
   | { action: 'join_match'; nickname: string; base_score: number }
   | { action: 'cancel_match' }
@@ -94,6 +106,8 @@ export type GameClientAction =
   | { action: 'skip_call' }
   | { action: 'play_cards'; cards: number[] }
   | { action: 'pass_turn' }
+  | { action: 'get_ai_hints' }
+  | { action: 'set_auto_play'; enabled: boolean }
   | { action: 'chat'; msg_id: number }
   | { action: 'choose_double'; choice: DoublingChoice }
   | { action: 'voice_state'; enabled: boolean }
@@ -129,6 +143,8 @@ type GameServerEvent =
   | (BaseRoomStateEvent<'turn_passed'> & { player: string })
   | GameOverEvent
   | { event: 'chat_msg'; player: string; msg_id: number }
+  | AiHintsEvent
+  | AutoPlayChangedEvent
   | VoiceSignalEvent
   | VoiceStateEvent
   | (RoomStatePayload & { event: 'reconnected' })
@@ -494,6 +510,12 @@ export function useGameWebSocket() {
       }
       case 'chat_msg':
         playQuickChatMessage(data.msg_id, data.player)
+        break
+      case 'ai_hints':
+        gameStore.setAiHintCandidates(data.candidates, data.source || 'douzero')
+        break
+      case 'auto_play_changed':
+        gameStore.setAutoPlayPlayer(data.player, data.enabled)
         break
       case 'voice_signal':
         notifyVoiceSignal({

@@ -5,7 +5,7 @@ import uuid
 import logging
 from typing import Optional, List, Dict
 from app.domain.game.room import GameRoom, Player, GamePhase
-from app.domain.game.ai_strategy import ai_decide_call, ai_decide_play, build_ai_context
+from app.domain.game.ai_strategy import ai_decide_call, ai_decide_play, ai_rank_play_candidates, build_ai_context
 from app.infrastructure.redis_game_repository import RedisGameRepository
 
 logger = logging.getLogger("happy_doudizhu")
@@ -198,6 +198,59 @@ class GameAppService:
         result = room.pass_turn(player_id)
         await self._repo.save_room(room)
         result["room"] = room
+        return result
+
+    async def get_ai_play_hints(self, player_id: str) -> dict:
+        """获取当前玩家的 DouZero 出牌候选提示"""
+        room = await self._get_player_room(player_id)
+        if not room:
+            return {"error": "你不在任何房间中"}
+        if room.phase != GamePhase.PLAYING:
+            return {"error": "当前不在出牌阶段"}
+        if room.current_turn != player_id:
+            return {"error": "当前还没轮到你出牌"}
+
+        hand = room.hands.get(player_id, [])
+        last_cp = room.last_play.card_play
+        must_play = room.last_play.player is None
+        ctx = build_ai_context(room, player_id)
+        candidates = ai_rank_play_candidates(hand, last_cp, must_play, ctx)
+        return {"candidates": candidates, "source": "douzero", "room": room}
+
+    async def set_auto_play(self, player_id: str, enabled: bool) -> dict:
+        """设置真人玩家托管状态"""
+        room = await self._get_player_room(player_id)
+        if not room:
+            return {"error": "你不在任何房间中"}
+        if enabled:
+            room.auto_play_players.add(player_id)
+        else:
+            room.auto_play_players.discard(player_id)
+        await self._repo.save_room(room)
+        return {"room": room, "player": player_id, "enabled": enabled}
+
+    async def handle_auto_play_turn(self, room: GameRoom) -> dict:
+        """处理真人玩家托管出牌回合"""
+        player_id = room.current_turn
+        if room.phase != GamePhase.PLAYING:
+            return {"error": "托管只处理出牌阶段"}
+        if player_id not in room.auto_play_players:
+            return {"error": "当前玩家未开启托管"}
+
+        hand = room.hands.get(player_id, [])
+        last_cp = room.last_play.card_play
+        must_play = room.last_play.player is None
+        ctx = build_ai_context(room, player_id)
+        candidates = ai_rank_play_candidates(hand, last_cp, must_play, ctx, limit=1)
+        cards = candidates[0] if candidates else None
+
+        if cards:
+            result = room.play_cards(player_id, cards)
+        else:
+            result = room.pass_turn(player_id)
+        await self._repo.save_room(room)
+        result["room"] = room
+        result["auto_player"] = player_id
         return result
 
     async def handle_ai_turn(self, room: GameRoom) -> dict:

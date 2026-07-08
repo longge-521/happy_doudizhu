@@ -72,6 +72,7 @@ export interface RoomStatePayload {
   all_played_cards?: number[]
   doubling_choices?: Record<string, DoublingChoice> | null
   show_cards_players?: Record<string, number> | null
+  auto_play_players?: string[]
 }
 
 export const useGameStore = defineStore('game', () => {
@@ -107,6 +108,9 @@ export const useGameStore = defineStore('game', () => {
   const showCardsPlayers = ref<Record<string, number>>({})
   const showCardsAvailableMultiplier = ref<number | null>(null)
   const awaitingLandlordShow = ref(false)
+  const aiHintCandidates = ref<number[][]>([])
+  const aiHintSource = ref('')
+  const autoPlayPlayers = ref<string[]>([])
 
   const isMyTurn = computed(() => {
     const playerStore = usePlayerStore()
@@ -128,6 +132,23 @@ export const useGameStore = defineStore('game', () => {
 
   function selectCards(cardIds: number[]) {
     selectedCards.value = [...cardIds]
+  }
+
+  function setAiHintCandidates(candidates: number[][], source: string) {
+    aiHintCandidates.value = candidates.map((cards) => sortCardIds(cards))
+    aiHintSource.value = source
+  }
+
+  function clearAiHintCandidates() {
+    aiHintCandidates.value = []
+    aiHintSource.value = ''
+  }
+
+  function setAutoPlayPlayer(playerId: string, enabled: boolean) {
+    const next = new Set(autoPlayPlayers.value)
+    if (enabled) next.add(playerId)
+    else next.delete(playerId)
+    autoPlayPlayers.value = [...next]
   }
 
   function updateFromRoomState(state: RoomStatePayload) {
@@ -160,6 +181,7 @@ export const useGameStore = defineStore('game', () => {
     if (state.all_played_cards !== undefined) allPlayedCards.value = state.all_played_cards
     if (state.doubling_choices !== undefined) doublingChoices.value = state.doubling_choices || {}
     if (state.show_cards_players !== undefined) showCardsPlayers.value = state.show_cards_players || {}
+    if (state.auto_play_players !== undefined) autoPlayPlayers.value = state.auto_play_players
   }
 
   function reset() {
@@ -193,6 +215,9 @@ export const useGameStore = defineStore('game', () => {
     showCardsPlayers.value = {}
     showCardsAvailableMultiplier.value = null
     awaitingLandlordShow.value = false
+    aiHintCandidates.value = []
+    aiHintSource.value = ''
+    autoPlayPlayers.value = []
   }
 
   return {
@@ -201,6 +226,8 @@ export const useGameStore = defineStore('game', () => {
     callRound, callScores, firstBidder, landlord, settlement, errorMsg, isMyTurn, playerActions, playerPlayedCards,
     allPlayedCards, baseScore, doublingChoices, showAllHands, showGameOverBanner, showWinnerBanner, gameOverTitle,
     showRedealNotice, activeEffect, showCardsPlayers, showCardsAvailableMultiplier, awaitingLandlordShow,
-    toggleCard, clearSelection, selectCards, updateFromRoomState, reset,
+    aiHintCandidates, aiHintSource, autoPlayPlayers,
+    toggleCard, clearSelection, selectCards, setAiHintCandidates, clearAiHintCandidates, setAutoPlayPlayer,
+    updateFromRoomState, reset,
   }
 })

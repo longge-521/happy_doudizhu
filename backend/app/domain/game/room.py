@@ -63,6 +63,7 @@ class GameRoom:
         self.base_score: int = 10
         self.all_played_cards: List[int] = []
         self.play_history: List[Dict[str, Any]] = []
+        self.auto_play_players: Set[str] = set()
 
         # 叫地主状态
         self._call_index: int = 0       # 当前叫地主的玩家索引
@@ -109,6 +110,7 @@ class GameRoom:
         self.show_cards_players = {}
         self.all_played_cards = []
         self.play_history = []
+        self.auto_play_players = set()
         self._call_index = 0
         self._call_scores = {}
         self._call_round = 1
@@ -494,6 +496,7 @@ class GameRoom:
             "grab_count": self._grab_count,
             "declined_players": list(self._declined_players),
             "show_cards_players": self.show_cards_players,
+            "auto_play_players": list(self.auto_play_players),
         }
 
     @classmethod
@@ -538,6 +541,7 @@ class GameRoom:
         room.base_score = data.get("base_score", 10)
         room.all_played_cards = data.get("all_played_cards", [])
         room.play_history = data.get("play_history", [])
+        room.auto_play_players = set(data.get("auto_play_players", []))
         return room
 
     def get_player_view(self, player_id: str) -> dict:
@@ -582,6 +586,7 @@ class GameRoom:
             "base_score": self.base_score,
             "all_played_cards": self.all_played_cards,
             "show_cards_players": dict(self.show_cards_players),
+            "auto_play_players": list(self.auto_play_players),
         }
         # 地主确定后且非叫地主阶段才公开底牌，否则为 []
         if is_landlord_decided:

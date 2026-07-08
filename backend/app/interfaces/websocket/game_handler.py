@@ -326,6 +326,36 @@ class GameWebSocketHandler:
                     await self._broadcast_room_event(room, event)
                     await self._process_ai_turns(room)
 
+        elif action == "get_ai_hints":
+            result = await self.service.get_ai_play_hints(self.player_id)
+            if result.get("error"):
+                await self._send({"event": "error", "msg": result["error"]})
+            else:
+                await self._send({
+                    "event": "ai_hints",
+                    "candidates": result.get("candidates", []),
+                    "source": result.get("source", "douzero"),
+                })
+
+        elif action == "set_auto_play":
+            enabled = bool(data.get("enabled", False))
+            result = await self.service.set_auto_play(self.player_id, enabled)
+            if result.get("error"):
+                await self._send({"event": "error", "msg": result["error"]})
+            else:
+                room = result.get("room")
+                event = {
+                    "event": "auto_play_changed",
+                    "player": self.player_id,
+                    "enabled": enabled,
+                }
+                if room:
+                    await self._broadcast_room_event(room, event)
+                    if enabled:
+                        asyncio.create_task(self._process_ai_turns(room))
+                else:
+                    await self._send(event)
+
         elif action == "chat":
             msg_id = data.get("msg_id", 0)
             room = await self.service._get_player_room(self.player_id)
@@ -518,25 +548,29 @@ class GameWebSocketHandler:
         while room.phase in (GamePhase.CALLING, GamePhase.PLAYING):
             current = room.current_turn
             current_player = next((p for p in room.players if p.id == current), None)
-            if not current_player or not current_player.is_ai:
+            is_auto_player = bool(current_player and current in getattr(room, "auto_play_players", set()))
+            if not current_player or (not current_player.is_ai and not is_auto_player):
                 logger.info(f"游戏WS [room={room.room_id}]: 轮到真人玩家 {current}，跳出 AI 自动处理器")
                 break
             # AI 延迟 1~2 秒模拟思考（或者直接在此睡眠）
             await asyncio.sleep(0.5)
-            logger.info(f"游戏WS [room={room.room_id}]: 触发 AI 玩家 {current} 在阶段 {room.phase.value} 做自动决策...")
+            logger.info(f"游戏WS [room={room.room_id}]: 触发自动玩家 {current} 在阶段 {room.phase.value} 做自动决策...")
             try:
-                result = await self.service.handle_ai_turn(room)
+                if current_player.is_ai:
+                    result = await self.service.handle_ai_turn(room)
+                else:
+                    result = await self.service.handle_auto_play_turn(room)
             except Exception as e:
                 import traceback
-                logger.error(f"游戏WS: 自动处理 AI 回合异常 [room_id={room.room_id}, player={current}]: {e}\n{traceback.format_exc()}")
+                logger.error(f"游戏WS: 自动处理回合异常 [room_id={room.room_id}, player={current}]: {e}\n{traceback.format_exc()}")
                 break
             if result.get("error"):
                 logger.error(f"游戏WS: 自动处理 AI 回合发生错误 [room_id={room.room_id}, player={current}]: {result['error']}")
                 break
             room = result.get("room", room)
             # 广播 AI 的操作
-            ai_id = result.get("ai_player")
-            logger.info(f"游戏WS [room={room.room_id}]: AI 玩家 {ai_id} 回合决策返回: {result.keys()}")
+            ai_id = result.get("ai_player") or result.get("auto_player")
+            logger.info(f"游戏WS [room={room.room_id}]: 自动玩家 {ai_id} 回合决策返回: {result.keys()}")
             if room.phase == GamePhase.SETTLING or result.get("game_over"):
                 event = {
                     "event": "game_over",
