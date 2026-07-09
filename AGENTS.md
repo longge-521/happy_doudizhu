@@ -25,6 +25,8 @@
 - 每次任务完成后，如果发现对后续开发有复用价值的新规则，应先在最终回复中以“建议沉淀规则”列出原因和拟写文本；只有用户明确确认后，才写入 `AGENTS.md` 或其他 Markdown 文档。
 - `AGENTS.md` 只记录长期稳定、跨任务适用、会影响正确性或协作方式的规则；临时经验、单次排查记录、过长流程不要写入，避免规则膨胀。
 - **规避 AsyncMock 防御性校验拦截**：在编写 RabbitMQ、Redis 等网络适配器的单元测试时，如果被测方法包含类似于 `if not self.channel or self.channel.is_closed:` 的防御性连接校验，Mock 该属性（如 `bus.channel = AsyncMock()`）后，必须显式为其指定布尔状态（如 `bus.channel.is_closed = False`）。否则 AsyncMock 会默认将其当作一个新的 Mock 对象，在 Python 的 `if` 条件评估中被强行拦截为 `True`，从而抛出虚假的 `ConnectionError`。
+- **Windows 开发环境多进程文件锁规避**：在设计多进程并发写入的日志滚动组件（如 `RotatingFileHandler`）时，由于 Windows 下强制文件锁的限制，日志切分重命名会因句柄占用抛出 `PermissionError: [WinError 32]`。开发时应当检测 `os.name == 'nt'`，并在 Windows 环境下自动降级使用常规的 `logging.FileHandler`（仅限本地开发测试阶段），避免切分冲突以保证优秀的本地调试体验。
+- **Redis 临时状态 TTL 最终一致性防御**：所有分布式临时缓存状态（如对局房间快照、Outbox 信箱、去重命令集合等），除了对局正常解散时的物理删除，必须在 Redis 写入（如 Lua 脚本）时附加合理的过期时间（TTL，通常与对局最大存活期一致，如 2 小时）。这能保障在删除动作网络抖动失败、或进程突发宕机时，数据仍能最终超时销毁，从物理上杜绝僵尸数据堆积造成的 Redis 内存泄露。
 
 ---
 
