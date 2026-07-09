@@ -17,6 +17,7 @@ class MemoryMessageBus(IGameMessageBus):
     """单机内存版消息总线实现。"""
     def __init__(self):
         self._subscribers: Dict[int, List[Callable[[GameCommandSchema], Awaitable[None]]]] = {}
+        self._settlement_subscribers: List[Callable[[str, dict], Awaitable[None]]] = []
 
     async def publish_command(self, shard_id: int, command: GameCommandSchema) -> None:
         callbacks = self._subscribers.get(shard_id, [])
@@ -38,11 +39,21 @@ class MemoryMessageBus(IGameMessageBus):
 
     async def publish_event(self, instance_id: str, event: GameEventSchema) -> None:
         # 在单机模式下，直接调用本地 WebSocket 连接管理器进行推送
-        # 本实现只打印 debug 日志。真实的 websocket 推送依然由原 websocket 连接负责。
+        # 本实现只打印 debug 日志。真实的 websocket 推送依然由原 websocket连接负责。
         logger.debug(
             f"[MemoryMessageBus] Publish event {event.event} "
             f"to instance {instance_id} for player {event.target_player_id}"
         )
+
+    async def publish_settlement_task(self, room_id: str, result_payload: dict) -> None:
+        for cb in self._settlement_subscribers:
+            asyncio.create_task(cb(room_id, result_payload))
+
+    async def subscribe_settlement_tasks(
+        self,
+        callback: Callable[[str, dict], Awaitable[None]]
+    ) -> None:
+        self._settlement_subscribers.append(callback)
 
 class MemoryPresenceService(IPresenceService):
     """单机内存版 Presence 在线及代次管理实现。"""

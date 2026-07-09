@@ -101,6 +101,60 @@ class GameAppService:
         room = GameRoom.create(room_id, players, base_score=base_score)
         room.deal()
 
+        # 在分布式模式下，保存房间前封装 match_success 和 game_start 广播至 outbox
+        from app.infrastructure.config import settings
+        if settings.DISTRIBUTED_MODE:
+            from app.infrastructure.game.context import current_outbox_events
+            from app.application.game.schemas import GameEventSchema
+            import time
+            import uuid as uuid_pkg
+            
+            event_payloads = [
+                {
+                    "event": "match_success",
+                    "room_id": room_id,
+                    "players": [{"id": p.id, "nickname": p.nickname, "is_ai": p.is_ai} for p in room.players],
+                },
+                {
+                    "event": "game_start",
+                    "current_turn": room.current_turn,
+                }
+            ]
+            events = []
+            presence_service = getattr(self._repo, "_presence", None)
+            for player in room.players:
+                if player.is_ai:
+                    continue
+                presence = await presence_service.get_presence(player.id) if presence_service else None
+                epoch = 0
+                if isinstance(presence, dict):
+                    raw_epoch = presence.get("connection_epoch", 0)
+                    if isinstance(raw_epoch, (int, float)):
+                        epoch = int(raw_epoch)
+                    elif isinstance(raw_epoch, str) and raw_epoch.isdigit():
+                        epoch = int(raw_epoch)
+                room_view = room.get_player_view(player.id)
+                for payload in event_payloads:
+                    message = {**payload, "room_state": room_view}
+                    if payload["event"] == "game_start":
+                        message["hand"] = room_view["hand"]
+                        message["players"] = room_view["players"]
+                    
+                    events.append(
+                        GameEventSchema(
+                            event_id=f"evt-{uuid_pkg.uuid4().hex}",
+                            event=payload["event"],
+                            room_id=room.room_id,
+                            room_version=1,
+                            target_player_id=player.id,
+                            target_connection_epoch=epoch,
+                            payload=message,
+                            created_at=time.time(),
+                            trace_id=f"start-trace-{room.room_id}",
+                        )
+                    )
+            current_outbox_events.set(events)
+
         # 保存到 Redis
         await self._repo.save_room(room)
         for pid in player_ids:

@@ -208,7 +208,8 @@ async def game_websocket_endpoint(
         player_id, 
         manager, 
         game_service, 
-        connection_epoch=new_epoch
+        connection_epoch=new_epoch,
+        scheduler_service=getattr(websocket.app.state, "scheduler_service", None)
     )
     presence_heartbeat_task = asyncio.create_task(
         _presence_heartbeat(

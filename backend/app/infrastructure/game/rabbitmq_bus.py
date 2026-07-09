@@ -17,7 +17,9 @@ class RabbitMQMessageBus(IGameMessageBus):
         self.channel: Optional[aio_pika.RobustChannel] = None
         self.event_exchange_name = "ddz.game.events"
         self.command_exchange_name = "ddz.game.commands"
+        self.settlement_exchange_name = "ddz.game.settlement"
         self._shard_consumers = {}
+        self._settlement_consumer_task = None
 
     async def connect(self) -> None:
         """建立 RabbitMQ 异步长连接与 Channel"""
@@ -40,6 +42,11 @@ class RabbitMQMessageBus(IGameMessageBus):
         await self.channel.declare_exchange(
             self.command_exchange_name, 
             aio_pika.ExchangeType.DIRECT, 
+            durable=True
+        )
+        await self.channel.declare_exchange(
+            self.settlement_exchange_name,
+            aio_pika.ExchangeType.DIRECT,
             durable=True
         )
         logger.info("[RabbitMQMessageBus] Connected successfully and exchanges declared.")
@@ -125,3 +132,51 @@ class RabbitMQMessageBus(IGameMessageBus):
         routing_key = f"instance.{instance_id}"
         await exchange.publish(message, routing_key=routing_key)
         logger.debug(f"[RabbitMQMessageBus] Event published to {routing_key}: {body}")
+
+    async def publish_settlement_task(self, room_id: str, result_payload: dict) -> None:
+        if not self.channel or self.channel.is_closed:
+            raise ConnectionError("RabbitMQMessageBus is not connected")
+        
+        payload_data = {
+            "room_id": room_id,
+            "payload": result_payload
+        }
+        body = json.dumps(payload_data)
+        message = aio_pika.Message(
+            body=body.encode("utf-8"),
+            delivery_mode=aio_pika.DeliveryMode.PERSISTENT
+        )
+        exchange = await self.channel.get_exchange(self.settlement_exchange_name)
+        await exchange.publish(message, routing_key="settle")
+        logger.info(f"[RabbitMQMessageBus] Published settlement task for room {room_id}")
+
+    async def subscribe_settlement_tasks(
+        self,
+        callback: Callable[[str, dict], Awaitable[None]]
+    ) -> None:
+        if not self.channel or self.channel.is_closed:
+            raise ConnectionError("RabbitMQMessageBus is not connected")
+            
+        queue_name = "ddz.game.settlement"
+        queue = await self.channel.declare_queue(
+            queue_name, 
+            durable=True
+        )
+        exchange = await self.channel.get_exchange(self.settlement_exchange_name)
+        await queue.bind(exchange, routing_key="settle")
+        
+        async def _settlement_consume_loop():
+            async with queue.iterator() as queue_iter:
+                async for message in queue_iter:
+                    async with message.process():
+                        try:
+                            data_str = message.body.decode("utf-8")
+                            data = json.loads(data_str)
+                            room_id = data.get("room_id")
+                            payload = data.get("payload", {})
+                            await callback(room_id, payload)
+                        except Exception as e:
+                            logger.error(f"[SettlementConsumer] Error processing settlement: {e}")
+
+        self._settlement_consumer_task = asyncio.create_task(_settlement_consume_loop())
+        logger.info("[RabbitMQMessageBus] Subscribed to settlement queue")

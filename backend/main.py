@@ -77,6 +77,11 @@ app.include_router(audit_log_router)
 app.include_router(game_ws_router)
 app.include_router(game_api_router)
 
+# 挂载前端打包 dist 资源（如果存在），提供开箱即用的静态托管，支持多实例跨网关直接访问
+frontend_dist_dir = os.path.join(os.path.dirname(BASE_DIR), "frontend", "dist")
+if os.path.exists(frontend_dist_dir):
+    app.mount("/", StaticFiles(directory=frontend_dist_dir, html=True), name="frontend")
+
 
 async def on_mq_message_received(app_instance: FastAPI, data: dict):
     """当监听到 RabbitMQ 消息时的业务处理逻辑（推送给在线的客户端）"""
@@ -625,6 +630,7 @@ async def dispatch_game_command(app_instance: FastAPI, command):
         current_outbox_events.set(events)
         await repo.save_room(room)
         if result.get("game_over"):
+            bus = getattr(app_instance.state, "game_message_bus", None)
             settlement_service = getattr(
                 app_instance.state,
                 "game_settlement_service",
@@ -632,20 +638,39 @@ async def dispatch_game_command(app_instance: FastAPI, command):
             )
             if settlement_service is None:
                 from app.application.game.settlement_service import GameSettlementService
-
                 settlement_service = GameSettlementService()
-            try:
-                await asyncio.to_thread(settlement_service.settle, room, result)
-            except Exception:
-                logger.exception(
-                    "[dispatch_game_command] Settlement failed; keep room for recovery: %s",
+                
+            if bus:
+                try:
+                    await bus.publish_settlement_task(room.room_id, result)
+                    logger.info(f"[dispatch_game_command] Successfully published settlement task for room {room.room_id}")
+                except Exception as mq_err:
+                    logger.error(f"[dispatch_game_command] MQ publish failed, falling back to sync settlement: {mq_err}")
+                    try:
+                        await asyncio.to_thread(settlement_service.settle, room, result)
+                    except Exception:
+                        logger.exception(
+                            "[dispatch_game_command] Fallback settlement failed; keep room for recovery: %s",
+                            room.room_id,
+                        )
+                        return
+                    await game_service.cleanup_room(
+                        room.room_id,
+                        [player.id for player in room.players],
+                    )
+            else:
+                try:
+                    await asyncio.to_thread(settlement_service.settle, room, result)
+                except Exception:
+                    logger.exception(
+                        "[dispatch_game_command] Sync settlement failed; keep room for recovery: %s",
+                        room.room_id,
+                    )
+                    return
+                await game_service.cleanup_room(
                     room.room_id,
+                    [player.id for player in room.players],
                 )
-                return
-            await game_service.cleanup_room(
-                room.room_id,
-                [player.id for player in room.players],
-            )
             return
         await _schedule_distributed_follow_up(repo, room)
     except Exception as exc:
@@ -813,6 +838,16 @@ async def scheduler_poller(app_instance: FastAPI):
                         
                         task = ScheduledTaskSchema.model_validate_json(raw)
                         
+                        if task.task_type == "match_ai":
+                            pid = task.payload.get("player_id")
+                            nickname = task.payload.get("nickname")
+                            base_score = int(task.payload.get("base_score", 10))
+                            logger.info(f"[SchedulerPoller] Executing delayed match_ai for player {pid}")
+                            game_service = getattr(app_instance.state, "game_service", None)
+                            if game_service:
+                                await game_service.match_ai_for_player(pid, nickname, base_score)
+                            continue
+
                         command = _scheduled_task_to_command(task)
                         
                         shard_id = binascii.crc32(task.room_id.encode('utf-8')) % 16
@@ -924,6 +959,38 @@ async def lifespan(app_instance: FastAPI):
     app_instance.state.game_service = game_service
     app_instance.state.game_settlement_service = game_settlement_service
     app_instance.state.scheduler_service = scheduler_service
+
+    # 3. 订阅结算服务 (Settlement Worker)
+    async def settlement_task_callback(room_id: str, payload: dict):
+        try:
+            from app.application.game.settlement_service import GameSettlementService
+            logger.info(f"[SettlementWorker] Consumed settlement task for room {room_id}")
+            
+            repo = app_instance.state.game_service._repo
+            room = await repo.get_room(room_id)
+            if not room:
+                logger.warning(f"[SettlementWorker] Room {room_id} snapshot not found in Redis, checking idempotent DB state...")
+                from app.infrastructure.database.game_repository import SQLGameRepository
+                from app.infrastructure.database.session import transactional_session
+                with transactional_session() as db:
+                    sql_repo = SQLGameRepository(db)
+                    settlement = sql_repo.get_settlement_for_update(room_id)
+                    if settlement and settlement.status == "completed":
+                        logger.info(f"[SettlementWorker] Room {room_id} already successfully settled in DB. Idempotent success.")
+                        return
+                    else:
+                        raise RuntimeError(f"Room {room_id} snapshot missing from Redis and not marked completed in DB.")
+
+            settlement_service = getattr(app_instance.state, "game_settlement_service", None) or GameSettlementService()
+            await asyncio.to_thread(settlement_service.settle, room, payload)
+            
+            await app_instance.state.game_service.cleanup_room(room_id, [player.id for player in room.players])
+            logger.info(f"[SettlementWorker] Successfully completed settlement and cleanup for room {room_id}")
+        except Exception as e:
+            logger.exception(f"[SettlementWorker] Error during settlement processing for room {room_id}: {e}")
+            raise e
+
+    await bus.subscribe_settlement_tasks(settlement_task_callback)
 
     # 启动时清理超时的孤儿临时上传目录
     upload_service.cleanup_stale_uploads(timeout_hours=2.0)

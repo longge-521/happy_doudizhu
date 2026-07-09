@@ -37,6 +37,7 @@ class GameWebSocketHandler:
         game_service: "GameAppService",
         settlement_service=None,
         connection_epoch: int = 0,
+        scheduler_service=None,
     ):
         from app.application.game.settlement_service import GameSettlementService
 
@@ -46,6 +47,7 @@ class GameWebSocketHandler:
         self.service = game_service
         self.settlement_service = settlement_service or GameSettlementService()
         self.connection_epoch = connection_epoch
+        self.scheduler_service = scheduler_service
 
     @staticmethod
     def _build_settlement_event(room) -> dict:
@@ -938,10 +940,30 @@ class GameWebSocketHandler:
 
     async def _handle_delayed_ai_match(self, player_id: str, nickname: str, base_score: int):
         """延迟 3 秒尝试匹配机器人"""
-        await asyncio.sleep(3)
-        result = await self.service.match_ai_for_player(player_id, nickname, base_score=base_score)
-        if result and result.get("status") == "room_created":
-            await self._on_room_created(result)
+        from app.infrastructure.config import settings
+        if settings.DISTRIBUTED_MODE and self.scheduler_service:
+            from app.application.game.schemas import ScheduledTaskSchema
+            import time
+            task = ScheduledTaskSchema(
+                task_id=f"ai-match-{player_id}",
+                due_at=time.time() + 3.0,
+                room_id=f"match-{player_id}",
+                task_type="match_ai",
+                expected_room_version=0,
+                created_at=time.time(),
+                payload={
+                    "player_id": player_id,
+                    "nickname": nickname,
+                    "base_score": base_score
+                }
+            )
+            await self.scheduler_service.schedule_task(task)
+            logger.info(f"[GameWebSocketHandler] Scheduled durable match_ai task for player {player_id}")
+        else:
+            await asyncio.sleep(3)
+            result = await self.service.match_ai_for_player(player_id, nickname, base_score=base_score)
+            if result and result.get("status") == "room_created":
+                await self._on_room_created(result)
 
     def _double_choice_label(self, choice: str) -> str:
         return {
