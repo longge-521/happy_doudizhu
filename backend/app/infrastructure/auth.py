@@ -173,7 +173,7 @@ def verify_ws_token(query_params) -> bool:
     if not api_token and not _is_production_env():
         return True
     if not api_token:
-        if "auth_token" in query_params:
+        if "auth_token" in query_params or "ticket" in query_params:
             return True
         logger.warning("Rejected WebSocket access because API_TOKEN is missing in production.")
         return False

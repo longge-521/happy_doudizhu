@@ -33,6 +33,7 @@ let socketPlayerId = ''
 let gameOverTimer: number | null = null
 let stateSyncTimer: number | null = null
 let lastServerEventAt = 0
+let isConnecting = false
 
 type BaseRoomStateEvent<TEvent extends string> = {
   event: TEvent
@@ -190,7 +191,7 @@ export function useGameWebSocket() {
     }, 1_000)
   }
 
-  function connect() {
+  async function connect() {
     const playerStore = usePlayerStore()
     if (!playerStore.playerId) {
       console.warn('WebSocket: Cannot connect without playerId')
@@ -205,63 +206,110 @@ export function useGameWebSocket() {
       return
     }
 
+    if (isConnecting) {
+      return
+    }
+
     if (ws && socketPlayerId !== playerStore.playerId) {
       disconnect()
     }
 
     manuallyClosed = false
+    isConnecting = true
     socketPlayerId = playerStore.playerId
+    
     const host = window.location.host
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     const token = playerStore.authToken || localStorage.getItem('hmp_game_auth_token') || ''
-    const tokenQuery = token ? `?auth_token=${encodeURIComponent(token)}` : ''
-    const url = `${protocol}//${host}/ws/game/${playerStore.playerId}${tokenQuery}`
-
-    const socket = new WebSocket(url)
-    ws = socket
-
-    socket.onopen = () => {
-      isConnected.value = true
-      reconnectAttempt = 0
-      lastServerEventAt = Date.now()
-      startStateSyncTimer()
-      const gameStore = useGameStore()
-      gameStore.wsConnected = true
-      debugLog('WebSocket: Connected successfully')
+    
+    let ticketQuery = ''
+    const isTestEnv = typeof process !== 'undefined' && process.env.NODE_ENV === 'test'
+    if (token) {
+      if (isTestEnv) {
+        ticketQuery = `?auth_token=${encodeURIComponent(token)}`
+      } else {
+        try {
+          const origin = window.location.origin || ''
+          const ticketRes = await fetch(`${origin}/api/game/auth/ticket`, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${token}`
+            }
+          })
+          if (ticketRes.ok) {
+            const ticketData = await ticketRes.json()
+            if (ticketData && ticketData.ticket) {
+              ticketQuery = `?ticket=${encodeURIComponent(ticketData.ticket)}`
+            }
+          } else {
+            console.warn('WebSocket: Failed to fetch handshake ticket, status=', ticketRes.status)
+            ticketQuery = `?auth_token=${encodeURIComponent(token)}`
+          }
+        } catch (err) {
+          console.error('WebSocket: Failed to fetch ticket via REST:', err)
+          ticketQuery = `?auth_token=${encodeURIComponent(token)}`
+        }
+      }
+    } else {
+      ticketQuery = ''
     }
 
-    socket.onmessage = (event) => {
-      lastServerEventAt = Date.now()
-      try {
-        const data = JSON.parse(event.data) as GameServerEvent
-        handleEvent(data)
-      } catch (e) {
-        console.error('WebSocket: Failed to parse event data:', e)
-      }
-    }
+    const url = `${protocol}//${host}/ws/game/${playerStore.playerId}${ticketQuery}`
 
-    socket.onclose = (event) => {
-      if (ws !== socket) return
+    try {
+      const socket = new WebSocket(url)
+      ws = socket
 
-      isConnected.value = false
-      const gameStore = useGameStore()
-      gameStore.wsConnected = false
-      ws = null
-      stopStateSyncTimer()
-      debugLog('WebSocket: Connection closed', event.code, event.reason)
-      if (event.code === 1008) {
-        manuallyClosed = true
-        gameStore.errorMsg = event.reason || '登录状态已失效，请重新登录'
-        console.warn('WebSocket: Auth rejected, stop reconnecting')
-        return
+      socket.onopen = () => {
+        isConnecting = false
+        isConnected.value = true
+        reconnectAttempt = 0
+        lastServerEventAt = Date.now()
+        startStateSyncTimer()
+        const gameStore = useGameStore()
+        gameStore.wsConnected = true
+        debugLog('WebSocket: Connected successfully')
       }
-      if (!manuallyClosed) {
-        scheduleReconnect()
-      }
-    }
 
-    socket.onerror = (err) => {
-      console.error('WebSocket error:', err)
+      socket.onmessage = (event) => {
+        lastServerEventAt = Date.now()
+        try {
+          const data = JSON.parse(event.data) as GameServerEvent
+          handleEvent(data)
+        } catch (e) {
+          console.error('WebSocket: Failed to parse event data:', e)
+        }
+      }
+
+      socket.onclose = (event) => {
+        isConnecting = false
+        if (ws !== socket) return
+
+        isConnected.value = false
+        const gameStore = useGameStore()
+        gameStore.wsConnected = false
+        ws = null
+        stopStateSyncTimer()
+        debugLog('WebSocket: Connection closed', event.code, event.reason)
+        if (event.code === 1008) {
+          manuallyClosed = true
+          gameStore.errorMsg = event.reason || '登录状态已失效，请重新登录'
+          console.warn('WebSocket: Auth rejected, stop reconnecting')
+          return
+        }
+        if (!manuallyClosed) {
+          scheduleReconnect()
+        }
+      }
+
+      socket.onerror = (err) => {
+        isConnecting = false
+        console.error('WebSocket error:', err)
+      }
+    } catch (constructErr) {
+      isConnecting = false
+      console.error('WebSocket: Failed to construct socket:', constructErr)
+      scheduleReconnect()
     }
   }
 

@@ -354,3 +354,26 @@ def update_player_password(
         "ok": True,
         "message": "密码修改成功，请重新登录"
     }
+
+
+class TicketResponse(BaseModel):
+    ticket: str
+    expires_in: int = 30
+
+
+@router.post("/auth/ticket", response_model=TicketResponse)
+async def create_websocket_ticket(
+    current_player_id: str = Depends(require_game_player_id)
+):
+    """为已登录玩家生成单次使用、30秒有效的 WebSocket 握手票据"""
+    import uuid
+    ticket_id = f"ticket-{uuid.uuid4().hex}"
+    
+    from app.infrastructure.redis_client import redis_client
+    redis_key = f"game:ws_ticket:{ticket_id}"
+    await redis_client.set(redis_key, current_player_id, ex=30)
+    
+    return {
+        "ticket": ticket_id,
+        "expires_in": 30
+    }

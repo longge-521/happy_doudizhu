@@ -92,35 +92,71 @@ async def game_websocket_endpoint(
     manager: GameWSConnectionManager = Depends(get_game_ws_manager),
     game_service = Depends(get_game_service),
 ):
-    # Token 校验
+    # Token 与 Ticket 校验
+    from app.infrastructure.config import settings
     from app.infrastructure.auth import verify_game_auth_token, verify_ws_token
     if not verify_ws_token(websocket.query_params):
         logger.warning("游戏WS拒绝连接: 通用 API token 无效, player_id=%s", player_id)
         await websocket.accept()
         await websocket.close(code=1008, reason="Unauthorized")
         return
-    game_auth_token = websocket.query_params.get("auth_token")
-    if not game_auth_token:
-        logger.warning("游戏WS拒绝连接: 缺少游戏 auth_token, player_id=%s", player_id)
-        await websocket.accept()
-        await websocket.close(code=1008, reason="Unauthorized")
-        return
-    try:
-        token_player_id = verify_game_auth_token(game_auth_token)
-    except Exception:
-        logger.warning("游戏WS拒绝连接: 游戏 auth_token 无效或已过期, player_id=%s", player_id)
-        await websocket.accept()
-        await websocket.close(code=1008, reason="Unauthorized")
-        return
-    if token_player_id != player_id:
-        logger.warning(
-            "游戏WS拒绝连接: token 玩家不匹配, path_player_id=%s, token_player_id=%s",
-            player_id,
-            token_player_id,
-        )
-        await websocket.accept()
-        await websocket.close(code=1008, reason="Forbidden")
-        return
+
+    ticket_id = websocket.query_params.get("ticket")
+    if ticket_id:
+        # 使用一次性票据验证
+        from app.infrastructure.redis_client import redis_client
+        redis_key = f"game:ws_ticket:{ticket_id}"
+        ticket_player_id = await redis_client.get(redis_key)
+        if ticket_player_id and isinstance(ticket_player_id, bytes):
+            ticket_player_id = ticket_player_id.decode("utf-8")
+            
+        if not ticket_player_id:
+            logger.warning("游戏WS拒绝连接: 票据不存在或已过期, player_id=%s, ticket=%s", player_id, ticket_id)
+            await websocket.accept()
+            await websocket.close(code=1008, reason="Unauthorized")
+            return
+            
+        if ticket_player_id != player_id:
+            logger.warning("游戏WS拒绝连接: 票据绑定的玩家 ID %s 不匹配路径 %s", ticket_player_id, player_id)
+            await websocket.accept()
+            await websocket.close(code=1008, reason="Forbidden")
+            return
+            
+        # 一次性消费：立刻物理删除票据，防范重放建立连接
+        await redis_client.delete(redis_key)
+        logger.info("游戏WS: 玩家 '%s' 通过一次性票据验证成功建立连接", player_id)
+    else:
+        # 未携带 ticket 票据
+        # 仅在生产环境下的分布式模式中，强制拦截并要求提供单次消费票据 ticket，消除长期凭证暴露隐患
+        if settings.DISTRIBUTED_MODE and settings.is_production:
+            logger.warning("游戏WS拒绝连接: 分布式生产环境下强制要求提供一次性票据 ticket, player_id=%s", player_id)
+            await websocket.accept()
+            await websocket.close(code=1008, reason="Unauthorized")
+            return
+            
+        # 非生产环境或单机模式下退避到原有长期令牌 auth_token 验证，保持老旧单机单元测试及开发调试兼容
+        game_auth_token = websocket.query_params.get("auth_token")
+        if not game_auth_token:
+            logger.warning("游戏WS拒绝连接: 缺少游戏 auth_token, player_id=%s", player_id)
+            await websocket.accept()
+            await websocket.close(code=1008, reason="Unauthorized")
+            return
+        try:
+            token_player_id = verify_game_auth_token(game_auth_token)
+        except Exception:
+            logger.warning("游戏WS拒绝连接: 游戏 auth_token 无效或已过期, player_id=%s", player_id)
+            await websocket.accept()
+            await websocket.close(code=1008, reason="Unauthorized")
+            return
+        if token_player_id != player_id:
+            logger.warning(
+                "游戏WS拒绝连接: token 玩家不匹配, path_player_id=%s, token_player_id=%s",
+                player_id,
+                token_player_id,
+            )
+            await websocket.accept()
+            await websocket.close(code=1008, reason="Forbidden")
+            return
 
     # 3. 在线 Presence 管理与重复登录 kick
     from app.infrastructure.config import settings
