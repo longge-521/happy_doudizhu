@@ -44,6 +44,9 @@ if (isMockMode) {
   playerStore.beans = 9999999
   playerStore.rankTitle = '至尊斗皇III'
 
+  const mockPlayMode = new URLSearchParams(window.location.search).get('play_mode') || 'no_shuffle'
+  gameStore.playMode = mockPlayMode as 'classic' | 'no_shuffle'
+
   gameStore.roomId = 'mock_room_888'
   gameStore.gamePhase = 'PLAYING'
   gameStore.baseScore = 300
@@ -57,7 +60,12 @@ if (isMockMode) {
     { id: 'ai_left', nickname: '发牌大户 (AI)', isAi: true, isOnline: true, remaining: 17, isLandlord: false, isSelf: false },
     { id: 'ai_right', nickname: '明牌炸弹 (AI)', isAi: true, isOnline: true, remaining: 17, isLandlord: false, isSelf: false }
   ]
-  gameStore.myHand = [53, 52, 50, 49, 48, 46, 45, 44, 42, 41, 40, 38, 37, 36, 34, 33, 32, 30, 29, 28]
+  if (gameStore.playMode === 'no_shuffle') {
+    // 不洗牌模式下，发牌 Mock 优先分段并保留炸弹：大王, 小王, 四个2, 四个A, 四个K, 四个Q
+    gameStore.myHand = [53, 52, 51, 50, 49, 48, 47, 46, 45, 44, 43, 42, 41, 40, 39, 38, 37, 36, 35, 34]
+  } else {
+    gameStore.myHand = [53, 52, 50, 49, 48, 46, 45, 44, 42, 41, 40, 38, 37, 36, 34, 33, 32, 30, 29, 28]
+  }
   gameStore.lastPlay = {
     player: 'ai_right',
     cards: [1],
@@ -575,11 +583,11 @@ watch(
 </script>
 
 <template>
-  <div class="game-table room-modern-layout">
+  <div class="game-table room-modern-layout" :class="{ 'no-shuffle-room': gameStore.playMode === 'no_shuffle' }">
     <!-- 濠㈠爢鍛杺闁绘顫夐弲銉ッ归鑲╂勾 -->
-    <div class="poker-effects-layer" :class="{ 'shake-screen': gameStore.activeEffect === 'bomb' }">
-      <!-- 闁绘劗顭堥懘濠囨嚄娴犲娅ゆ繛?-->
-      <div v-if="gameStore.activeEffect === 'bomb'" class="effect-bomb-shockwave">
+    <div class="poker-effects-layer" :class="{ 'shake-screen': gameStore.activeEffect === 'bomb', 'fire-shaking': gameStore.activeEffect === 'bomb' && gameStore.playMode === 'no_shuffle' }">
+      <!-- 炸弹冲击波 -->
+      <div v-if="gameStore.activeEffect === 'bomb'" class="effect-bomb-shockwave" :class="{ 'fire-shockwave': gameStore.playMode === 'no_shuffle' }">
         <div class="shockwave-ring"></div>
         <div class="shockwave-ring delay"></div>
       </div>
@@ -620,6 +628,7 @@ watch(
         <div class="score-status-pill">
           <span class="base-score-badge">底分: <strong>{{ gameStore.baseScore }}</strong></span>
           <span class="multiplier-badge font-glow">倍数: <strong>{{ gameStore.multiplier }}倍</strong></span>
+          <span v-if="gameStore.playMode === 'no_shuffle'" class="no-shuffle-tag-neon">不洗牌场</span>
         </div>
         
         <!-- 闁瑰灚顭囬鎼佸箰婢舵劖灏?-->
@@ -667,7 +676,16 @@ watch(
     <!-- 婵炴惌鍣ｅú澶愭嚄鐏炵偓鐝疞OGO -->
     <div class="brand-logo-watermark">
       <div class="watermark-main">欢乐斗地主</div>
-      <div class="watermark-sub">经典新手场 底分{{ gameStore.baseScore }}</div>
+      <div class="watermark-sub">
+        <span v-if="gameStore.playMode === 'no_shuffle'">不洗牌新手场</span>
+        <span v-else>经典新手场</span>
+        底分{{ gameStore.baseScore }}
+      </div>
+    </div>
+
+    <!-- 不洗牌模式中央 3D 浮雕印章 -->
+    <div class="no-shuffle-stamp" v-if="gameStore.playMode === 'no_shuffle'">
+      <span>不洗牌模式</span>
     </div>
 
     <!-- 婵℃鐭傚鐗堢▔椤撶偑浜烽柛鎴ｆ婢ф繃绋夋惔鈥承楀ù锝嗙矊閻秶绮堥崫鍕殬 -->
@@ -2203,4 +2221,80 @@ watch(
 .inline-clock {
   margin: 0 auto;
 }
+/* 不洗牌专属主题背景 */
+.game-table.room-modern-layout.no-shuffle-room {
+  background: linear-gradient(135deg, #1d0909 0%, #3a1616 50%, #4e1919 100%) !important;
+}
+
+/* 中央 3D 浮雕印章 */
+.no-shuffle-stamp {
+  position: absolute;
+  top: 52%;
+  left: 50%;
+  transform: translate(-50%, -50%) rotate(-12deg);
+  border: 4px double rgba(212, 175, 55, 0.45);
+  border-radius: 12px;
+  padding: 8px 24px;
+  font-family: "Microsoft YaHei", sans-serif;
+  font-size: 2.2rem;
+  font-weight: 900;
+  color: rgba(212, 175, 55, 0.55);
+  text-shadow: 1px 1px 0px rgba(0, 0, 0, 0.6), 
+               -1px -1px 0px rgba(255, 255, 255, 0.1),
+               0 0 12px rgba(212, 175, 55, 0.2);
+  letter-spacing: 4px;
+  user-select: none;
+  pointer-events: none;
+  z-index: 1;
+  box-shadow: inset 0 0 8px rgba(212, 175, 55, 0.2), 0 4px 15px rgba(0, 0, 0, 0.5);
+  background: radial-gradient(circle, rgba(78, 25, 25, 0.3) 0%, rgba(29, 9, 9, 0.3) 100%);
+}
+
+.no-shuffle-stamp span {
+  display: block;
+}
+
+/* 顶栏红色霓虹呼吸标签 */
+.no-shuffle-tag-neon {
+  margin-left: 10px;
+  background: linear-gradient(135deg, #ff1744 0%, #d50000 100%);
+  color: #ffffff;
+  padding: 2px 10px;
+  border-radius: 8px;
+  font-size: 0.75rem;
+  font-weight: 900;
+  border: 1px solid #ff5252;
+  box-shadow: 0 0 8px rgba(255, 23, 68, 0.6);
+  text-shadow: 0 0 2px rgba(0, 0, 0, 0.5);
+  letter-spacing: 0.5px;
+  animation: neon-breath-red 1.5s infinite alternate;
+}
+
+@keyframes neon-breath-red {
+  0% {
+    box-shadow: 0 0 4px rgba(255, 23, 68, 0.4);
+    border-color: rgba(255, 82, 82, 0.6);
+  }
+  100% {
+    box-shadow: 0 0 12px rgba(255, 23, 68, 0.9), 0 0 20px rgba(255, 23, 68, 0.4);
+    border-color: rgba(255, 82, 82, 1);
+  }
+}
+
+/* 炽热火红炸弹特效 */
+.effect-bomb-shockwave.fire-shockwave .shockwave-ring {
+  border: 8px solid #ff3d00;
+  box-shadow: 0 0 50px #ff3d00, inset 0 0 30px #d50000;
+}
+
+.poker-effects-layer.fire-shaking {
+  background: rgba(213, 0, 0, 0.15) !important;
+  animation: fire-flash 0.5s ease-out;
+}
+
+@keyframes fire-flash {
+  0% { background: rgba(255, 61, 0, 0.4); }
+  100% { background: rgba(213, 0, 0, 0); }
+}
+
 </style>

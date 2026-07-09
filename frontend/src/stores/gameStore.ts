@@ -73,6 +73,7 @@ export interface RoomStatePayload {
   doubling_choices?: Record<string, DoublingChoice> | null
   show_cards_players?: Record<string, number> | null
   auto_play_players?: string[]
+  play_mode?: string
 }
 
 export const useGameStore = defineStore('game', () => {
@@ -111,6 +112,7 @@ export const useGameStore = defineStore('game', () => {
   const aiHintCandidates = ref<number[][]>([])
   const aiHintSource = ref('')
   const autoPlayPlayers = ref<string[]>([])
+  const playMode = ref<'classic' | 'no_shuffle'>('classic')
 
   const isMyTurn = computed(() => {
     const playerStore = usePlayerStore()
@@ -182,6 +184,7 @@ export const useGameStore = defineStore('game', () => {
     if (state.doubling_choices !== undefined) doublingChoices.value = state.doubling_choices || {}
     if (state.show_cards_players !== undefined) showCardsPlayers.value = state.show_cards_players || {}
     if (state.auto_play_players !== undefined) autoPlayPlayers.value = state.auto_play_players
+    if (state.play_mode !== undefined) playMode.value = state.play_mode as 'classic' | 'no_shuffle'
   }
 
   function reset() {
@@ -218,6 +221,7 @@ export const useGameStore = defineStore('game', () => {
     aiHintCandidates.value = []
     aiHintSource.value = ''
     autoPlayPlayers.value = []
+    playMode.value = 'classic'
   }
 
   return {
@@ -226,7 +230,7 @@ export const useGameStore = defineStore('game', () => {
     callRound, callScores, firstBidder, landlord, settlement, errorMsg, isMyTurn, playerActions, playerPlayedCards,
     allPlayedCards, baseScore, doublingChoices, showAllHands, showGameOverBanner, showWinnerBanner, gameOverTitle,
     showRedealNotice, activeEffect, showCardsPlayers, showCardsAvailableMultiplier, awaitingLandlordShow,
-    aiHintCandidates, aiHintSource, autoPlayPlayers,
+    aiHintCandidates, aiHintSource, autoPlayPlayers, playMode,
     toggleCard, clearSelection, selectCards, setAiHintCandidates, clearAiHintCandidates, setAutoPlayPlayer,
     updateFromRoomState, reset,
   }

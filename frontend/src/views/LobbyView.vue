@@ -82,6 +82,7 @@ const TIER_MIN_BEANS: Record<number, number> = {
 const selectedBaseScore = ref(80) // 默认初级场 80 分
 const selectedTier = ref(TIERS[1]!)
 const showReadyPage = ref(false)
+const playMode = ref<'classic' | 'no_shuffle'>('classic')
 
 const RANK_NAMES = [
   "", "包身工", "短工", "长工", "中农", "富农", "掌柜", "商人", "小财主", "大财主",
@@ -382,7 +383,8 @@ watch(() => gameStore.wsConnected, (connected) => {
     sendAction({
       action: 'join_match',
       nickname: playerStore.nickname,
-      base_score: selectedBaseScore.value
+      base_score: selectedBaseScore.value,
+      play_mode: playMode.value
     })
   }
 })
@@ -447,7 +449,8 @@ function handleStartMatch() {
     sendAction({
       action: 'join_match',
       nickname: playerStore.nickname,
-      base_score: selectedBaseScore.value
+      base_score: selectedBaseScore.value,
+      play_mode: playMode.value
     })
   } else {
     connect()
@@ -602,16 +605,27 @@ function handleHotPlayHint() {
 
         <!-- 中部场次卡片区 -->
         <main class="lobby-grid-main">
+          <!-- 玩法切换 Tabs -->
+          <div class="mode-tabs-container">
+            <div class="mode-tabs glass-panel">
+              <button :class="{ active: playMode === 'classic' }" @click="playMode = 'classic'">经典玩法</button>
+              <button :class="{ active: playMode === 'no_shuffle' }" @click="playMode = 'no_shuffle'">不洗牌场</button>
+            </div>
+          </div>
+
           <div class="grid-container">
             <div
               v-for="tier in TIERS"
               :key="tier.id"
               class="tier-card"
-              :class="[tier.colorClass, { selected: selectedBaseScore === tier.baseScore, 'recommend-card': tier.id === 'primary' }]"
+              :class="[tier.colorClass, { selected: selectedBaseScore === tier.baseScore, 'recommend-card': tier.id === 'primary', 'no-shuffle-tier': playMode === 'no_shuffle' }]"
               @click="selectTier(tier)"
             >
               <!-- 推荐角标 -->
               <div class="recommend-badge" v-if="tier.id === 'primary'">推荐</div>
+
+              <!-- 不洗牌模式专属角标 -->
+              <div class="tier-badge" v-if="playMode === 'no_shuffle'">炸弹多</div>
 
               <!-- 选中高亮光环 -->
               <div class="selected-glow" v-if="selectedBaseScore === tier.baseScore"></div>
@@ -1282,7 +1296,7 @@ function handleHotPlayHint() {
       </div>
     </div>
 
-    <div v-if="gameStore.gamePhase === 'MATCHING' || showSuccessState" class="matching-overlay">
+    <div v-if="gameStore.gamePhase === 'MATCHING' || showSuccessState" class="matching-overlay" :class="{ 'no-shuffle-matching': playMode === 'no_shuffle' }">
       <div class="matching-board glass-panel" :class="{ 'match-success-board': showSuccessState }">
         <template v-if="!showSuccessState">
           <div class="spinner-glow">
@@ -1290,7 +1304,8 @@ function handleHotPlayHint() {
           </div>
           <h2>正在速配玩伴..</h2>
           <div class="match-time-digits">{{ formatTime(matchTime) }}</div>
-          <p class="matching-detail">匹配场次：经典{{ selectedTier.name }} (底分 {{ selectedTier.baseScore }})</p>
+          <p class="matching-detail" v-if="playMode === 'no_shuffle'">匹配场次：不洗牌 - {{ selectedTier.name }}</p>
+          <p class="matching-detail" v-else>匹配场次：经典{{ selectedTier.name }} (底分 {{ selectedTier.baseScore }})</p>
           <button class="btn-cancel-matching" @click="handleCancelMatch">
             取消匹配
           </button>
@@ -2782,6 +2797,127 @@ function handleHotPlayHint() {
 @keyframes slideDown {
   from { transform: translateY(-10px); opacity: 0; }
   to { transform: translateY(0); opacity: 1; }
+}
+
+/* 玩法切换 Tabs 样式 */
+.mode-tabs-container {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 24px;
+  width: 100%;
+}
+
+.mode-tabs {
+  display: flex;
+  padding: 4px;
+  border-radius: 30px;
+  background: rgba(255, 255, 255, 0.07);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.37);
+  position: relative;
+  overflow: hidden;
+}
+
+.mode-tabs button {
+  background: transparent;
+  border: none;
+  color: rgba(255, 255, 255, 0.7);
+  padding: 10px 32px;
+  font-size: 1.05rem;
+  font-weight: 700;
+  border-radius: 26px;
+  cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+  outline: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+  letter-spacing: 1px;
+}
+
+.mode-tabs button:hover {
+  color: #ffffff;
+}
+
+.mode-tabs button.active {
+  color: #ffffff;
+  background: linear-gradient(135deg, #ffd700 0%, #ff8f00 100%);
+  box-shadow: 0 4px 15px rgba(255, 143, 0, 0.4), inset 0 1px 1px rgba(255, 255, 255, 0.35);
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.3);
+}
+
+.mode-tabs button.active:nth-child(2) {
+  background: linear-gradient(135deg, #ff5252 0%, #d50000 100%);
+  box-shadow: 0 4px 15px rgba(213, 0, 0, 0.5), inset 0 1px 1px rgba(255, 255, 255, 0.35);
+}
+
+/* 不洗牌场卡片专属样式 */
+.tier-card.no-shuffle-tier {
+  border: 2px solid #ff3d00;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.65),
+              0 0 20px rgba(213, 0, 0, 0.55),
+              inset 0 1.5px 3px rgba(255, 215, 0, 0.35);
+}
+
+.tier-card.no-shuffle-tier:hover {
+  border-color: #ff6d00;
+  box-shadow: 0 18px 45px rgba(0, 0, 0, 0.75),
+              0 0 35px rgba(255, 61, 0, 0.8),
+              inset 0 2px 4px rgba(255, 215, 0, 0.5);
+}
+
+.tier-card.no-shuffle-tier.selected {
+  border-color: #ffd700;
+  box-shadow: 0 0 30px rgba(255, 215, 0, 0.8),
+              0 0 15px rgba(213, 0, 0, 0.6),
+              inset 0 2px 3px rgba(255, 255, 255, 0.4);
+}
+
+/* 右上角倾斜缎带不洗牌标签 */
+.tier-badge {
+  position: absolute;
+  top: 12px;
+  right: -26px;
+  background: linear-gradient(135deg, #ff8a80 0%, #ff5252 50%, #d50000 100%);
+  color: #ffffff;
+  font-size: 0.72rem;
+  font-weight: 900;
+  padding: 3px 28px;
+  transform: rotate(45deg);
+  box-shadow: 0 2px 6px rgba(0,0,0,0.4);
+  z-index: 3;
+  letter-spacing: 1px;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  animation: badge-glow-breath 2s infinite alternate;
+}
+
+@keyframes badge-glow-breath {
+  0% {
+    box-shadow: 0 2px 6px rgba(0,0,0,0.4), 0 0 4px rgba(255, 82, 82, 0.4);
+  }
+  100% {
+    box-shadow: 0 2px 6px rgba(0,0,0,0.4), 0 0 12px rgba(255, 82, 82, 0.8);
+  }
+}
+
+/* 匹配不洗牌遮罩样式 */
+.matching-overlay.no-shuffle-matching {
+  background: rgba(46, 12, 12, 0.85);
+  backdrop-filter: blur(15px) saturate(150%);
+  box-shadow: inset 0 0 100px rgba(229, 57, 53, 0.3);
+}
+
+.matching-overlay.no-shuffle-matching .circle {
+  border-top-color: #ff5252;
+  box-shadow: 0 0 15px rgba(255, 82, 82, 0.6);
+}
+
+.matching-overlay.no-shuffle-matching .match-time-digits {
+  color: #ff5252;
+  text-shadow: 0 0 10px rgba(255, 82, 82, 0.5);
 }
 
 </style>

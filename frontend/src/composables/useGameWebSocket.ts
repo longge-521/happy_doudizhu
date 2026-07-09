@@ -102,7 +102,7 @@ type AutoPlayChangedEvent = {
 }
 
 export type GameClientAction = (
-  | { action: 'join_match'; nickname: string; base_score: number }
+  | { action: 'join_match'; nickname: string; base_score: number; play_mode?: string }
   | { action: 'cancel_match' }
   | { action: 'sync_room_state' }
   | { action: 'call_landlord'; score: number }
