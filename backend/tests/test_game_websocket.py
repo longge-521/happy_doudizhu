@@ -80,9 +80,10 @@ def test_game_websocket_join_and_cancel_match(monkeypatch, mock_game_service):
         resp = websocket.receive_json()
         assert resp["event"] == "match_waiting"
         assert resp["count"] == 1
-        mock_game_service.join_match.assert_called_once_with("player1", "Player One", auto_ai=False, base_score=10)
+        mock_game_service.join_match.assert_called_once_with("player1", "Player One", auto_ai=False, base_score=10, play_mode="classic")
 
         # 发送 cancel_match
+        import time; time.sleep(0.12)
         websocket.send_json({"action": "cancel_match"})
         resp = websocket.receive_json()
         assert resp["event"] == "match_cancelled"
@@ -106,6 +107,7 @@ def test_game_websocket_actions(monkeypatch, mock_game_service):
     with client.websocket_connect(f"/ws/game/player1?auth_token={game_token}") as websocket:
         # 1. 测试叫分
         mock_game_service.handle_call.return_value = {"room": room}
+        import time; time.sleep(0.12)
         websocket.send_json({"action": "call_landlord", "score": 3})
         resp = websocket.receive_json()
         assert resp["event"] == "call_made"
@@ -115,6 +117,7 @@ def test_game_websocket_actions(monkeypatch, mock_game_service):
 
         # 2. 测试不叫/不抢
         mock_game_service.handle_skip_call.return_value = {"room": room}
+        time.sleep(0.12)
         websocket.send_json({"action": "skip_call"})
         resp = websocket.receive_json()
         assert resp["event"] == "call_skipped"
@@ -129,6 +132,7 @@ def test_game_websocket_actions(monkeypatch, mock_game_service):
             "card_type": "pair",
             "remaining": 15,
         }
+        time.sleep(0.12)
         websocket.send_json({"action": "play_cards", "cards": [3, 4]})
         resp = websocket.receive_json()
         assert resp["event"] == "cards_played"
@@ -138,6 +142,7 @@ def test_game_websocket_actions(monkeypatch, mock_game_service):
 
         # 4. 测试过牌
         mock_game_service.handle_pass.return_value = {"room": room, "new_round": False}
+        time.sleep(0.12)
         websocket.send_json({"action": "pass_turn"})
         resp = websocket.receive_json()
         assert resp["event"] == "turn_passed"

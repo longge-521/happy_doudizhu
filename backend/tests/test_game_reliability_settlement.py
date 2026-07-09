@@ -121,7 +121,7 @@ async def test_scheduler_poller_intercepts_match_ai():
             pass
             
     # 确认是否直接调用了 match_ai_for_player
-    app_mock.state.game_service.match_ai_for_player.assert_awaited_once_with("p1", "玩家1", 10)
+    app_mock.state.game_service.match_ai_for_player.assert_awaited_once_with("p1", "玩家1", 10, play_mode="classic")
     # 确认没有通过 MQ 往 Shard 队列发命令
     app_mock.state.game_message_bus.publish_command.assert_not_called()
 

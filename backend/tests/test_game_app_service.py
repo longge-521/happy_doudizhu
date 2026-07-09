@@ -122,7 +122,7 @@ class TestGameAppService:
         """加入匹配应添加到队列"""
         mock_repo.pop_match_players.return_value = ["p1"]  # 不够3人
         result = await service.join_match("p1", "玩家1", auto_ai=False)
-        mock_repo.add_to_match_queue.assert_called_once_with("p1", base_score=10)
+        mock_repo.add_to_match_queue.assert_called_once_with("p1", base_score=10, play_mode="classic")
 
     @pytest.mark.asyncio
     async def test_join_match_already_in_room(self, service, mock_repo):
@@ -152,7 +152,7 @@ class TestGameAppService:
         # 拦截 fill_with_ai 看看传入的参数是否包含 A 和 B 两个人
         with patch.object(service, 'fill_with_ai', AsyncMock(return_value={"status": "room_created"})) as mock_fill:
             result = await service.match_ai_for_player("p1", "玩家1", base_score=10)
-            mock_fill.assert_called_once_with(["p1", "p2"], base_score=10)
+            mock_fill.assert_called_once_with(["p1", "p2"], base_score=10, play_mode="classic")
             assert result == {"status": "room_created"}
 
     @pytest.mark.asyncio

@@ -165,7 +165,7 @@ def test_update_player_password_success(mock_db):
 
     with patch("app.interfaces.api.game_routes.SQLGameRepository") as mock_repo_class:
         mock_repo = MagicMock()
-        mock_repo.get_user_by_player_id.return_value = mock_user
+        mock_repo.get_user_by_id.return_value = mock_user
         mock_repo_class.return_value = mock_repo
 
         response = client.post(
@@ -181,7 +181,7 @@ def test_update_player_password_success(mock_db):
         assert data["ok"] is True
         assert "密码修改成功" in data["message"]
         
-        mock_repo.get_user_by_player_id.assert_called_once_with("player123")
+        mock_repo.get_user_by_id.assert_called_once_with("player123")
         mock_repo.update_user_password.assert_called_once()
 
 
@@ -199,7 +199,7 @@ def test_update_player_password_wrong_old(mock_db):
 
     with patch("app.interfaces.api.game_routes.SQLGameRepository") as mock_repo_class:
         mock_repo = MagicMock()
-        mock_repo.get_user_by_player_id.return_value = mock_user
+        mock_repo.get_user_by_id.return_value = mock_user
         mock_repo_class.return_value = mock_repo
 
         response = client.post(
@@ -228,7 +228,7 @@ def test_update_player_password_same_old_new(mock_db):
 
     with patch("app.interfaces.api.game_routes.SQLGameRepository") as mock_repo_class:
         mock_repo = MagicMock()
-        mock_repo.get_user_by_player_id.return_value = mock_user
+        mock_repo.get_user_by_id.return_value = mock_user
         mock_repo_class.return_value = mock_repo
 
         response = client.post(

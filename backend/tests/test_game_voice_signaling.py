@@ -167,6 +167,7 @@ async def test_voice_signal_rejects_invalid_type_and_large_payload():
     )
 
     large_payload = {"candidate": "x" * (16 * 1024)}
+    import asyncio; await asyncio.sleep(0.12)
     await handler._handle_message(
         json.dumps(
             {
