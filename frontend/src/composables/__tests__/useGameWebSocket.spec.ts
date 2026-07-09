@@ -43,6 +43,7 @@ describe('useGameWebSocket', () => {
   })
 
   afterEach(() => {
+    useGameWebSocket().disconnect()
     vi.useRealTimers()
     vi.unstubAllGlobals()
     localStorage.clear()
@@ -158,9 +159,12 @@ describe('useGameWebSocket', () => {
 
     sendAction({ action: 'play_cards', cards: [3, 4, 5] })
 
-    expect(socket.sentMessages).toEqual([
-      JSON.stringify({ action: 'play_cards', cards: [3, 4, 5] }),
-    ])
+    expect(socket.sentMessages).toHaveLength(1)
+    const sentMsg = JSON.parse(socket.sentMessages[0]!)
+    expect(sentMsg.action).toBe('play_cards')
+    expect(sentMsg.cards).toEqual([3, 4, 5])
+    expect(sentMsg.action_id).toBeDefined()
+    expect(typeof sentMsg.action_id).toBe('string')
     disconnect()
   })
 

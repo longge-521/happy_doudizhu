@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from fastapi.testclient import TestClient
 from main import app
 from app.infrastructure import auth
+from app.infrastructure.config import settings
 from app.domain.game.room import GameRoom, Player, GamePhase
 from app.interfaces.websocket.game_routes import GameWSConnectionManager
 
@@ -28,6 +29,7 @@ def mock_game_service():
 @pytest.fixture(autouse=True)
 def setup_app_state(monkeypatch, mock_game_service):
     # 使用 monkeypatch 模拟 app.state，测试结束后会自动还原
+    monkeypatch.setattr(settings, "APP_ENV", "development")
     monkeypatch.setattr(app.state, "game_service", mock_game_service, raising=False)
     monkeypatch.setattr(app.state, "game_ws_manager", GameWSConnectionManager(), raising=False)
 

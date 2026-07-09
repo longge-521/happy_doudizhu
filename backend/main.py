@@ -163,6 +163,8 @@ async def stale_upload_reaper(app_instance: FastAPI):
 @asynccontextmanager
 async def lifespan(app_instance: FastAPI):
     settings.validate_production_settings()
+    if settings.DISTRIBUTED_MODE:
+        raise NotImplementedError("Distributed mode is not fully implemented in Phase 1.")
 
     # 1. 自动创建/确认 MySQL 表结构
     if should_auto_init_db():

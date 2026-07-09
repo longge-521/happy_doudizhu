@@ -18,7 +18,7 @@ def _client_with_token_dependency():
 
 def test_verify_token_no_token_env(monkeypatch):
     monkeypatch.setattr(settings, "API_TOKEN", "")
-    monkeypatch.delenv("APP_ENV", raising=False)
+    monkeypatch.setattr(settings, "APP_ENV", "development")
 
     response = _client_with_token_dependency().get("/test")
     assert response.status_code == 200
@@ -35,7 +35,7 @@ def test_verify_token_requires_token_in_production(monkeypatch):
 
 def test_verify_token_with_token_env(monkeypatch):
     monkeypatch.setattr(settings, "API_TOKEN", "secure-secret-token")
-    monkeypatch.delenv("APP_ENV", raising=False)
+    monkeypatch.setattr(settings, "APP_ENV", "development")
 
     client = _client_with_token_dependency()
 
@@ -56,7 +56,7 @@ def test_verify_token_with_token_env(monkeypatch):
 
 def test_verify_ws_token(monkeypatch):
     monkeypatch.setattr(settings, "API_TOKEN", "ws-secret-token")
-    monkeypatch.delenv("APP_ENV", raising=False)
+    monkeypatch.setattr(settings, "APP_ENV", "development")
 
     assert auth.verify_ws_token({"token": "ws-secret-token"}) is True
     assert auth.verify_ws_token({"token": "wrong-token"}) is False

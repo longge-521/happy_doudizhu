@@ -137,6 +137,10 @@ class GameWebSocketHandler:
             await self._send({"event": "error", "msg": "无效的 JSON 格式"})
             return
 
+        if isinstance(data, dict) and "action_id" not in data:
+            import uuid
+            data["action_id"] = f"gen-{uuid.uuid4()}"
+
         action = data.get("action")
 
         if action == "join_match":

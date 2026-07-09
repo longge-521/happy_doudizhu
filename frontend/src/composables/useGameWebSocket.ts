@@ -98,7 +98,7 @@ type AutoPlayChangedEvent = {
   enabled: boolean
 }
 
-export type GameClientAction =
+export type GameClientAction = (
   | { action: 'join_match'; nickname: string; base_score: number }
   | { action: 'cancel_match' }
   | { action: 'sync_room_state' }
@@ -119,6 +119,7 @@ export type GameClientAction =
     }
   | { action: 'show_cards'; multiplier: number }
   | { action: 'landlord_show'; show: boolean }
+) & { action_id?: string }
 
 type GameServerEvent =
   | { event: 'match_waiting' }
@@ -268,7 +269,9 @@ export function useGameWebSocket() {
 
   function sendAction(action: GameClientAction) {
     if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(action))
+      const action_id = action.action_id || crypto.randomUUID()
+      const actionWithId = { ...action, action_id }
+      ws.send(JSON.stringify(actionWithId))
     } else {
       console.warn('WebSocket: Cannot send action, socket is not open')
     }

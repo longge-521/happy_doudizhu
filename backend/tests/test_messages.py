@@ -43,7 +43,9 @@ def test_send_message_api(mock_db, mock_mq, monkeypatch):
     
     # 临时禁用 Token 校验
     from app.infrastructure import auth
+    from app.infrastructure.config import settings
     monkeypatch.setattr(auth, "API_TOKEN", "")
+    monkeypatch.setattr(settings, "APP_ENV", "development")
     
     client = TestClient(app)
     

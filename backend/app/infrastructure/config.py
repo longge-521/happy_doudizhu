@@ -55,6 +55,9 @@ class Settings(BaseSettings):
     GAME_AUTH_TOKEN_TTL_SECONDS: int = Field(
         default=7 * 24 * 3600, description="Token生命周期(秒)"
     )
+    DISTRIBUTED_MODE: bool = Field(
+        default=False, description="是否启用分布式游戏架构模式"
+    )
 
     # 6. 大文件上传配置
     UPLOAD_MAX_CHUNK_BYTES: int = Field(
