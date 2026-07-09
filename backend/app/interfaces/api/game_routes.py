@@ -3,7 +3,7 @@
 import os
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Request, Header
 from pydantic import BaseModel, Field
 from app.infrastructure.config import settings
 from sqlalchemy.orm import Session
@@ -382,3 +382,21 @@ async def create_websocket_ticket(
         "ticket": ticket_id,
         "expires_in": 30
     }
+
+
+@router.post("/auth/settlement/replay")
+async def replay_settlement_tasks(
+    request: Request,
+    api_token: Optional[str] = Header(None, alias="X-API-Token")
+):
+    """人工重放结算死信队列任务"""
+    if settings.is_production:
+        if not settings.API_TOKEN or api_token != settings.API_TOKEN:
+            raise HTTPException(status_code=403, detail="Forbidden")
+            
+    bus = request.app.state.game_message_bus
+    if not hasattr(bus, "replay_dead_letter_queue"):
+        raise HTTPException(status_code=400, detail="Replay not supported by bus adapter")
+        
+    count = await bus.replay_dead_letter_queue()
+    return {"ok": True, "replayed_count": count}
