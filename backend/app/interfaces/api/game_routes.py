@@ -63,13 +63,13 @@ def normalize_avatar_url(avatar_url: Optional[str]) -> Optional[str]:
 
 class UserRegisterRequest(BaseModel):
     username: str = Field(..., min_length=3, max_length=100)
-    password: str = Field(..., min_length=4, max_length=100)
+    password: str = Field(..., min_length=1, max_length=100)
     nickname: str = Field(..., min_length=1, max_length=100)
 
 
 class UserLoginRequest(BaseModel):
     username: str = Field(..., min_length=3, max_length=100)
-    password: str = Field(..., min_length=4, max_length=100)
+    password: str = Field(..., min_length=1, max_length=100)
 
 
 class UpdateBeansRequest(BaseModel):
@@ -92,12 +92,14 @@ class UpdateProfileRequest(BaseModel):
 
 
 class UpdatePasswordRequest(BaseModel):
-    old_password: str = Field(..., min_length=4, max_length=100)
-    new_password: str = Field(..., min_length=4, max_length=100)
+    old_password: str = Field(..., min_length=1, max_length=100)
+    new_password: str = Field(..., min_length=1, max_length=100)
 
 
 @router.post("/auth/register")
 def register_user(req: UserRegisterRequest, db: Session = Depends(get_db)):
+    if len(req.password) < 6:
+        raise HTTPException(status_code=400, detail="密码长度至少为 6 位")
     repo = SQLGameRepository(db)
     username_norm = req.username.strip().lower()
     existing = repo.get_user_by_username(username_norm)
@@ -122,10 +124,11 @@ def login_user(req: UserLoginRequest, db: Session = Depends(get_db)):
     repo = SQLGameRepository(db)
     username_norm = req.username.strip().lower()
     user = repo.get_user_by_username(username_norm)
-    if not user:
-        raise HTTPException(status_code=400, detail="账号不存在，请先注册")
-    if not verify_password(req.password, user.password):
-        raise HTTPException(status_code=400, detail="密码不正确")
+    
+    # 统一登录失败返回信息，防范用户名枚举泄露
+    if not user or not verify_password(req.password, user.password):
+        raise HTTPException(status_code=400, detail="用户名或密码不正确")
+        
     profile = repo.get_or_create_profile(user.player_id, username_norm)
     return {
         "ok": True,
@@ -337,8 +340,10 @@ def update_player_password(
     current_player_id: str = Depends(require_game_player_id),
 ):
     ensure_player_access(player_id, current_player_id)
+    if len(req.new_password) < 6:
+        raise HTTPException(status_code=400, detail="新密码长度至少为 6 位")
     repo = SQLGameRepository(db)
-    user = repo.get_user_by_player_id(player_id)
+    user = repo.get_user_by_id(player_id) if hasattr(SQLGameRepository, "get_user_by_id") else repo.get_user_by_player_id(player_id)
     if not user:
         raise HTTPException(status_code=404, detail="未找到对应的用户记录")
 

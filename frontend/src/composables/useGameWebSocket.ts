@@ -223,7 +223,7 @@ export function useGameWebSocket() {
     const token = playerStore.authToken || localStorage.getItem('hmp_game_auth_token') || ''
     
     let ticketQuery = ''
-    const isTestEnv = typeof process !== 'undefined' && process.env.NODE_ENV === 'test'
+    const isTestEnv = import.meta.env.MODE === 'test'
     if (token) {
       if (isTestEnv) {
         ticketQuery = `?auth_token=${encodeURIComponent(token)}`

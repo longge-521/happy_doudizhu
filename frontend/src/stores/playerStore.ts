@@ -85,8 +85,8 @@ export const usePlayerStore = defineStore('player', () => {
     if (!/^[a-zA-Z0-9_-]+$/.test(normalized)) {
       return { ok: false, error: '账号只能包含字母、数字、下划线或短横线' }
     }
-    if (password.length < 4) {
-      return { ok: false, error: '密码至少需要 4 位' }
+    if (password.length < 6) {
+      return { ok: false, error: '密码至少需要 6 位' }
     }
     if (!displayName) {
       return { ok: false, error: '请输入玩家昵称' }
