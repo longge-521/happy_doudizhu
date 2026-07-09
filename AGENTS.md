@@ -24,6 +24,7 @@
 - 修改前后端协议、WebSocket 事件、数据库模型、鉴权、结算、上传、AI 决策等跨层逻辑时，必须同步检查调用方、测试和文档，避免只改一端。
 - 每次任务完成后，如果发现对后续开发有复用价值的新规则，应先在最终回复中以“建议沉淀规则”列出原因和拟写文本；只有用户明确确认后，才写入 `AGENTS.md` 或其他 Markdown 文档。
 - `AGENTS.md` 只记录长期稳定、跨任务适用、会影响正确性或协作方式的规则；临时经验、单次排查记录、过长流程不要写入，避免规则膨胀。
+- **规避 AsyncMock 防御性校验拦截**：在编写 RabbitMQ、Redis 等网络适配器的单元测试时，如果被测方法包含类似于 `if not self.channel or self.channel.is_closed:` 的防御性连接校验，Mock 该属性（如 `bus.channel = AsyncMock()`）后，必须显式为其指定布尔状态（如 `bus.channel.is_closed = False`）。否则 AsyncMock 会默认将其当作一个新的 Mock 对象，在 Python 的 `if` 条件评估中被强行拦截为 `True`，从而抛出虚假的 `ConnectionError`。
 
 ---
 
