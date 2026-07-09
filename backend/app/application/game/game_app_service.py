@@ -41,6 +41,9 @@ class GameAppService:
             player_ids = await self._repo.pop_match_players(3, base_score=base_score)
             if len(player_ids) >= 3:
                 return await self._create_room(player_ids, base_score=base_score)
+            elif auto_ai and player_ids:
+                # 高并发竞态下虽然原计划拉取 3 人但由于余额不足实际只拉到部分，若允许 AI 补齐则直接发车防止玩家卡死
+                return await self.fill_with_ai(player_ids, base_score=base_score)
         elif auto_ai:
             # 不够3人，但启用了自动机器人，则将当前在队列中的人全部弹出，用 AI 补齐并开局
             player_ids = await self._repo.pop_match_players(queue_len, base_score=base_score)
@@ -97,6 +100,60 @@ class GameAppService:
 
         room = GameRoom.create(room_id, players, base_score=base_score)
         room.deal()
+
+        # 在分布式模式下，保存房间前封装 match_success 和 game_start 广播至 outbox
+        from app.infrastructure.config import settings
+        if settings.DISTRIBUTED_MODE:
+            from app.infrastructure.game.context import current_outbox_events
+            from app.application.game.schemas import GameEventSchema
+            import time
+            import uuid as uuid_pkg
+            
+            event_payloads = [
+                {
+                    "event": "match_success",
+                    "room_id": room_id,
+                    "players": [{"id": p.id, "nickname": p.nickname, "is_ai": p.is_ai} for p in room.players],
+                },
+                {
+                    "event": "game_start",
+                    "current_turn": room.current_turn,
+                }
+            ]
+            events = []
+            presence_service = getattr(self._repo, "_presence", None)
+            for player in room.players:
+                if player.is_ai:
+                    continue
+                presence = await presence_service.get_presence(player.id) if presence_service else None
+                epoch = 0
+                if isinstance(presence, dict):
+                    raw_epoch = presence.get("connection_epoch", 0)
+                    if isinstance(raw_epoch, (int, float)):
+                        epoch = int(raw_epoch)
+                    elif isinstance(raw_epoch, str) and raw_epoch.isdigit():
+                        epoch = int(raw_epoch)
+                room_view = room.get_player_view(player.id)
+                for payload in event_payloads:
+                    message = {**payload, "room_state": room_view}
+                    if payload["event"] == "game_start":
+                        message["hand"] = room_view["hand"]
+                        message["players"] = room_view["players"]
+                    
+                    events.append(
+                        GameEventSchema(
+                            event_id=f"evt-{uuid_pkg.uuid4().hex}",
+                            event=payload["event"],
+                            room_id=room.room_id,
+                            room_version=1,
+                            target_player_id=player.id,
+                            target_connection_epoch=epoch,
+                            payload=message,
+                            created_at=time.time(),
+                            trace_id=f"start-trace-{room.room_id}",
+                        )
+                    )
+            current_outbox_events.set(events)
 
         # 保存到 Redis
         await self._repo.save_room(room)

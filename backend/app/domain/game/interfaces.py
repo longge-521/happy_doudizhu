@@ -29,6 +29,19 @@ class IGameMessageBus(ABC):
         """向特定应用网关实例（instance_id）上的特定玩家分发个人视角事件。"""
         pass
 
+    @abstractmethod
+    async def publish_settlement_task(self, room_id: str, result_payload: dict) -> None:
+        """发布结算任务到可靠结算队列。"""
+        pass
+
+    @abstractmethod
+    async def subscribe_settlement_tasks(
+        self,
+        callback: Callable[[str, dict], Awaitable[None]]
+    ) -> None:
+        """订阅可靠结算队列，处理对局最终结算事务。"""
+        pass
+
 class IPresenceService(ABC):
     """玩家连接位置与代次（Presence）服务接口：确保重复登录 kickout 及消息的精准路由。"""
 

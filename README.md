@@ -2,6 +2,9 @@
 
 本项目是一个采用前后端彻底分离架构的“欢乐斗地主”网络对战系统。系统以 **FastAPI + Vue 3** 为核心，搭配 **Redis** 存储匹配队列与对局状态，以及 **MySQL** 落地存储战绩与玩家档案。系统内置了强健的掉线重连机制与自研扑克牌规则引擎，并提供独立的 AI 降级接管机器人，实现了极佳的可玩性与开发调试体验。
 
+> 📢 **致开发者与智能体 (AGENTS)**：
+> 本项目任何功能优化与新功能实现，均必须在完成开发后，将对应的新特性、接口变更或配置说明同步更新并写入本 `README.md` 文档中，保持文档与代码功能同步演进。
+
 ---
 
 ## 🎨 游戏界面巡礼 (Screenshot Tour)
@@ -34,6 +37,11 @@ http://localhost:5173/lobby?mock=true
 
 * **🧩 DDD 领域驱动设计实践**：后端严格隔离业务核心与基础设施实现。领域层定义扑克牌编码、洗牌发牌、牌型校验与压制算法以及五大状态的游戏房间状态机。
 * **⚡ WebSocket 实时对战网关**：基于双向长连接，实时进行叫地主、出牌、过牌等交互。采用玩家专属个人视角的防作弊手牌广播机制，确保数据公平。
+* **🌐 分布式高可用与可靠异步结算**：
+  - **分片队列路由 (Shard Routing)**：所有房间的出牌命令，基于房间 ID 的哈希值，被均匀分摊路由至 16 个 RabbitMQ 分片队列中，确保同一个房间的全部指令严格按序执行，规避并发写冲突。
+  - **Redis 租约灾备管理 (Lease Failover)**：每个分片队列的所有权由各网关进程通过 Redis 10秒短租约锁（Lua 原子脚本心跳）进行抢占。当某一网关实例宕机时，其余存活实例会在 10-15 秒内自动接管其负责的分片消费，确保服务高可用。
+  - **MQ 可靠异步结算**：游戏结束时的数据库结算操作完全解耦，转换为持久化任务推送至 RabbitMQ 异步任务信道 `ddz.game.settlement`，由独立的 Settlement Worker 在事务提交后原子清理 Redis，实现结算流的强一致性与幂等。
+  - **开局 Outbox 中转**：跨网关实例匹配开局时，玩家各自视角的 `game_start` 事件被原子注入 Redis Outbox，由各在线实例的网关 Relay 读取推送，实现跨端口无缝收牌。
 * **🤖 托管 AI 决策与双层兜底**：匹配超时自动机器人常驻补位，对局中玩家离线自动托管。结合 DouZero 强化学习 AI 模型与 Rule-based 规则兜底 AI，确保出牌合理且不中断。
 * **🏆 36级特色排位头衔系统**：涵盖从`包身工`到`至尊`的趣味称号，按对局胜负、炸弹数量、春天等触发原子星数变动。支持低段位新手保护与高段位硬核无保护博弈。
 * **🎵 自研 Web Audio 音频引擎**：支持背景音乐的无缝切换，以及出牌、加倍、叫分等动作音效的异步解码与低延迟播放。
@@ -97,102 +105,37 @@ happy_doudizhu/
 └── AGENTS.md                       # 协同开发智能体的操作约束说明
 ```
 
-### 1. 各层职责划分
+### 各层职责划分
 
 * **领域层 (`backend/app/domain/`)**：
   - **无外部依赖的纯业务逻辑**：定义扑克牌编码、排序、洗牌 (`card.py`) 与 14 种斗地主常见牌型的智能校验与 `can_beat` 压制判定算法 (`card_type.py`)。
   - **房间状态机 (`room.py`)**：严密的五大阶段状态转换 (`MATCHING` -> `DEALING` -> `CALLING` -> `PLAYING` -> `SETTLING`)，规避前后端状态不一致。
 * **应用层 (`backend/app/application/`)**：
-  - **业务流程编排**：由 `GameAppService` 统一提供匹配排队、自动开局、AI 机器人补齐席位、叫地主/出牌的流程驱动。
+  - **业务流程编排**：由 `GameAppService` 统一提供匹配排队、自动开局、AI 机器人自动补位、叫地主/出牌的流程驱动与出箱消息管理。
 * **基础设施层 (`backend/app/infrastructure/`)**：
-  - **持久化与外部依赖**：提供 MySQL 的 SQLAlchemy 数据模型与持久化仓储 (`game_repository.py`)、Redis 匹配队列与房间缓存仓储 (`redis_game_repository.py`)、RabbitMQ 站内信广播适配器。
+  - **持久化与外部依赖**：提供 MySQL 的 SQLAlchemy ORM 仓储、Redis 匹配与状态仓储、租约管理器 (`redis_lease.py`)、RabbitMQ 站内信与可靠结算总线。
 * **接口层 (`backend/app/interfaces/`)**：
-  - **外部通信网关**：包含面向普通 REST 的游戏 API (`api/game_routes.py`)，提供大文件 WebSocket 分片上传路由与 WebSocket 调试接口，以及斗地主的核心 WebSocket 对战网关 (`websocket/game_routes.py`)。
-
----
-
-## ⚡ WebSocket 核心交互协议
-
-对局过程完全基于 WebSocket 事件驱动交互。核心交互事件协议如下：
-
-### 1. 客户端发起动作 (Client Actions)
-客户端往对战网关发送消息时使用统一格式：`{"action": "动作名", ...}`
-
-* **开始匹配 / 取消匹配**：
-  ```json
-  {"action": "join_match", "nickname": "玩家昵称", "base_score": 80}
-  {"action": "cancel_match"}
-  ```
-* **叫地主 / 不叫 / 抢地主 / 不抢**：
-  ```json
-  {"action": "call_landlord", "score": 3}
-  {"action": "skip_call"}
-  ```
-* **加倍 / 超级加倍 / 不加倍**：
-  ```json
-  {"action": "choose_doubling", "choice": "double"} // choice 可选: double | super | none
-  ```
-* **出牌 / 过牌**：
-  ```json
-  {"action": "play_cards", "cards": [48, 49, 50]} // 传入出牌 ID 数组
-  {"action": "pass_turn"}
-  ```
-
-### 2. 服务端广播事件 (Server Events)
-服务端会根据不同事件向房间内玩家推送更新。为保证游戏公平性，向不同座席广播时会调用 `GameRoom.get_player_view(player_id)`，隐藏他人手牌并只暴露其余手牌张数。
-
-* **对局开始 (`game_start`)**：
-  ```json
-  {
-    "event": "game_start",
-    "room_id": "room_xxx",
-    "hand": [53, 52, 50, 49, 48], // 当前玩家被分配的手牌 ID 列表
-    "current_turn": "player_123",  // 第一个叫分的座席 ID
-    "turn_deadline": 1782390120,   // 当前回合超时的绝对时间戳
-    "players": [
-      {"id": "p1", "nickname": "玩家A", "is_ai": false, "remaining": 17},
-      {"id": "p2", "nickname": "机器人", "is_ai": true, "remaining": 17}
-    ]
-  }
-  ```
-* **地主确定 (`landlord_decided`)**：
-  ```json
-  {
-    "event": "landlord_decided",
-    "landlord": "p1",
-    "bottom_cards": [51, 47, 43], // 广播三张明面底牌
-    "multiplier": 2                // 当前房间倍数翻倍
-  }
-  ```
-* **出牌成功 (`cards_played`)**：
-  ```json
-  {
-    "event": "cards_played",
-    "player": "p1",
-    "cards": [48, 49, 50],
-    "card_type": "triple",         // 智能识别的牌型
-    "next_turn": "p2"              // 下一个出牌回合的玩家 ID
-  }
-  ```
+  - **外部通信网关**：包含面向普通 REST 的游戏 API，大文件分片上传路由与 WebSocket 调试接口，以及斗地主的核心 WebSocket 对战网关 (`websocket/game_routes.py`)。
 
 ---
 
 ## ⚙️ 运行环境与先决条件 (Prerequisites)
 
-在本地运行或开发本项目之前，请确保您的系统已安装以下软件环境：
+在本地运行或开发本项目之前，请确保您的系统已安装并配置以下软件环境：
 
-* **Python**: 3.10.20 (**强制使用项目专用 conda 环境 `hmp_ai`**)
+* **Python 运行环境**: 3.10.20 (**后端强制要求使用项目专用 conda 环境 `hmp_ai`**)
+  - **解释器物理路径**：`D:\ProgramData\miniconda3\envs\hmp_ai\python.exe`
+  - **原因**：系统默认 Python 3.13 与 SQLAlchemy 2.0.25 存在类继承静态属性兼容性问题，会导致测试收集与服务启动崩溃。
 * **Node.js**: 18.0+ (推荐 v20.x 或以上)
 * **MySQL**: 5.7+ 或 8.0+
-* **Redis**: 6.0+ (用于存放匹配队列和房间状态)
-* **RabbitMQ**: 3.8+ (可选，用于站内信通知的广播分发)
+* **Redis**: 6.0+
+* **RabbitMQ**: 3.8+
 
 ---
 
 ## 🚀 快速启动指南
 
 ### 1. 数据库准备与配置
-
 1. 复制或创建后端目录下的环境变量配置文件 `.env`：
    ```ini
    PORT=18088
@@ -211,171 +154,156 @@ happy_doudizhu/
    MQ_PASSWORD=guest
    GAME_AUTH_SECRET=replace-with-at-least-32-random-characters
    GAME_AUTH_TOKEN_TTL_SECONDS=604800
+   DISTRIBUTED_MODE=True # 本地多实例跨网关调试请设为 True
    ```
-
-   生产环境必须将 `APP_ENV` 设置为 `production`，并显式配置至少
-   32 个字符的随机 `GAME_AUTH_SECRET`，否则服务会拒绝启动。大厅中的
-   欢乐豆与段位手动修改仅用于开发调试，生产环境不会展示编辑入口，
-   对应 API 也会返回 403。
-2. 运行一键初始化脚本，自动检测并创建 MySQL 数据库 `happy_doudizhu` 及其所有表结构：
+   > 生产环境必须将 `APP_ENV` 设置为 `production`，并显式配置至少 32 个字符的随机 `GAME_AUTH_SECRET`，否则服务会拒绝启动。
+2. 运行一键初始化脚本，自动检测并创建 MySQL 数据库及所有表结构：
    ```powershell
-   # 请确保当前终端处于 backend 目录下，且使用的是 hmp_ai 专属环境的 Python
    cd backend
    D:\ProgramData\miniconda3\envs\hmp_ai\python.exe scripts/create_db.py
    ```
 
-### 2. 后端启动
-
+### 2. 后端安装与启动
 1. 安装项目依赖：
    ```powershell
    cd backend
    D:\ProgramData\miniconda3\envs\hmp_ai\python.exe -m pip install -r requirements.txt
    ```
-2. 启动 FastAPI 后端服务：
+2. 启动 FastAPI 后端服务（默认主实例在 18088 端口）：
    ```powershell
    D:\ProgramData\miniconda3\envs\hmp_ai\python.exe main.py
    ```
+3. 启动第二个实例以进行分布式跨网关联调（PowerShell 下执行）：
+   ```powershell
+   $env:PORT=18089; $env:INSTANCE_ID="instance-B"; D:\ProgramData\miniconda3\envs\hmp_ai\python.exe main.py
+   ```
 
-> 当前结算链路已使用房间唯一结算记录保证幂等。MySQL 结算失败时，
-> Redis 房间会保留并记录错误，不会提前清理；持久化自动重试将在后续
-> 分布式 Settlement Worker 阶段接入。
-
-### 3. 前端配置与启动
-
-### 2. 前端配置与启动
-1. 进入前端目录：
+### 3. 前端安装与启动
+1. 进入前端目录安装依赖并运行开发服务器：
    ```bash
    cd frontend
-   ```
-2. 安装项目依赖：
-   ```bash
    npm install
    npm run dev
    ```
-4. 启动成功后，在浏览器访问 `http://localhost:5173` 即可开始对局。
+2. 网页开发联调：在浏览器访问 `http://localhost:5173`。
+3. 跨网关静态一体化调试：后端会自动托管 `frontend/dist` 打包后的前端页面。
+   - 网页 A 直接访问 `http://localhost:18088`
+   - 网页 B 直接访问 `http://localhost:18089`
+   - 两者会自动关联各自的网关接口并可以一起匹配进同一个房间打牌！
 
 ### 4. 数据库版本管理与迁移 (Alembic)
-
-项目配置了 Alembic 作为数据库物理表结构的迁移和演进工具。为了保障安全性，Alembic 在 `backend/alembic/env.py` 中被配置为**动态从后端 `.env` 中加载 `DATABASE_URL`**，无需在 `alembic.ini` 中配置任何明文密码。
-
-如果未来您修改了 `backend/app/infrastructure/database/models.py` 中的表模型结构，可以通过以下命令进行迁移操作：
-
-1. **自动比对并生成迁移版本脚本** (开发环境)：
+1. **自动比对并生成迁移版本脚本** (开发环境修改 `models.py` 后)：
    ```powershell
    cd backend
-   # 使用 hmp_ai 专属环境的 Python 运行 alembic
-   D:\ProgramData\miniconda3\envs\hmp_ai\python.exe -m alembic revision --autogenerate -m "描述你的表结构变更"
+   D:\ProgramData\miniconda3\envs\hmp_ai\python.exe -m alembic revision --autogenerate -m "修改描述"
    ```
-   > 运行后会在 `backend/alembic/versions/` 下生成一个新的 `.py` 变更历史脚本。请仔细核对脚本中的 `upgrade()` 和 `downgrade()` 逻辑。
-
-2. **应用迁移更新数据库表结构** (生产/开发环境升级)：
+2. **应用迁移更新数据库表结构**：
    ```powershell
-   cd backend
    D:\ProgramData\miniconda3\envs\hmp_ai\python.exe -m alembic upgrade head
    ```
-
-3. **回滚最近一次数据库迁移**：
+3. **回滚最近一次迁移**：
    ```powershell
-   cd backend
    D:\ProgramData\miniconda3\envs\hmp_ai\python.exe -m alembic downgrade -1
    ```
 
-4. **查看历史迁移记录列表**：
-   ```powershell
-   cd backend
-   D:\ProgramData\miniconda3\envs\hmp_ai\python.exe -m alembic history
-   ```
+### 5. 运行测试命令
+* **后端全量测试**：
+  ```powershell
+  cd backend
+  D:\ProgramData\miniconda3\envs\hmp_ai\python.exe -m pytest tests/ -v
+  ```
+* **后端快速测试 (失败即停)**：
+  ```powershell
+  cd backend
+  D:\ProgramData\miniconda3\envs\hmp_ai\python.exe -m pytest tests/ -x -q --tb=short
+  ```
+* **前端单元测试**：
+  ```bash
+  cd frontend
+  npm run test:unit
+  ```
+* **前端生产编译打包**：
+  ```bash
+  cd frontend
+  npm run build
+  ```
 
 ---
 
-## 🏆 独特排位头衔系统 (Rank System)
+## 🧭 系统全套 API 与功能地图
 
-运行以下命令执行全自动单元测试，验证核心领域规则：
+为保障文档永不过期与极简维护，常规 REST API 请求和字段详情请直接启动后端服务并访问 **`http://localhost:18088/docs` (Swagger 交互式文档)**。以下为全套系统可用接口地图：
 
-* **后端测试** (覆盖领域模型、AI 叫牌判定、大文件安全分片等)：
-   ```powershell
-   # 使用 hmp_ai 专属环境的 Python 运行测试
-   D:\ProgramData\miniconda3\envs\hmp_ai\python.exe -m pytest backend/tests/ -v
-   ```
-* **前端测试**：
-   ```bash
-   cd frontend
-   npm run test:unit
-   ```
+### 1. 常规 REST 接口地图
 
----
-
-## 🔄 核心对局与匹配数据流向
-
-整个游戏系统的用户匹配、实时叫分、打牌到终局结算，依赖于 Redis 缓存的低延迟性能和 MySQL 的持久化保障。以下是核心数据流向时序图：
-
-```mermaid
-sequenceDiagram
-    actor PlayerA as 玩家 A
-    actor PlayerB as 玩家 B (或 AI机器人)
-    participant WS as WebSocket 网关 (game_routes.py)
-    participant AppService as 游戏应用服务 (GameAppService)
-    participant Redis as Redis 缓存 (RedisGameRepository)
-    participant DB as MySQL 数据库 (SQLGameRepository)
-
-    PlayerA->>WS: join_match (请求加入匹配, 携带底分)
-    WS->>AppService: 触发匹配请求
-    AppService->>Redis: 压入匹配队列 (base_score 键名)
-    Note over AppService, Redis: 队列满 3 人即匹配成功, 自动建房并分牌
-    AppService->>WS: 广播 game_start 事件
-    WS-->>PlayerA: 推送 PlayerA 专属视角手牌 (隐藏他人手牌)
-    WS-->>PlayerB: 推送 PlayerB 专属视角手牌 (隐藏他人手牌)
-    
-    PlayerA->>WS: call_landlord / play_cards (叫地主/出牌)
-    WS->>AppService: 提交出牌动作，校验合法性
-    AppService->>Redis: 更新房间状态机与对局状态 (2小时TTL)
-    AppService->>WS: 广播 cards_played / turn_passed 事件
-
-    Note over AppService: 某一玩家手牌出完, 触发游戏结束
-    AppService->>DB: 写入 game_record，原子更新玩家积分/欢乐豆/排位星数
-    AppService->>WS: 广播 game_over (推送终局结算详情)
-```
+| 模块分类 | 请求方法 | 路由端点 | 鉴权等级 | 业务说明 |
+| :--- | :--- | :--- | :--- | :--- |
+| **玩家账号** | `POST` | `/api/game/auth/register` | 免鉴权 | 注册新玩家，要求账号 $\ge 3$ 位，密码 $\ge 6$ 位 |
+| **玩家账号** | `POST` | `/api/game/auth/login` | 免鉴权 | 玩家登录，校验密码并返回 `auth_token` 令牌 |
+| **玩家档案** | `GET` | `/api/game/profile/{player_id}` | Bearer Token | 获取玩家当前欢乐豆总数、排位星数、段位称号与胜率 |
+| **对局凭证** | `POST` | `/api/game/auth/ticket` | Bearer Token | 为 WebSocket 连接申请临时单次失效的安全握手 Ticket |
+| **富豪榜单** | `GET` | `/api/game/leaderboard` | Bearer Token | 获取全局前十名金豆大富豪的实时排行榜单 |
+| **开发测试** | `POST` | `/api/game/dev/beans` | 开发环境放行 | 敏感测试接口：手动增加/扣减指定玩家的欢乐豆资产 |
+| **开发测试** | `POST` | `/api/game/dev/rank` | 开发环境放行 | 敏感测试接口：手动更改指定玩家的排位星数与大段位 |
+| **开发测试** | `POST` | `/api/game/auth/settlement/replay` | API_TOKEN 校验 | 敏感测试接口：人工重放并提取结算死信队列任务回主队列 |
+| **健康探活** | `GET` | `/api/game/health/live` | 免鉴权 | 进程存活度探活（Liveness check），无数据库 IO |
+| **健康探活** | `GET` | `/api/game/health/ready` | 免鉴权 | 外部就绪度探活（Readiness check），校验中间件连通性 |
+| **大文件上传** | `POST` | `/api/uploads` | API_TOKEN 校验 | 分片并发上传数据切片、取消切片与大文件切片最终合并 |
+| **站内邮件** | `GET` / `POST`| `/api/messages` | API_TOKEN 校验 | 站内公告信件投递与特定玩家收件箱拉取，支持 MQ 广播 |
+| **审计安全** | `GET` | `/api/audit-logs` | API_TOKEN 校验 | 高级筛选检索后台关于资金、敏感上传、权限操作的审计日志 |
 
 ---
 
-## ⚡ WebSocket 核心交互协议
+### 2. WebSocket 长连接交互协议
 
-对局过程完全基于 WebSocket 事件驱动交互。核心交互事件协议如下：
+对局过程完全基于 WebSocket 事件驱动交互。
 
-### 1. 客户端发起动作 (Client Actions)
+#### 客户端发起动作 (Client Actions)
 客户端往对战网关发送消息时使用统一格式：`{"action": "动作名", ...}`
 
-* **开始匹配 / 取消匹配**：
+* **开始匹配 / 放弃匹配**：
   ```json
   {"action": "join_match", "nickname": "玩家昵称", "base_score": 80}
   {"action": "cancel_match"}
   ```
-* **叫地主 / 不叫 / 抢地主 / 不抢**：
+* **叫地主 / 放弃叫分**：
   ```json
-  {"action": "call_landlord", "score": 3}
+  {"action": "call_landlord", "score": 3} // score 可选 1 | 2 | 3
   {"action": "skip_call"}
   ```
-* **加倍 / 超级加倍 / 不加倍**：
+* **加倍选择**：
   ```json
   {"action": "choose_doubling", "choice": "double"} // choice 可选: double | super | none
   ```
-* **出牌 / 过牌**：
+* **出牌 / 过牌 (不要)**：
   ```json
-  {"action": "play_cards", "cards": [48, 49, 50]} // 传入出牌 ID 数组
+  {"action": "play_cards", "cards": [48, 49, 50]} // 传入要打出的扑克牌 ID 数组
   {"action": "pass_turn"}
   ```
+* **托管状态设置**：
+  ```json
+  {"action": "set_auto_play", "enabled": true}
+  ```
+* **文字/快捷聊天**：
+  ```json
+  {"action": "chat", "msg_id": 3}
+  ```
+* **获取 AI 提示**：
+  ```json
+  {"action": "get_ai_hints"}
+  ```
 
-### 2. 服务端广播事件 (Server Events)
-服务端会根据不同事件向房间内玩家推送更新。为保证游戏公平性，向不同座席广播时会过滤数据，隐藏他人手牌并只暴露其余手牌张数。
+#### 服务端广播事件 (Server Events)
+服务端在广播时会基于座席视角过滤数据，防止作弊。
 
 * **对局开始 (`game_start`)**：
   ```json
   {
     "event": "game_start",
     "room_id": "room_xxx",
-    "hand": [53, 52, 50, 49, 48], // 当前玩家被分配的手牌 ID 列表
-    "current_turn": "player_123",  // 第一个叫分的座席 ID
-    "turn_deadline": 1782390120,   // 当前回合超时的绝对时间戳
+    "hand": [53, 52, 50, 49, 48], // 当前玩家个人手牌 ID 列表
+    "current_turn": "player_123",  // 第一个开始叫分的玩家 ID
+    "turn_deadline": 1782390120,   // 当前操作超时的绝对时间戳
     "players": [
       {"id": "p1", "nickname": "玩家A", "is_ai": false, "remaining": 17},
       {"id": "p2", "nickname": "机器人", "is_ai": true, "remaining": 17}
@@ -387,8 +315,8 @@ sequenceDiagram
   {
     "event": "landlord_decided",
     "landlord": "p1",
-    "bottom_cards": [51, 47, 43], // 广播三张明面底牌
-    "multiplier": 2                // 当前房间倍数翻倍
+    "bottom_cards": [51, 47, 43], // 广播三张地主专属明面底牌
+    "multiplier": 2
   }
   ```
 * **出牌成功 (`cards_played`)**：
@@ -398,7 +326,22 @@ sequenceDiagram
     "player": "p1",
     "cards": [48, 49, 50],
     "card_type": "triple",         // 智能识别的牌型
-    "next_turn": "p2"              // 下一个出牌回合的玩家 ID
+    "next_turn": "p2"
+  }
+  ```
+* **对局结束 (`game_over`)**：
+  ```json
+  {
+    "event": "game_over",
+    "winner": "p1",
+    "winner_side": "landlord",
+    "scores": {"p1": 240, "p2": -120, "ai_bot": -120},
+    "multiplier": 8,
+    "all_hands": {
+      "p1": [],
+      "p2": [32, 28],
+      "ai_bot": [12, 8, 4]
+    }
   }
   ```
 
@@ -413,27 +356,60 @@ sequenceDiagram
 * **新手期 (1-9级)**：`包身工`、`短工`、`长工`、`中农`、`富农`、`掌柜`、`商人`、`小财主`、`大财主`。
 * **中产期 (10-21级)**：`县尉`、`县丞`、`县令`、`通判`、`主事`、`知府`、`员外郎`、`郎中`、`侍郎`、`巡抚`、`总督`、`尚书`。
 * **达贵期 (22-35级)**：`大学士`、`太保`、`太傅`、`太师`、`三等伯`、`二等伯`、`一等伯`、`三等侯`、`二等侯`、`一等侯`、`辅国公`、`镇国公`、`郡王`、`亲王`。
-* **终极大满贯 (36级)**：`至尊`。
+* **至尊大满贯 (36级)**：`至尊`。
 
 > 除【至尊】外，每个头衔划分为 `IV, III, II, I` 四个子级别。
 
 ### 2. 升降星状态机规则
-后端通过 `SQLGameRepository` 在每局终局结算时对段位执行原子变动：
-* **爆发胜利加星**：普通胜利积 **1 星**；使用炸弹/王炸或者以春天获胜（爆发性胜利），星星 **+2**。
-* **新手保护机制 (1-9级)**：小段位满 **3 星** 即可晋级；输牌不扣星，不降段。
-* **中大段位保护 (10-21级)**：小段位满 **4 星** 晋级；输牌扣 **1 星**；大段位触发保护机制（例如不会从“县尉IV”降回“大财主I”）。
-* **无保护硬核博弈 (22-35级)**：小段位满 **5 星** 晋级；输牌扣 **1 星**；段位无任何保护（降星可直接跌落大级别）。
+后端在每局终局结算时对段位执行原子变动：
+* **加星**：普通胜利积 **1 星**；使用炸弹/王炸或者以春天获胜（爆发性胜利），星星 **+2**。
+* **新手保护期 (1-9级)**：小段位满 **3 星** 即可晋级；输牌不扣星，不降段。
+* **中产晋升期 (10-21级)**：小段位满 **4 星** 晋级；输牌扣 **1 星**；大段位触发保护机制（不会从“县尉IV”降回“大财主I”）。
+* **无保护硬核博弈 (22-35级)**：小段位满 **5 星** 晋级；输牌扣 **1 星**；段位无任何保护（降星直接降大级别）。
 
 ---
 
-## 🤖 托管 AI 决策与降级策略
+## 🤖 托管 AI 决策与双层决策引擎
 
-对局系统集成了高可用的 AI 机制，保障流畅的网络对战体验：
+对局系统集成了高可用的 AI 机制，保障流畅的单机/网络对战体验：
 
-1. **自动补位与托管**：匹配等待超时 10 秒后，AI 机器人将自动补齐空位开局；对局中玩家掉线时，AI 会无缝接管出牌。
+1. **自动补位与托管**：匹配等待超时 10 秒后，AI 机器人将自动补齐空位开局；对局中玩家掉线或主动开启托管时，AI 会无缝接管出牌。
 2. **双层决策引擎**：
    - **DouZero 强化学习 AI**：优先调用基于 DeepMind 强化学习训练的 DouZero AI 进行精细的算牌与出牌决策。
    - **规则兜底 (Rule-based AI)**：若 DouZero 推理模型未加载或出现计算异常，系统会瞬间降级到规则 AI，依据手牌顺位、大牌压制等预设规则执行合理出牌，保障人机对战完全不中断。
+
+---
+
+## 🔄 核心对局与匹配数据流向
+
+```mermaid
+sequenceDiagram
+    actor PlayerA as 玩家 A (例如连接 18088)
+    actor PlayerB as 玩家 B (例如连接 18089)
+    participant WS as WebSocket 网关 (game_routes.py)
+    participant AppService as 游戏应用服务 (GameAppService)
+    participant Shard as RabbitMQ Shard 队列 (Shard 0..15)
+    participant Redis as Redis 共享状态仓储
+    participant DB as MySQL 数据库 (SQLGameRepository)
+
+    PlayerA->>WS: join_match (请求加入匹配, 携带底分)
+    WS->>AppService: 触发匹配请求
+    AppService->>Redis: 压入匹配队列
+    Note over AppService, Redis: 队列满 3 人即匹配成功, 自动创建房间并分牌
+    AppService->>Redis: 原子注入 game_start/match_success 到各玩家专属 Outbox
+    WS->>Redis: 轮询消费各自的 Outbox 消息
+    WS-->>PlayerA: 推送 PlayerA 专属视角手牌 (隐藏他人手牌)
+    WS-->>PlayerB: 推送 PlayerB 专属视角手牌 (隐藏他人手牌)
+    
+    PlayerA->>WS: play_cards (出牌命令)
+    WS->>Shard: 计算哈希分片，投递命令到对应的 Shard 队列
+    Note over Shard: 由当前抢占到该 Shard 租约的实例进行排队单线程处理
+    Shard->>Redis: 执行业务逻辑，原子更新 Redis 房间状态
+    Shard->>Redis: 写入 cards_played 到 Outbox
+    WS->>Redis: 轮询 Outbox 提取
+    WS-->>PlayerA: 广播出牌结果
+    WS-->>PlayerB: 广播出牌结果
+```
 
 ---
 
@@ -441,16 +417,11 @@ sequenceDiagram
 
 本项目在开发过程中，深受开源社区众多优秀项目启发与支撑，特此向以下 GitHub 优质开源项目及团队致以最诚挚的敬意：
 
-### 1. 算法与决策 AI 模型
-* **[kwai/douzero](https://github.com/kwai/douzero)** — 经典的基于强化学习（Deep Monte-Carlo, DMC）的斗地主 AI 训练框架。
-
-### 2. 后端异步生态依赖
-* **[tiangolo/fastapi](https://github.com/tiangolo/fastapi)** — 高性能、易学、快速编写代码的异步 Web 框架。
-* **[sqlalchemy/sqlalchemy](https://github.com/sqlalchemy/sqlalchemy)** — 极具工业强度且设计优雅的 Python SQL 工具包与 ORM 映射器。
-* **[redis/redis-py](https://github.com/redis/redis-py)** — 强大的 Redis 异步 Python 客户端驱动，提供了极其稳定的连接池管理。
+* **[kwai/douzero](https://github.com/kwai/douzero)** — 经典的基于强化学习（DMC）的斗地主 AI 训练框架。
+* **[tiangolo/fastapi](https://github.com/tiangolo/fastapi)** — 高性能的 Python 异步 Web 框架。
+* **[sqlalchemy/sqlalchemy](https://github.com/sqlalchemy/sqlalchemy)** — 极具工业强度且设计优雅的 Python SQL ORM 映射器。
+* **[redis/redis-py](https://github.com/redis/redis-py)** — 强大的 Redis 异步 Python 客户端驱动。
 * **[mosbrupture/aio-pika](https://github.com/mosbrupture/aio-pika)** — 专为 asyncio 打造的 RabbitMQ 异步驱动。
-
-### 3. 前端响应式生态依赖
 * **[vuejs/core](https://github.com/vuejs/core)** — 渐进式 JavaScript 框架。
 * **[vitejs/vite](https://github.com/vitejs/vite)** — 极速的下一代前端开发与构建工具。
 * **[vuejs/pinia](https://github.com/vuejs/pinia)** — 专为 Vue 打造的轻量状态管理库。

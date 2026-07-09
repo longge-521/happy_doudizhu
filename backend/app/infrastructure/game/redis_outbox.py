@@ -102,6 +102,7 @@ class RedisOutboxService(IOutboxService):
         
         -- 3. 校验通过，原子存入房间信封
         redis.call('set', room_key, envelope_json)
+        redis.call('expire', room_key, 7200)
         
         -- 4. 写入命令去重（2小时过期）
         if cmd_id and cmd_id ~= "" then
@@ -116,6 +117,7 @@ class RedisOutboxService(IOutboxService):
                 redis.call('hset', outbox_key, eid, val)
             end
         end
+        redis.call('expire', outbox_key, 7200)
         
         return 1
         """

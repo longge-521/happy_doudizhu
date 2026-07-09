@@ -1,9 +1,11 @@
 # backend/app/interfaces/api/game_routes.py
 """斗地主游戏 HTTP REST API"""
 import os
+import logging
+logger = logging.getLogger("happy_doudizhu")
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Request, Header
 from pydantic import BaseModel, Field
 from app.infrastructure.config import settings
 from sqlalchemy.orm import Session
@@ -63,13 +65,13 @@ def normalize_avatar_url(avatar_url: Optional[str]) -> Optional[str]:
 
 class UserRegisterRequest(BaseModel):
     username: str = Field(..., min_length=3, max_length=100)
-    password: str = Field(..., min_length=4, max_length=100)
+    password: str = Field(..., min_length=1, max_length=100)
     nickname: str = Field(..., min_length=1, max_length=100)
 
 
 class UserLoginRequest(BaseModel):
     username: str = Field(..., min_length=3, max_length=100)
-    password: str = Field(..., min_length=4, max_length=100)
+    password: str = Field(..., min_length=1, max_length=100)
 
 
 class UpdateBeansRequest(BaseModel):
@@ -92,14 +94,79 @@ class UpdateProfileRequest(BaseModel):
 
 
 class UpdatePasswordRequest(BaseModel):
-    old_password: str = Field(..., min_length=4, max_length=100)
-    new_password: str = Field(..., min_length=4, max_length=100)
+    old_password: str = Field(..., min_length=1, max_length=100)
+    new_password: str = Field(..., min_length=1, max_length=100)
+
+
+async def acquire_token_bucket(key: str, max_capacity: int, refill_rate: float) -> bool:
+    """
+    Redis 原子令牌桶限流算法。
+    refill_rate: 每秒恢复的令牌数。
+    """
+    from app.infrastructure.redis_client import redis_client
+    import time
+    
+    lua_script = """
+    local key = KEYS[1]
+    local capacity = tonumber(ARGV[1])
+    local refill_rate = tonumber(ARGV[2])
+    local now = tonumber(ARGV[3])
+    local requested = 1
+    
+    local data = redis.call('hmget', key, 'tokens', 'last_updated')
+    local tokens = tonumber(data[1])
+    local last_updated = tonumber(data[2])
+    
+    if not tokens then
+        tokens = capacity
+        last_updated = now
+    else
+        local delta = math.max(0, now - last_updated)
+        tokens = math.min(capacity, tokens + delta * refill_rate)
+        last_updated = now
+    end
+    
+    if tokens >= requested then
+        tokens = tokens - requested
+        redis.call('hmset', key, 'tokens', tokens, 'last_updated', last_updated)
+        redis.call('expire', key, 86400) -- 保留 24 小时过期防止堆积
+        return 1
+    else
+        redis.call('hmset', key, 'tokens', tokens, 'last_updated', last_updated)
+        redis.call('expire', key, 86400)
+        return 0
+    end
+    """
+    try:
+        now = time.time()
+        result = await redis_client.eval(lua_script, 1, key, max_capacity, refill_rate, now)
+        return bool(result == 1)
+    except Exception as e:
+        logger.error(f"[RateLimit] Lua evaluation error for {key}: {e}")
+        return True  # 降级容灾：Redis 故障时放行，防止阻断正常登录注册
 
 
 @router.post("/auth/register")
-def register_user(req: UserRegisterRequest, db: Session = Depends(get_db)):
-    repo = SQLGameRepository(db)
+async def register_user(
+    req: UserRegisterRequest,
+    request: Request,
+    db: Session = Depends(get_db)
+):
+    # 1. IP 维度限流：容量 20，每秒恢复 0.5 (每分钟 30 次)
+    client_ip = request.client.host if request.client else "127.0.0.1"
+    ip_key = f"game:ratelimit:ip:{client_ip}"
+    if not await acquire_token_bucket(ip_key, max_capacity=20, refill_rate=0.5):
+        raise HTTPException(status_code=429, detail="您的操作过于频繁，请稍后再试")
+
+    # 2. 账号维度限流：容量 10，每秒恢复 0.2 (每分钟 12 次)
     username_norm = req.username.strip().lower()
+    user_key = f"game:ratelimit:user:{username_norm}"
+    if not await acquire_token_bucket(user_key, max_capacity=10, refill_rate=0.2):
+        raise HTTPException(status_code=429, detail="此账号操作过于频繁，请稍后再试")
+
+    if len(req.password) < 6:
+        raise HTTPException(status_code=400, detail="密码长度至少为 6 位")
+    repo = SQLGameRepository(db)
     existing = repo.get_user_by_username(username_norm)
     if existing:
         raise HTTPException(status_code=400, detail="账号已存在，请直接登录")
@@ -118,14 +185,30 @@ def register_user(req: UserRegisterRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/auth/login")
-def login_user(req: UserLoginRequest, db: Session = Depends(get_db)):
-    repo = SQLGameRepository(db)
+async def login_user(
+    req: UserLoginRequest,
+    request: Request,
+    db: Session = Depends(get_db)
+):
+    # 1. IP 维度限流：容量 20，每秒恢复 0.5 (每分钟 30 次)
+    client_ip = request.client.host if request.client else "127.0.0.1"
+    ip_key = f"game:ratelimit:ip:{client_ip}"
+    if not await acquire_token_bucket(ip_key, max_capacity=20, refill_rate=0.5):
+        raise HTTPException(status_code=429, detail="您的操作过于频繁，请稍后再试")
+
+    # 2. 账号维度限流：容量 10，每秒恢复 0.2 (每分钟 12 次)
     username_norm = req.username.strip().lower()
+    user_key = f"game:ratelimit:user:{username_norm}"
+    if not await acquire_token_bucket(user_key, max_capacity=10, refill_rate=0.2):
+        raise HTTPException(status_code=429, detail="此账号操作过于频繁，请稍后再试")
+
+    repo = SQLGameRepository(db)
     user = repo.get_user_by_username(username_norm)
-    if not user:
-        raise HTTPException(status_code=400, detail="账号不存在，请先注册")
-    if not verify_password(req.password, user.password):
-        raise HTTPException(status_code=400, detail="密码不正确")
+    
+    # 统一登录失败返回信息，防范用户名枚举泄露
+    if not user or not verify_password(req.password, user.password):
+        raise HTTPException(status_code=400, detail="用户名或密码不正确")
+        
     profile = repo.get_or_create_profile(user.player_id, username_norm)
     return {
         "ok": True,
@@ -337,8 +420,10 @@ def update_player_password(
     current_player_id: str = Depends(require_game_player_id),
 ):
     ensure_player_access(player_id, current_player_id)
+    if len(req.new_password) < 6:
+        raise HTTPException(status_code=400, detail="新密码长度至少为 6 位")
     repo = SQLGameRepository(db)
-    user = repo.get_user_by_player_id(player_id)
+    user = repo.get_user_by_id(player_id) if hasattr(SQLGameRepository, "get_user_by_id") else repo.get_user_by_player_id(player_id)
     if not user:
         raise HTTPException(status_code=404, detail="未找到对应的用户记录")
 
@@ -354,3 +439,82 @@ def update_player_password(
         "ok": True,
         "message": "密码修改成功，请重新登录"
     }
+
+
+class TicketResponse(BaseModel):
+    ticket: str
+    expires_in: int = 30
+
+
+@router.post("/auth/ticket", response_model=TicketResponse)
+async def create_websocket_ticket(
+    current_player_id: str = Depends(require_game_player_id)
+):
+    """为已登录玩家生成单次使用、30秒有效的 WebSocket 握手票据"""
+    import uuid
+    ticket_id = f"ticket-{uuid.uuid4().hex}"
+    
+    from app.infrastructure.redis_client import redis_client
+    redis_key = f"game:ws_ticket:{ticket_id}"
+    await redis_client.set(redis_key, current_player_id, ex=30)
+    
+    return {
+        "ticket": ticket_id,
+        "expires_in": 30
+    }
+
+
+@router.post("/auth/settlement/replay")
+async def replay_settlement_tasks(
+    request: Request,
+    api_token: Optional[str] = Header(None, alias="X-API-Token")
+):
+    """人工重放结算死信队列任务"""
+    if settings.is_production:
+        if not settings.API_TOKEN or api_token != settings.API_TOKEN:
+            raise HTTPException(status_code=403, detail="Forbidden")
+            
+    bus = request.app.state.game_message_bus
+    if not hasattr(bus, "replay_dead_letter_queue"):
+        raise HTTPException(status_code=400, detail="Replay not supported by bus adapter")
+        
+    count = await bus.replay_dead_letter_queue()
+    return {"ok": True, "replayed_count": count}
+
+
+@router.get("/health/live", summary="进程存活度探活（Liveness）")
+def liveness_check():
+    """反映进程事件循环是否存活，不发起共享基础设施网络调用，防止网络抖动导致的无意义重启"""
+    return {"status": "ok", "live": True}
+
+
+@router.get("/health/ready", summary="外部就绪度探活（Readiness）")
+async def readiness_check(
+    request: Request,
+    db: Session = Depends(get_db)
+):
+    """检查 Redis, RabbitMQ 以及 MySQL 的物理连通性，依赖故障时返回 503 触发外部 SLB 下线隔离"""
+    from app.infrastructure.redis_client import redis_client
+    from sqlalchemy import text
+    
+    # 1. 验证 MySQL 数据库
+    try:
+        db.execute(text("SELECT 1"))
+    except Exception as db_err:
+        logger.error(f"[ReadinessCheck] Database check failed: {db_err}")
+        raise HTTPException(status_code=503, detail=f"Database check failed: {db_err}")
+
+    # 2. 验证 Redis
+    try:
+        await redis_client.ping()
+    except Exception as redis_err:
+        logger.error(f"[ReadinessCheck] Redis check failed: {redis_err}")
+        raise HTTPException(status_code=503, detail=f"Redis check failed: {redis_err}")
+
+    # 3. 验证 RabbitMQ Message Bus
+    bus = getattr(request.app.state, "game_message_bus", None)
+    if not bus or not bus.channel or bus.channel.is_closed:
+        logger.error("[ReadinessCheck] RabbitMQ check failed: Channel is closed or bus not found")
+        raise HTTPException(status_code=503, detail="RabbitMQ check failed: Channel is closed")
+
+    return {"status": "ok", "ready": True}

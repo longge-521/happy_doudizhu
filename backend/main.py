@@ -77,6 +77,11 @@ app.include_router(audit_log_router)
 app.include_router(game_ws_router)
 app.include_router(game_api_router)
 
+# 挂载前端打包 dist 资源（如果存在），提供开箱即用的静态托管，支持多实例跨网关直接访问
+frontend_dist_dir = os.path.join(os.path.dirname(BASE_DIR), "frontend", "dist")
+if os.path.exists(frontend_dist_dir):
+    app.mount("/", StaticFiles(directory=frontend_dist_dir, html=True), name="frontend")
+
 
 async def on_mq_message_received(app_instance: FastAPI, data: dict):
     """当监听到 RabbitMQ 消息时的业务处理逻辑（推送给在线的客户端）"""
@@ -625,6 +630,7 @@ async def dispatch_game_command(app_instance: FastAPI, command):
         current_outbox_events.set(events)
         await repo.save_room(room)
         if result.get("game_over"):
+            bus = getattr(app_instance.state, "game_message_bus", None)
             settlement_service = getattr(
                 app_instance.state,
                 "game_settlement_service",
@@ -632,20 +638,39 @@ async def dispatch_game_command(app_instance: FastAPI, command):
             )
             if settlement_service is None:
                 from app.application.game.settlement_service import GameSettlementService
-
                 settlement_service = GameSettlementService()
-            try:
-                await asyncio.to_thread(settlement_service.settle, room, result)
-            except Exception:
-                logger.exception(
-                    "[dispatch_game_command] Settlement failed; keep room for recovery: %s",
+                
+            if bus:
+                try:
+                    await bus.publish_settlement_task(room.room_id, result)
+                    logger.info(f"[dispatch_game_command] Successfully published settlement task for room {room.room_id}")
+                except Exception as mq_err:
+                    logger.error(f"[dispatch_game_command] MQ publish failed, falling back to sync settlement: {mq_err}")
+                    try:
+                        await asyncio.to_thread(settlement_service.settle, room, result)
+                    except Exception:
+                        logger.exception(
+                            "[dispatch_game_command] Fallback settlement failed; keep room for recovery: %s",
+                            room.room_id,
+                        )
+                        return
+                    await game_service.cleanup_room(
+                        room.room_id,
+                        [player.id for player in room.players],
+                    )
+            else:
+                try:
+                    await asyncio.to_thread(settlement_service.settle, room, result)
+                except Exception:
+                    logger.exception(
+                        "[dispatch_game_command] Sync settlement failed; keep room for recovery: %s",
+                        room.room_id,
+                    )
+                    return
+                await game_service.cleanup_room(
                     room.room_id,
+                    [player.id for player in room.players],
                 )
-                return
-            await game_service.cleanup_room(
-                room.room_id,
-                [player.id for player in room.players],
-            )
             return
         await _schedule_distributed_follow_up(repo, room)
     except Exception as exc:
@@ -765,6 +790,20 @@ def _scheduled_task_to_command(task):
     )
 
 
+async def confirm_scheduled_task(task_id: str):
+    """从延时队列中彻底移除确认完成的调度任务"""
+    from app.infrastructure.redis_client import redis_client
+    lua_del = """
+    local zset_key = KEYS[1]
+    local hash_key = KEYS[2]
+    local tid = ARGV[1]
+    redis.call('zrem', zset_key, tid)
+    redis.call('hdel', hash_key, tid)
+    return 1
+    """
+    await redis_client.eval(lua_del, 2, "game:scheduler:tasks", "game:scheduler:task_details", task_id)
+
+
 async def scheduler_poller(app_instance: FastAPI):
     """
     后台任务：以 1 秒为周期从 Redis 延时队列中原子拉取到期的超时任务，
@@ -778,10 +817,12 @@ async def scheduler_poller(app_instance: FastAPI):
     zset_key = "game:scheduler:tasks"
     hash_key = "game:scheduler:task_details"
     
+    # 抢占式领用，先延长 3 秒租约防重，确认发送成功后再彻底 Confirm 物理删除
     lua_script = """
     local zset_key = KEYS[1]
     local hash_key = KEYS[2]
     local now = tonumber(ARGV[1])
+    local claim_deadline = tonumber(ARGV[2])
     
     local tids = redis.call('zrangebyscore', zset_key, 0, now)
     local results = {}
@@ -790,10 +831,9 @@ async def scheduler_poller(app_instance: FastAPI):
             local detail = redis.call('hget', hash_key, tid)
             if detail then
                 table.insert(results, detail)
-                redis.call('hdel', hash_key, tid)
+                redis.call('zadd', zset_key, claim_deadline, tid)
             end
         end
-        redis.call('zremrangebyscore', zset_key, 0, now)
     end
     return results
     """
@@ -805,7 +845,7 @@ async def scheduler_poller(app_instance: FastAPI):
         while True:
             now = time.time()
             try:
-                raw_tasks = await redis_client.eval(lua_script, 2, zset_key, hash_key, now)
+                raw_tasks = await redis_client.eval(lua_script, 2, zset_key, hash_key, now, now + 3.0)
                 if raw_tasks:
                     for raw in raw_tasks:
                         if isinstance(raw, bytes):
@@ -813,10 +853,22 @@ async def scheduler_poller(app_instance: FastAPI):
                         
                         task = ScheduledTaskSchema.model_validate_json(raw)
                         
+                        if task.task_type == "match_ai":
+                            pid = task.payload.get("player_id")
+                            nickname = task.payload.get("nickname")
+                            base_score = int(task.payload.get("base_score", 10))
+                            logger.info(f"[SchedulerPoller] Executing delayed match_ai for player {pid}")
+                            game_service = getattr(app_instance.state, "game_service", None)
+                            if game_service:
+                                await game_service.match_ai_for_player(pid, nickname, base_score)
+                            await confirm_scheduled_task(task.task_id)
+                            continue
+
                         command = _scheduled_task_to_command(task)
                         
                         shard_id = binascii.crc32(task.room_id.encode('utf-8')) % 16
                         await bus.publish_command(shard_id, command)
+                        await confirm_scheduled_task(task.task_id)
                         logger.debug(f"[SchedulerPoller] Routed expired task {task.task_id} to shard {shard_id}")
             except Exception as poll_err:
                 logger.error(f"[SchedulerPoller] Error scanning delay queue: {poll_err}")
@@ -924,6 +976,38 @@ async def lifespan(app_instance: FastAPI):
     app_instance.state.game_service = game_service
     app_instance.state.game_settlement_service = game_settlement_service
     app_instance.state.scheduler_service = scheduler_service
+
+    # 3. 订阅结算服务 (Settlement Worker)
+    async def settlement_task_callback(room_id: str, payload: dict):
+        try:
+            from app.application.game.settlement_service import GameSettlementService
+            logger.info(f"[SettlementWorker] Consumed settlement task for room {room_id}")
+            
+            repo = app_instance.state.game_service._repo
+            room = await repo.get_room(room_id)
+            if not room:
+                logger.warning(f"[SettlementWorker] Room {room_id} snapshot not found in Redis, checking idempotent DB state...")
+                from app.infrastructure.database.game_repository import SQLGameRepository
+                from app.infrastructure.database.session import transactional_session
+                with transactional_session() as db:
+                    sql_repo = SQLGameRepository(db)
+                    settlement = sql_repo.get_settlement_for_update(room_id)
+                    if settlement and settlement.status == "completed":
+                        logger.info(f"[SettlementWorker] Room {room_id} already successfully settled in DB. Idempotent success.")
+                        return
+                    else:
+                        raise RuntimeError(f"Room {room_id} snapshot missing from Redis and not marked completed in DB.")
+
+            settlement_service = getattr(app_instance.state, "game_settlement_service", None) or GameSettlementService()
+            await asyncio.to_thread(settlement_service.settle, room, payload)
+            
+            await app_instance.state.game_service.cleanup_room(room_id, [player.id for player in room.players])
+            logger.info(f"[SettlementWorker] Successfully completed settlement and cleanup for room {room_id}")
+        except Exception as e:
+            logger.exception(f"[SettlementWorker] Error during settlement processing for room {room_id}: {e}")
+            raise e
+
+    await bus.subscribe_settlement_tasks(settlement_task_callback)
 
     # 启动时清理超时的孤儿临时上传目录
     upload_service.cleanup_stale_uploads(timeout_hours=2.0)
