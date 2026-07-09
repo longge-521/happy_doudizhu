@@ -70,6 +70,50 @@ class GameWebSocketHandler:
     async def _send(self, data: dict):
         await self.manager.send_to_player(self.player_id, data)
 
+    async def _forward_distributed_command(self, action: str, payload: dict) -> bool:
+        """
+        在分布式模式下，将写动作转发为 Shard 分片队列命令。
+        若转发成功，返回 True；非分布式模式，返回 False。
+        """
+        from app.infrastructure.config import settings
+        
+        if not settings.DISTRIBUTED_MODE:
+            return False
+            
+        room = await self.service._get_player_room(self.player_id)
+        if not room:
+            await self._send({"event": "error", "msg": "玩家当前不在任何游戏房间内"})
+            return True
+            
+        import binascii
+        import uuid
+        import time
+        from app.application.game.schemas import GameCommandSchema
+        
+        shard_id = binascii.crc32(room.room_id.encode('utf-8')) % 16
+        bus = self.ws.app.state.game_message_bus
+        
+        command = GameCommandSchema(
+            command_id=f"cmd-{uuid.uuid4().hex[:8]}",
+            action=action,
+            room_id=room.room_id,
+            player_id=self.player_id,
+            connection_epoch=self.connection_epoch,
+            source_instance_id=settings.INSTANCE_ID,
+            payload=payload,
+            created_at=time.time(),
+            trace_id=f"trace-{uuid.uuid4().hex[:8]}"
+        )
+        
+        try:
+            await bus.publish_command(shard_id, command)
+            logger.debug(f"[Handler] Forwarded action {action} to shard {shard_id}")
+        except Exception as e:
+            logger.error(f"[Handler] Failed to forward action {action} to shard {shard_id}: {e}")
+            await self._send({"event": "error", "msg": "分布式服务器通信繁忙，请重试"})
+            
+        return True
+
     async def _broadcast_room_event(self, room, event_data: dict):
         """向房间内所有在线真人玩家广播事件，支持跨实例路由"""
         from app.infrastructure.config import settings
@@ -243,6 +287,8 @@ class GameWebSocketHandler:
 
         elif action == "call_landlord":
             score = data.get("score", 1)
+            if await self._forward_distributed_command("call_landlord", {"score": score}):
+                return
             result = await self.service.handle_call(self.player_id, score)
             if result.get("error"):
                 await self._send({"event": "error", "msg": result["error"]})
@@ -267,6 +313,8 @@ class GameWebSocketHandler:
                     await self._process_ai_turns(room)
 
         elif action == "skip_call":
+            if await self._forward_distributed_command("skip_call", {}):
+                return
             result = await self.service.handle_skip_call(self.player_id)
             if result.get("error"):
                 await self._send({"event": "error", "msg": result["error"]})
@@ -359,6 +407,8 @@ class GameWebSocketHandler:
 
         elif action == "play_cards":
             cards = data.get("cards", [])
+            if await self._forward_distributed_command("play_cards", {"cards": cards}):
+                return
             result = await self.service.handle_play(self.player_id, cards)
             if result.get("error"):
                 await self._send({"event": "error", "msg": result["error"]})
@@ -388,6 +438,8 @@ class GameWebSocketHandler:
                         await self._process_ai_turns(room)
 
         elif action == "pass_turn":
+            if await self._forward_distributed_command("pass_turn", {}):
+                return
             result = await self.service.handle_pass(self.player_id)
             if result.get("error"):
                 await self._send({"event": "error", "msg": result["error"]})

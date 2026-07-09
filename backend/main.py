@@ -240,35 +240,192 @@ async def instance_event_consumer(app_instance: FastAPI, bus):
         logger.error(f"[EventConsumer] Error in instance event consumer: {e}")
 
 
+async def dispatch_game_command(app_instance: FastAPI, command):
+    """
+    分片命令分发处理器：
+    作为分片 Worker 接收并消费 GameCommandSchema 命令包，执行真正的领域游戏逻辑修改。
+    """
+    from app.infrastructure.game.context import current_outbox_events, current_command_id
+    from app.infrastructure.config import settings
+    import binascii
+    
+    game_service = app_instance.state.game_service
+    lease_manager = app_instance.state.lease_manager
+    
+    room_id = command.room_id
+    action = command.action
+    player_id = command.player_id
+    payload = command.payload
+    cmd_id = command.command_id
+    
+    room = await game_service._get_player_room(player_id)
+    if not room or room.room_id != room_id:
+        logger.warning(f"[dispatch_game_command] Room {room_id} not found or mismatch for player {player_id}.")
+        return
+
+    # 校验并续期该房间所有权
+    shard_id = binascii.crc32(room_id.encode('utf-8')) % 16
+    my_held_shards = getattr(app_instance.state, "my_held_shards", {})
+    token = my_held_shards.get(shard_id, 0)
+    
+    if settings.DISTRIBUTED_MODE and not token:
+        logger.error(f"[dispatch_game_command] Drop command {cmd_id} because this instance does not hold lease for shard {shard_id}.")
+        return
+
+    # 绑定租约属性
+    room.envelope_fencing_token = token
+    room.envelope_owner = settings.INSTANCE_ID
+    
+    events_list = []
+    token_outbox = current_outbox_events.set(events_list)
+    token_cmd = current_command_id.set(cmd_id)
+    
+    try:
+        if action == "call_landlord":
+            score = int(payload.get("score", 0))
+            await game_service.handle_call(player_id, score)
+        elif action == "skip_call":
+            await game_service.handle_skip_call(player_id)
+        elif action == "play_cards":
+            cards = payload.get("cards", [])
+            await game_service.handle_play(player_id, cards)
+        elif action == "pass_turn":
+            await game_service.handle_pass(player_id)
+        else:
+            logger.warning(f"[dispatch_game_command] Unknown action {action} for room {room_id}")
+            
+    except Exception as e:
+        logger.error(f"[dispatch_game_command] Executing {action} failed: {e}", exc_info=True)
+    finally:
+        current_outbox_events.reset(token_outbox)
+        current_command_id.reset(token_cmd)
+
+
+async def shard_lease_coordinator(app_instance: FastAPI):
+    """
+    分片租约管理器协程：
+    每 3 秒做一次分片拥有权盘点，并动态管理 RabbitMQ 分片 Consumer。
+    """
+    from app.infrastructure.redis_client import redis_client
+    import time
+    
+    logger.info("[Lifespan] Starting shard lease coordinator...")
+    instance_id = settings.INSTANCE_ID
+    my_held_shards = app_instance.state.my_held_shards
+    
+    lease_manager = app_instance.state.lease_manager
+    bus = app_instance.state.game_message_bus
+    
+    async def shard_command_callback(command):
+        try:
+            await dispatch_game_command(app_instance, command)
+        except Exception as e:
+            logger.error(f"[Coordinator] Failed to dispatch command {command.command_id}: {e}")
+
+    try:
+        while True:
+            # 1. 扫描所有健康实例键
+            keys = await redis_client.keys("game:instance:*")
+            healthy_instances = []
+            for k in keys:
+                parts = k.split(":")
+                if len(parts) >= 3:
+                    healthy_instances.append(parts[2])
+            
+            healthy_instances.sort()
+            
+            if not healthy_instances:
+                healthy_instances = [instance_id]
+                
+            if instance_id not in healthy_instances:
+                healthy_instances.append(instance_id)
+                healthy_instances.sort()
+                
+            my_index = healthy_instances.index(instance_id)
+            num_instances = len(healthy_instances)
+            
+            # 2. 遍历 16 个分片
+            for shard_id in range(16):
+                should_own = (shard_id % num_instances == my_index)
+                
+                if should_own:
+                    token = my_held_shards.get(shard_id)
+                    success = False
+                    
+                    if token:
+                        success = await lease_manager.renew_shard_lease(shard_id, instance_id, token)
+                        if not success:
+                            logger.warning(f"[Coordinator] Lost lease for shard {shard_id} (renew failed).")
+                            my_held_shards.pop(shard_id, None)
+                            await bus.unsubscribe_commands(shard_id)
+                    
+                    if not success:
+                        new_token = await lease_manager.acquire_shard_lease(shard_id, instance_id)
+                        if new_token:
+                            logger.info(f"[Coordinator] Successfully acquired lease for shard {shard_id} (token={new_token}).")
+                            my_held_shards[shard_id] = new_token
+                            await bus.subscribe_commands(shard_id, shard_command_callback)
+                else:
+                    if shard_id in my_held_shards:
+                        logger.info(f"[Coordinator] Releasing shard {shard_id} (assigned to other instance).")
+                        my_held_shards.pop(shard_id, None)
+                        await bus.unsubscribe_commands(shard_id)
+            
+            await asyncio.sleep(3)
+    except asyncio.CancelledError:
+        logger.info("[Lifespan] Stopping shard lease coordinator...")
+        for shard_id in list(my_held_shards.keys()):
+            try:
+                await bus.unsubscribe_commands(shard_id)
+            except Exception:
+                pass
+    except Exception as e:
+        logger.error(f"[Coordinator] Error in lease loop: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app_instance: FastAPI):
     settings.validate_production_settings()
     
     # 0. 根据模式初始化消息总线和在线位置服务
-    from app.infrastructure.game.memory_adapters import MemoryMessageBus, MemoryPresenceService
+    from app.infrastructure.game.memory_adapters import MemoryMessageBus, MemoryPresenceService, MemoryLeaseManager, MemoryOutboxService
     from app.infrastructure.game.rabbitmq_bus import RabbitMQMessageBus
     from app.infrastructure.game.redis_presence import RedisPresenceService
+    from app.infrastructure.game.redis_lease import RedisLeaseManager
+    from app.infrastructure.game.redis_outbox import RedisOutboxService
     
     dist_heartbeat_task = None
     dist_consumer_task = None
+    dist_coord_task = None
     bus = None
 
     if settings.DISTRIBUTED_MODE:
         bus = RabbitMQMessageBus()
         await bus.connect()
         presence = RedisPresenceService()
+        lease_manager = RedisLeaseManager()
+        outbox_service = RedisOutboxService()
         
         app_instance.state.game_message_bus = bus
         app_instance.state.presence_service = presence
+        app_instance.state.lease_manager = lease_manager
+        app_instance.state.outbox_service = outbox_service
+        app_instance.state.my_held_shards = {}
         
-        # 启动心跳协程和事件消费协程
         dist_heartbeat_task = asyncio.create_task(instance_heartbeat_sender(app_instance))
         dist_consumer_task = asyncio.create_task(instance_event_consumer(app_instance, bus))
+        dist_coord_task = asyncio.create_task(shard_lease_coordinator(app_instance))
     else:
         bus = MemoryMessageBus()
         presence = MemoryPresenceService()
+        lease_manager = MemoryLeaseManager()
+        outbox_service = MemoryOutboxService()
+        
         app_instance.state.game_message_bus = bus
         app_instance.state.presence_service = presence
+        app_instance.state.lease_manager = lease_manager
+        app_instance.state.outbox_service = outbox_service
+        app_instance.state.my_held_shards = {s: 1 for s in range(16)}
 
     # 1. 自动创建/确认 MySQL 表结构
     if should_auto_init_db():
@@ -292,7 +449,12 @@ async def lifespan(app_instance: FastAPI):
     from app.infrastructure.redis_client import redis_client
 
     game_ws_manager = GameWSConnectionManager()
-    game_repo = RedisGameRepository(redis_client)
+    game_repo = RedisGameRepository(
+        redis_client,
+        presence_service=app_instance.state.presence_service,
+        message_bus=app_instance.state.game_message_bus,
+        outbox_service=app_instance.state.outbox_service
+    )
     game_service = GameAppService(game_repo)
 
     # 状态保留于 FastAPI app.state
@@ -335,9 +497,12 @@ async def lifespan(app_instance: FastAPI):
             dist_heartbeat_task.cancel()
         if dist_consumer_task:
             dist_consumer_task.cancel()
+        if dist_coord_task:
+            dist_coord_task.cancel()
         await asyncio.gather(
             dist_heartbeat_task, 
             dist_consumer_task, 
+            dist_coord_task,
             return_exceptions=True
         )
         if bus:

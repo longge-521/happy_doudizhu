@@ -33,6 +33,9 @@ class MemoryMessageBus(IGameMessageBus):
             self._subscribers[shard_id] = []
         self._subscribers[shard_id].append(callback)
 
+    async def unsubscribe_commands(self, shard_id: int) -> None:
+        self._subscribers.pop(shard_id, None)
+
     async def publish_event(self, instance_id: str, event: GameEventSchema) -> None:
         # 在单机模式下，直接调用本地 WebSocket 连接管理器进行推送
         # 本实现只打印 debug 日志。真实的 websocket 推送依然由原 websocket 连接负责。
@@ -101,6 +104,11 @@ class MemoryOutboxService(IOutboxService):
         if room_id not in self._outboxes:
             self._outboxes[room_id] = []
         self._outboxes[room_id].append(event)
+
+    async def save_events(self, room_id: str, events: List[GameEventSchema]) -> None:
+        if room_id not in self._outboxes:
+            self._outboxes[room_id] = []
+        self._outboxes[room_id].extend(events)
 
     async def get_pending_events(self, room_id: str) -> List[GameEventSchema]:
         return self._outboxes.get(room_id, [])

@@ -1,4 +1,5 @@
 import json
+import asyncio
 import logging
 import aio_pika
 from typing import Callable, Awaitable, Optional
@@ -16,6 +17,7 @@ class RabbitMQMessageBus(IGameMessageBus):
         self.channel: Optional[aio_pika.RobustChannel] = None
         self.event_exchange_name = "ddz.game.events"
         self.command_exchange_name = "ddz.game.commands"
+        self._shard_consumers = {}
 
     async def connect(self) -> None:
         """建立 RabbitMQ 异步长连接与 Channel"""
@@ -69,8 +71,46 @@ class RabbitMQMessageBus(IGameMessageBus):
         shard_id: int, 
         callback: Callable[[GameCommandSchema], Awaitable[None]]
     ) -> None:
-        # 阶段 2 只需保留定义，不真正注册分片 Worker 消费。
-        logger.warning("[RabbitMQMessageBus] Shard commands subscription is not active in Phase 2.")
+        if not self.channel or self.channel.is_closed:
+            raise ConnectionError("RabbitMQMessageBus is not connected")
+            
+        queue_name = f"ddz.game.commands.shard.{shard_id}"
+        routing_key = f"shard.{shard_id}"
+        
+        arguments = {"x-single-active-consumer": True}
+        queue = await self.channel.declare_queue(
+            queue_name, 
+            durable=True, 
+            arguments=arguments
+        )
+        exchange = await self.channel.get_exchange(self.command_exchange_name)
+        await queue.bind(exchange, routing_key=routing_key)
+        
+        async def _consume_loop():
+            async with queue.iterator() as queue_iter:
+                async for message in queue_iter:
+                    async with message.process():
+                        try:
+                            data_str = message.body.decode("utf-8")
+                            command = GameCommandSchema.model_validate_json(data_str)
+                            await callback(command)
+                        except Exception as e:
+                            logger.error(f"[ShardConsumer-{shard_id}] Error: {e}")
+
+        task = asyncio.create_task(_consume_loop())
+        self._shard_consumers[shard_id] = (task, queue)
+        logger.info(f"[RabbitMQMessageBus] Subscribed to shard {shard_id}")
+
+    async def unsubscribe_commands(self, shard_id: int) -> None:
+        item = self._shard_consumers.pop(shard_id, None)
+        if item:
+            task, queue = item
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            logger.info(f"[RabbitMQMessageBus] Unsubscribed from shard {shard_id}")
 
     async def publish_event(self, instance_id: str, event: GameEventSchema) -> None:
         if not self.channel or self.channel.is_closed:

@@ -20,6 +20,11 @@ class IGameMessageBus(ABC):
         pass
 
     @abstractmethod
+    async def unsubscribe_commands(self, shard_id: int) -> None:
+        """取消订阅特定分片的命令队列，释放消费者资源。"""
+        pass
+
+    @abstractmethod
     async def publish_event(self, instance_id: str, event: GameEventSchema) -> None:
         """向特定应用网关实例（instance_id）上的特定玩家分发个人视角事件。"""
         pass
@@ -71,6 +76,11 @@ class IOutboxService(ABC):
     @abstractmethod
     async def save_event(self, room_id: str, event: GameEventSchema) -> None:
         """在一个原子事务中保存新房间状态并将个人事件写入 Outbox。"""
+        pass
+
+    @abstractmethod
+    async def save_events(self, room_id: str, events: List[GameEventSchema]) -> None:
+        """原子批量保存房间状态并将多条事件写入 Outbox。"""
         pass
 
     @abstractmethod
