@@ -73,3 +73,12 @@ def shuffle_and_deal() -> Tuple[List[int], List[int], List[int], List[int]]:
     hand3 = sort_cards(deck[34:51])
     bottom = sort_cards(deck[51:54])
     return hand1, hand2, hand3, bottom
+
+
+def cut_cards(deck: List[int]) -> List[int]:
+    """切牌算法：随机选一切割点分成两段拼接，保留局部牌序"""
+    if len(deck) != 54:
+        return list(deck)
+    cut_idx = random.randint(10, 44)
+    return deck[cut_idx:] + deck[:cut_idx]
+

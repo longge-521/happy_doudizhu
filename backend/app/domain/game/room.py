@@ -64,6 +64,7 @@ class GameRoom:
         self.all_played_cards: List[int] = []
         self.play_history: List[Dict[str, Any]] = []
         self.auto_play_players: Set[str] = set()
+        self.play_mode: str = "classic"
 
         # 叫地主状态
         self._call_index: int = 0       # 当前叫地主的玩家索引
@@ -126,6 +127,61 @@ class GameRoom:
         self.current_turn = ids[self._first_caller_index]
         self.turn_deadline = time.time() + 18  # 15s 叫牌时间 + 3s 发牌动画缓冲
         return dict(self.hands)
+
+    def deal_with_deck(self, deck: List[int]) -> Dict[str, List[int]]:
+        """传入预设牌堆发牌，应用切牌并切片分发"""
+        ids = self._player_ids()
+        from app.domain.game.card import cut_cards
+        
+        cut_deck = cut_cards(deck)
+        h1 = sort_cards(cut_deck[0:17])
+        h2 = sort_cards(cut_deck[17:34])
+        h3 = sort_cards(cut_deck[34:51])
+        bottom = sort_cards(cut_deck[51:54])
+        
+        self.hands = {ids[0]: h1, ids[1]: h2, ids[2]: h3}
+        self.bottom_cards = bottom
+        self.phase = GamePhase.CALLING
+        self.landlord = None
+        self.last_play = LastPlay()
+        self.pass_count = 0
+        self.doubling_choices = {}
+        self.show_cards_players = {}
+        self.all_played_cards = []
+        self.play_history = []
+        self.auto_play_players = set()
+        self._call_index = 0
+        self._call_scores = {}
+        self._call_round = 1
+        self._first_bidder = None
+        self._round2_queue = []
+        self._round2_scores = {}
+        self._grab_count = {}
+        self._declined_players = set()
+        
+        import random
+        self._first_caller_index = random.randint(0, 2)
+        self._call_index = self._first_caller_index
+        self.current_turn = ids[self._first_caller_index]
+        self.turn_deadline = time.time() + 18
+        return dict(self.hands)
+
+    def recycle_cards(self) -> List[int]:
+        """回收已打出和未打出的牌堆"""
+        recycled = list(self.all_played_cards)
+        # 按玩家座位顺序收集剩余手牌
+        for p in self.players:
+            recycled.extend(self.hands.get(p.id, []))
+        # 如果底牌没有发给任何人且未出现在出牌/手牌中，则追加底牌
+        if self.landlord is None:
+            recycled.extend(self.bottom_cards)
+        
+        # 严格校验是否构成完整的54张牌
+        if len(recycled) == 54 and sorted(recycled) == list(range(54)):
+            return recycled
+        # 失败防御兜底
+        return list(range(54))
+
 
     # ── 叫地主 ──
 
@@ -464,6 +520,7 @@ class GameRoom:
         return {
             "room_id": self.room_id,
             "phase": self.phase.value,
+            "play_mode": self.play_mode,
             "players": [
                 {"id": p.id, "nickname": p.nickname, "is_ai": p.is_ai, "is_online": p.is_online}
                 for p in self.players
@@ -504,6 +561,7 @@ class GameRoom:
         """从 dict 反序列化"""
         room = cls()
         room.room_id = data["room_id"]
+        room.play_mode = data.get("play_mode", "classic")
         room.phase = GamePhase(data["phase"])
         room.players = [
             Player(id=p["id"], nickname=p["nickname"], is_ai=p["is_ai"], is_online=p["is_online"])
