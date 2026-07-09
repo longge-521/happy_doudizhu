@@ -484,7 +484,6 @@ function formatTime(seconds: number): string {
 // 侧边栏菜单列表
 const sidebarItems: SidebarItem[] = [
   { name: '510K', badge: '热门' },
-  { name: '不洗牌', badge: '' },
   { name: '欢乐经典', badge: '' },
   { name: '经典', badge: '最近', active: true },
   { name: '天地癞子', badge: '' },
@@ -509,7 +508,7 @@ function handleHotPlayHint() {
 </script>
 
 <template>
-  <div class="game-table lobby-modern-container">
+  <div class="game-table lobby-modern-container" :class="{ 'no-shuffle-active': playMode === 'no_shuffle' }">
     <template v-if="!showReadyPage">
       <!-- 顶部状态栏 -->
       <header class="lobby-top-bar">
@@ -618,7 +617,7 @@ function handleHotPlayHint() {
               v-for="tier in TIERS"
               :key="tier.id"
               class="tier-card"
-              :class="[tier.colorClass, { selected: selectedBaseScore === tier.baseScore, 'recommend-card': tier.id === 'primary', 'no-shuffle-tier': playMode === 'no_shuffle' }]"
+              :class="[tier.colorClass, { selected: selectedBaseScore === tier.baseScore, 'recommend-card': tier.id === 'primary' }]"
               @click="selectTier(tier)"
             >
               <!-- 推荐角标 -->
@@ -2853,26 +2852,10 @@ function handleHotPlayHint() {
   box-shadow: 0 4px 15px rgba(213, 0, 0, 0.5), inset 0 1px 1px rgba(255, 255, 255, 0.35);
 }
 
-/* 不洗牌场卡片专属样式 */
-.tier-card.no-shuffle-tier {
-  border: 2px solid #ff3d00;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.65),
-              0 0 20px rgba(213, 0, 0, 0.55),
-              inset 0 1.5px 3px rgba(255, 215, 0, 0.35);
-}
-
-.tier-card.no-shuffle-tier:hover {
-  border-color: #ff6d00;
-  box-shadow: 0 18px 45px rgba(0, 0, 0, 0.75),
-              0 0 35px rgba(255, 61, 0, 0.8),
-              inset 0 2px 4px rgba(255, 215, 0, 0.5);
-}
-
-.tier-card.no-shuffle-tier.selected {
-  border-color: #ffd700;
-  box-shadow: 0 0 30px rgba(255, 215, 0, 0.8),
-              0 0 15px rgba(213, 0, 0, 0.6),
-              inset 0 2px 3px rgba(255, 255, 255, 0.4);
+/* 不洗牌选中状态 - 仅改变选中光圈发光颜色，不破坏卡片固有图片和边框色 */
+.lobby-modern-container.no-shuffle-active .tier-card.selected .selected-glow {
+  box-shadow: 0 0 22px rgba(255, 61, 0, 0.85) !important;
+  border: 1px solid rgba(255, 61, 0, 0.6) !important;
 }
 
 /* 右上角倾斜缎带不洗牌标签 */
