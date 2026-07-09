@@ -41,6 +41,9 @@ class GameAppService:
             player_ids = await self._repo.pop_match_players(3, base_score=base_score)
             if len(player_ids) >= 3:
                 return await self._create_room(player_ids, base_score=base_score)
+            elif auto_ai and player_ids:
+                # 高并发竞态下虽然原计划拉取 3 人但由于余额不足实际只拉到部分，若允许 AI 补齐则直接发车防止玩家卡死
+                return await self.fill_with_ai(player_ids, base_score=base_score)
         elif auto_ai:
             # 不够3人，但启用了自动机器人，则将当前在队列中的人全部弹出，用 AI 补齐并开局
             player_ids = await self._repo.pop_match_players(queue_len, base_score=base_score)

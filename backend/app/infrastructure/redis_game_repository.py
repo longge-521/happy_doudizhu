@@ -12,11 +12,25 @@ PLAYER_ROOM_PREFIX = "game:player_room:"
 MATCH_QUEUE_KEY = "game:match_queue"
 POP_MATCH_PLAYERS_SCRIPT = """
 local count = tonumber(ARGV[1])
-local players = redis.call('LRANGE', KEYS[1], 0, count - 1)
-if #players > 0 then
-    redis.call('LTRIM', KEYS[1], #players, -1)
+local len = redis.call('LLEN', KEYS[1])
+if count == 3 then
+    if len >= 3 then
+        local players = redis.call('LRANGE', KEYS[1], 0, 2)
+        redis.call('LTRIM', KEYS[1], 3, -1)
+        return players
+    else
+        return {}
+    end
+else
+    local pop_count = math.min(count, len)
+    if pop_count > 0 then
+        local players = redis.call('LRANGE', KEYS[1], 0, pop_count - 1)
+        redis.call('LTRIM', KEYS[1], pop_count, -1)
+        return players
+    else
+        return {}
+    end
 end
-return players
 """
 ROOM_TTL = 7200       # 房间状态 2 小时过期
 PLAYER_ROOM_TTL = 3600  # 玩家映射 1 小时过期
