@@ -98,12 +98,75 @@ class UpdatePasswordRequest(BaseModel):
     new_password: str = Field(..., min_length=1, max_length=100)
 
 
+async def acquire_token_bucket(key: str, max_capacity: int, refill_rate: float) -> bool:
+    """
+    Redis 原子令牌桶限流算法。
+    refill_rate: 每秒恢复的令牌数。
+    """
+    from app.infrastructure.redis_client import redis_client
+    import time
+    
+    lua_script = """
+    local key = KEYS[1]
+    local capacity = tonumber(ARGV[1])
+    local refill_rate = tonumber(ARGV[2])
+    local now = tonumber(ARGV[3])
+    local requested = 1
+    
+    local data = redis.call('hmget', key, 'tokens', 'last_updated')
+    local tokens = tonumber(data[1])
+    local last_updated = tonumber(data[2])
+    
+    if not tokens then
+        tokens = capacity
+        last_updated = now
+    else
+        local delta = math.max(0, now - last_updated)
+        tokens = math.min(capacity, tokens + delta * refill_rate)
+        last_updated = now
+    end
+    
+    if tokens >= requested then
+        tokens = tokens - requested
+        redis.call('hmset', key, 'tokens', tokens, 'last_updated', last_updated)
+        redis.call('expire', key, 86400) -- 保留 24 小时过期防止堆积
+        return 1
+    else
+        redis.call('hmset', key, 'tokens', tokens, 'last_updated', last_updated)
+        redis.call('expire', key, 86400)
+        return 0
+    end
+    """
+    try:
+        now = time.time()
+        result = await redis_client.eval(lua_script, 1, key, max_capacity, refill_rate, now)
+        return bool(result == 1)
+    except Exception as e:
+        logger.error(f"[RateLimit] Lua evaluation error for {key}: {e}")
+        return True  # 降级容灾：Redis 故障时放行，防止阻断正常登录注册
+
+
 @router.post("/auth/register")
-def register_user(req: UserRegisterRequest, db: Session = Depends(get_db)):
+async def register_user(
+    req: UserRegisterRequest,
+    request: Request,
+    db: Session = Depends(get_db)
+):
+    # 1. IP 维度限流：容量 20，每秒恢复 0.5 (每分钟 30 次)
+    client_ip = request.client.host if request.client else "127.0.0.1"
+    ip_key = f"game:ratelimit:ip:{client_ip}"
+    if not await acquire_token_bucket(ip_key, max_capacity=20, refill_rate=0.5):
+        raise HTTPException(status_code=429, detail="您的操作过于频繁，请稍后再试")
+
+    # 2. 账号维度限流：容量 10，每秒恢复 0.2 (每分钟 12 次)
+    username_norm = req.username.strip().lower()
+    user_key = f"game:ratelimit:user:{username_norm}"
+    if not await acquire_token_bucket(user_key, max_capacity=10, refill_rate=0.2):
+        raise HTTPException(status_code=429, detail="此账号操作过于频繁，请稍后再试")
+
     if len(req.password) < 6:
         raise HTTPException(status_code=400, detail="密码长度至少为 6 位")
     repo = SQLGameRepository(db)
-    username_norm = req.username.strip().lower()
     existing = repo.get_user_by_username(username_norm)
     if existing:
         raise HTTPException(status_code=400, detail="账号已存在，请直接登录")
@@ -122,9 +185,24 @@ def register_user(req: UserRegisterRequest, db: Session = Depends(get_db)):
 
 
 @router.post("/auth/login")
-def login_user(req: UserLoginRequest, db: Session = Depends(get_db)):
-    repo = SQLGameRepository(db)
+async def login_user(
+    req: UserLoginRequest,
+    request: Request,
+    db: Session = Depends(get_db)
+):
+    # 1. IP 维度限流：容量 20，每秒恢复 0.5 (每分钟 30 次)
+    client_ip = request.client.host if request.client else "127.0.0.1"
+    ip_key = f"game:ratelimit:ip:{client_ip}"
+    if not await acquire_token_bucket(ip_key, max_capacity=20, refill_rate=0.5):
+        raise HTTPException(status_code=429, detail="您的操作过于频繁，请稍后再试")
+
+    # 2. 账号维度限流：容量 10，每秒恢复 0.2 (每分钟 12 次)
     username_norm = req.username.strip().lower()
+    user_key = f"game:ratelimit:user:{username_norm}"
+    if not await acquire_token_bucket(user_key, max_capacity=10, refill_rate=0.2):
+        raise HTTPException(status_code=429, detail="此账号操作过于频繁，请稍后再试")
+
+    repo = SQLGameRepository(db)
     user = repo.get_user_by_username(username_norm)
     
     # 统一登录失败返回信息，防范用户名枚举泄露
