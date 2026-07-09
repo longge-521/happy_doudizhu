@@ -35,11 +35,15 @@ class GameWebSocketHandler:
         player_id: str,
         manager: GameWSConnectionManager,
         game_service: "GameAppService",
+        settlement_service=None,
     ):
+        from app.application.game.settlement_service import GameSettlementService
+
         self.ws = websocket
         self.player_id = player_id
         self.manager = manager
         self.service = game_service
+        self.settlement_service = settlement_service or GameSettlementService()
 
     async def run(self):
         await self.manager.connect(self.ws, self.player_id)
@@ -620,39 +624,21 @@ class GameWebSocketHandler:
                 event = {"event": "turn_passed", "player": ai_id}
                 await self._broadcast_room_event(room, event)
 
-    async def _on_game_over(self, room, result: dict):
+    async def _on_game_over(self, room, result: dict) -> bool:
         """游戏结束后的清理与结算入库"""
         try:
-            from app.infrastructure.database.session import transactional_session
-            from app.infrastructure.database.game_repository import SQLGameRepository
-            from app.domain.game.entities import GameRecord
+            self.settlement_service.settle(room, result)
+        except Exception:
+            logger.exception(
+                "游戏结算入库失败，保留房间等待后续恢复: room_id=%s",
+                room.room_id,
+            )
+            await self.service._repo.save_room(room)
+            return False
 
-            scores = result.get("scores", {})
-            with transactional_session() as db:
-                repo = SQLGameRepository(db)
-                for p in room.players:
-                    if p.is_ai:
-                        continue
-                    is_landlord = (p.id == room.landlord)
-                    score_change = scores.get(p.id, 0)
-                    is_win = score_change > 0
-                    repo.get_or_create_profile(p.id, p.nickname)
-                    repo.update_profile_stats(p.id, score_change, is_win)
-                    repo.update_rank_stats(p.id, is_win, room.multiplier)
-                    repo.save_game_record(GameRecord(
-                        room_id=room.room_id,
-                        player_id=p.id,
-                        role="landlord" if is_landlord else "farmer",
-                        result="win" if is_win else "lose",
-                        score_change=score_change,
-                        multiplier=room.multiplier,
-                    ))
-        except Exception as e:
-            logger.error(f"游戏结算入库失败: {e}")
-
-        # 清理 Redis 房间
         player_ids = [p.id for p in room.players]
         await self.service.cleanup_room(room.room_id, player_ids)
+        return True
 
     async def _handle_delayed_ai_match(self, player_id: str, nickname: str, base_score: int):
         """延迟 3 秒尝试匹配机器人"""

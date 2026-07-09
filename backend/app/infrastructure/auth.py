@@ -34,11 +34,11 @@ def _b64url_decode(data: str) -> bytes:
 
 
 def _game_auth_secret() -> bytes:
-    secret = settings.GAME_AUTH_SECRET or settings.API_TOKEN
-    if not secret and _is_production_env():
-        raise RuntimeError("GAME_AUTH_SECRET or API_TOKEN must be configured in production")
-    if not secret:
-        secret = "hmp-dev-game-auth-secret"
+    if settings.is_production:
+        settings.validate_production_settings()
+        return settings.GAME_AUTH_SECRET.encode("utf-8")
+
+    secret = settings.GAME_AUTH_SECRET or settings.API_TOKEN or "hmp-dev-game-auth-secret"
     return secret.encode("utf-8")
 
 

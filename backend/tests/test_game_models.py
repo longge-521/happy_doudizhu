@@ -1,6 +1,9 @@
 # backend/tests/test_game_models.py
 import pytest
+from sqlalchemy import UniqueConstraint
+
 from app.domain.game.entities import PlayerProfile, GameRecord
+from app.infrastructure.database.models import GameRecordORM, GameSettlementORM
 
 
 class TestPlayerProfile:
@@ -40,3 +43,23 @@ class TestGameRecord:
         )
         assert r.role == "landlord"
         assert r.result == "win"
+
+
+def test_game_record_has_room_player_unique_constraint():
+    names = {
+        constraint.name
+        for constraint in GameRecordORM.__table__.constraints
+        if isinstance(constraint, UniqueConstraint)
+    }
+    assert "uq_ddz_game_record_room_player" in names
+
+
+def test_game_settlement_model_uses_unique_room_id():
+    assert GameSettlementORM.__tablename__ == "ddz_game_settlement"
+    names = {
+        constraint.name
+        for constraint in GameSettlementORM.__table__.constraints
+        if isinstance(constraint, UniqueConstraint)
+    }
+    assert "uq_ddz_game_settlement_room_id" in names
+    assert GameSettlementORM.__table__.c.status.default.arg == "pending"

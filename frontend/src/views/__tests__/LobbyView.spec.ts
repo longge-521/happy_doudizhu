@@ -118,4 +118,12 @@ describe('LobbyView profile avatar UI', () => {
     expect(wrapper.find('.profile-modal').text()).toContain('个人资料')
     expect(wrapper.find('input.profile-avatar-input').exists()).toBe(true)
   })
+
+  it('opens the beans and rank editor in development builds', async () => {
+    const wrapper = mountLobby()
+
+    await wrapper.find('.asset-pill.gold-beans').trigger('click')
+
+    expect(wrapper.text()).toContain('修改资产与排位')
+  })
 })

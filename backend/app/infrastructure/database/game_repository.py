@@ -3,7 +3,12 @@
 import logging
 from typing import Optional, List
 from sqlalchemy.orm import Session
-from app.infrastructure.database.models import PlayerProfileORM, GameRecordORM, UserORM
+from app.infrastructure.database.models import (
+    PlayerProfileORM,
+    GameRecordORM,
+    GameSettlementORM,
+    UserORM,
+)
 from app.domain.game.entities import PlayerProfile, GameRecord
 
 logger = logging.getLogger("happy_doudizhu")
@@ -71,6 +76,44 @@ class SQLGameRepository:
             score_change=record.score_change, multiplier=record.multiplier,
         )
         self._db.add(orm)
+
+    def ensure_settlement(
+        self,
+        room_id: str,
+        result_hash: str,
+    ) -> GameSettlementORM:
+        settlement = (
+            self._db.query(GameSettlementORM)
+            .filter_by(room_id=room_id)
+            .first()
+        )
+        if settlement is None:
+            settlement = GameSettlementORM(
+                room_id=room_id,
+                result_hash=result_hash,
+                status="pending",
+            )
+            self._db.add(settlement)
+            self._db.flush()
+        return settlement
+
+    def get_settlement_for_update(self, room_id: str) -> GameSettlementORM:
+        return (
+            self._db.query(GameSettlementORM)
+            .filter_by(room_id=room_id)
+            .with_for_update()
+            .one()
+        )
+
+    def mark_settlement_failure(self, room_id: str, error: str) -> None:
+        settlement = (
+            self._db.query(GameSettlementORM)
+            .filter_by(room_id=room_id)
+            .one()
+        )
+        settlement.status = "failed"
+        settlement.attempts += 1
+        settlement.last_error = error[:500]
 
     def get_history(self, player_id: str, limit: int = 20) -> List[GameRecord]:
         rows = (self._db.query(GameRecordORM)

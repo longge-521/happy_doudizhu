@@ -29,6 +29,7 @@ logger = logging.getLogger("happy_doudizhu")
 
 # 引入 DDD 重构层
 from app.infrastructure.database.session import init_db, should_auto_init_db
+from app.infrastructure.config import settings
 from app.infrastructure.storage.local_storage_adapter import LocalStorageAdapter
 from app.infrastructure.mq.rabbitmq_adapter import RabbitMQAdapter
 from app.application.upload.upload_app_service import UploadAppService
@@ -161,6 +162,8 @@ async def stale_upload_reaper(app_instance: FastAPI):
 
 @asynccontextmanager
 async def lifespan(app_instance: FastAPI):
+    settings.validate_production_settings()
+
     # 1. 自动创建/确认 MySQL 表结构
     if should_auto_init_db():
         try:
@@ -229,7 +232,7 @@ if __name__ == "__main__":
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
-        port=18088,
+        port=settings.PORT,
         reload=True,
         reload_dirs=["app", "templates"],
         ws_per_message_deflate=False,

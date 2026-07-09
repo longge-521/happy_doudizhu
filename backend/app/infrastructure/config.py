@@ -49,8 +49,8 @@ class Settings(BaseSettings):
     API_TOKEN: Optional[str] = Field(
         default=None, description="敏感接口安全校验Token"
     )
-    GAME_AUTH_SECRET: str = Field(
-        default="secure-game-auth-secret", description="JWT/Token签名密钥"
+    GAME_AUTH_SECRET: Optional[str] = Field(
+        default=None, description="游戏访问令牌签名密钥；生产环境必须显式配置"
     )
     GAME_AUTH_TOKEN_TTL_SECONDS: int = Field(
         default=7 * 24 * 3600, description="Token生命周期(秒)"
@@ -74,10 +74,23 @@ class Settings(BaseSettings):
     )
 
     @property
+    def is_production(self) -> bool:
+        return self.APP_ENV.strip().lower() in {"prod", "production"}
+
+    def validate_production_settings(self) -> None:
+        if not self.is_production:
+            return
+        if not self.GAME_AUTH_SECRET or len(self.GAME_AUTH_SECRET) < 32:
+            raise RuntimeError(
+                "GAME_AUTH_SECRET must be explicitly configured with at least "
+                "32 characters in production"
+            )
+
+    @property
     def should_auto_init_db(self) -> bool:
         if self.AUTO_INIT_DB is not None:
             return self.AUTO_INIT_DB
-        return self.APP_ENV.lower() not in {"prod", "production"}
+        return not self.is_production
 
 
 # 实例化全局单例配置

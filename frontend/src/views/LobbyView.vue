@@ -7,6 +7,7 @@ import { useGameStore } from '@/stores/gameStore'
 import { useGameWebSocket } from '@/composables/useGameWebSocket'
 import { useSoundEngine } from '@/composables/useSoundEngine'
 import SettingsModal from '@/components/SettingsModal.vue'
+import { PROFILE_DEBUG_ENABLED } from '@/utils/runtimeFeatures'
 
 const router = useRouter()
 const playerStore = usePlayerStore()
@@ -523,7 +524,11 @@ function handleHotPlayHint() {
 
         <div class="top-center-assets">
           <!-- 欢乐豆 -->
-          <div class="asset-pill gold-beans" @click="openEditBeansModal" style="cursor: pointer;">
+          <div
+            class="asset-pill gold-beans"
+            :class="{ editable: PROFILE_DEBUG_ENABLED }"
+            @click="PROFILE_DEBUG_ENABLED && openEditBeansModal()"
+          >
             <span class="asset-icon">
               <svg class="asset-svg" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                 <defs>
@@ -977,7 +982,12 @@ function handleHotPlayHint() {
         </div>
 
         <div class="ready-bottom-assets">
-          <div class="asset-pill gold-beans" @click="openEditBeansModal" style="margin-top: 0; box-shadow: 0 2px 8px rgba(0,0,0,0.3); cursor: pointer;">
+          <div
+            class="asset-pill gold-beans"
+            :class="{ editable: PROFILE_DEBUG_ENABLED }"
+            @click="PROFILE_DEBUG_ENABLED && openEditBeansModal()"
+            style="margin-top: 0; box-shadow: 0 2px 8px rgba(0,0,0,0.3);"
+          >
             <span class="asset-icon">
               <svg class="asset-svg" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                 <defs>
@@ -1173,7 +1183,11 @@ function handleHotPlayHint() {
     </div>
 
     <!-- 欢乐豆修改弹窗 -->
-    <div v-if="showEditBeansModal" class="modal-overlay" @click.self="showEditBeansModal = false">
+    <div
+      v-if="PROFILE_DEBUG_ENABLED && showEditBeansModal"
+      class="modal-overlay"
+      @click.self="showEditBeansModal = false"
+    >
       <div class="glass-panel leaderboard-modal" style="max-width: 400px; padding: 24px;">
         <div class="modal-header" style="margin-bottom: 20px;">
           <h3>🪙 修改资产与排位</h3>
@@ -1440,6 +1454,10 @@ function handleHotPlayHint() {
   background: linear-gradient(180deg, rgba(30, 20, 5, 0.82) 0%, rgba(12, 8, 2, 0.95) 100%);
   border: 1.5px solid rgba(255, 215, 0, 0.45);
   box-shadow: 0 6px 15px rgba(0,0,0,0.5), inset 0 2px 5px rgba(0,0,0,0.65);
+}
+
+.asset-pill.gold-beans.editable {
+  cursor: pointer;
 }
 
 .asset-pill.diamonds {

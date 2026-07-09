@@ -1,5 +1,15 @@
 import datetime
-from sqlalchemy import Column, Integer, String, Text, DateTime, SmallInteger, Index, Float
+from sqlalchemy import (
+    Column,
+    Integer,
+    String,
+    Text,
+    DateTime,
+    SmallInteger,
+    Index,
+    Float,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import declarative_base
 
 Base = declarative_base()
@@ -78,7 +88,14 @@ class UserORM(Base):
 
 class GameRecordORM(Base):
     __tablename__ = "ddz_game_record"
-    __table_args__ = {"comment": "对局战绩记录表"}
+    __table_args__ = (
+        UniqueConstraint(
+            "room_id",
+            "player_id",
+            name="uq_ddz_game_record_room_player",
+        ),
+        {"comment": "对局战绩记录表"},
+    )
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     room_id = Column(String(100), nullable=False, index=True, comment="房间ID")
     player_id = Column(String(100), nullable=False, index=True, comment="玩家ID")
@@ -89,5 +106,28 @@ class GameRecordORM(Base):
     created_at = Column(DateTime, default=datetime.datetime.now, index=True, comment="对局时间")
 
 
+class GameSettlementORM(Base):
+    __tablename__ = "ddz_game_settlement"
+    __table_args__ = (
+        UniqueConstraint(
+            "room_id",
+            name="uq_ddz_game_settlement_room_id",
+        ),
+        {"comment": "对局幂等结算主记录"},
+    )
 
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    room_id = Column(String(100), nullable=False, index=True)
+    result_hash = Column(String(64), nullable=False)
+    status = Column(String(20), nullable=False, default="pending", index=True)
+    attempts = Column(Integer, nullable=False, default=0)
+    last_error = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.now, nullable=False)
+    updated_at = Column(
+        DateTime,
+        default=datetime.datetime.now,
+        onupdate=datetime.datetime.now,
+        nullable=False,
+    )
+    completed_at = Column(DateTime, nullable=True)
 
