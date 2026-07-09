@@ -1,6 +1,8 @@
 # backend/app/interfaces/api/game_routes.py
 """斗地主游戏 HTTP REST API"""
 import os
+import logging
+logger = logging.getLogger("happy_doudizhu")
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Request, Header
@@ -400,3 +402,41 @@ async def replay_settlement_tasks(
         
     count = await bus.replay_dead_letter_queue()
     return {"ok": True, "replayed_count": count}
+
+
+@router.get("/health/live", summary="进程存活度探活（Liveness）")
+def liveness_check():
+    """反映进程事件循环是否存活，不发起共享基础设施网络调用，防止网络抖动导致的无意义重启"""
+    return {"status": "ok", "live": True}
+
+
+@router.get("/health/ready", summary="外部就绪度探活（Readiness）")
+async def readiness_check(
+    request: Request,
+    db: Session = Depends(get_db)
+):
+    """检查 Redis, RabbitMQ 以及 MySQL 的物理连通性，依赖故障时返回 503 触发外部 SLB 下线隔离"""
+    from app.infrastructure.redis_client import redis_client
+    from sqlalchemy import text
+    
+    # 1. 验证 MySQL 数据库
+    try:
+        db.execute(text("SELECT 1"))
+    except Exception as db_err:
+        logger.error(f"[ReadinessCheck] Database check failed: {db_err}")
+        raise HTTPException(status_code=503, detail=f"Database check failed: {db_err}")
+
+    # 2. 验证 Redis
+    try:
+        await redis_client.ping()
+    except Exception as redis_err:
+        logger.error(f"[ReadinessCheck] Redis check failed: {redis_err}")
+        raise HTTPException(status_code=503, detail=f"Redis check failed: {redis_err}")
+
+    # 3. 验证 RabbitMQ Message Bus
+    bus = getattr(request.app.state, "game_message_bus", None)
+    if not bus or not bus.channel or bus.channel.is_closed:
+        logger.error("[ReadinessCheck] RabbitMQ check failed: Channel is closed or bus not found")
+        raise HTTPException(status_code=503, detail="RabbitMQ check failed: Channel is closed")
+
+    return {"status": "ok", "ready": True}
