@@ -645,6 +645,7 @@ class GameRoom:
             "all_played_cards": self.all_played_cards,
             "show_cards_players": dict(self.show_cards_players),
             "auto_play_players": list(self.auto_play_players),
+            "play_mode": self.play_mode,
         }
         # 地主确定后且非叫地主阶段才公开底牌，否则为 []
         if is_landlord_decided:

@@ -54,3 +54,38 @@ def test_recycle_cards_valid():
     recycled = room.recycle_cards()
     assert len(recycled) == 54
     assert set(recycled) == set(range(54))
+
+def test_recycle_cards_with_landlord():
+    players = [
+        Player(id="p1", nickname="P1", is_ai=False),
+        Player(id="p2", nickname="P2", is_ai=False),
+        Player(id="p3", nickname="P3", is_ai=False),
+    ]
+    room = GameRoom.create("test_room_2", players, base_score=20)
+    room.play_mode = "no_shuffle"
+    
+    custom_deck = list(range(54))
+    room.deal_with_deck(custom_deck)
+    
+    # 模拟选中地主 p1
+    room.landlord = "p1"
+    # 地主拿走 3 张底牌 并排序手牌
+    from app.domain.game.card import sort_cards
+    room.hands["p1"] = sort_cards(room.hands["p1"] + room.bottom_cards)
+    
+    # 打出几张牌
+    p1_initial_hand = list(room.hands["p1"])
+    played_cards = [p1_initial_hand[0], p1_initial_hand[1], p1_initial_hand[2]]
+    for card in played_cards:
+        room.hands["p1"].remove(card)
+    room.all_played_cards.extend(played_cards)
+    
+    p2_initial_hand = list(room.hands["p2"])
+    played_cards_p2 = [p2_initial_hand[0], p2_initial_hand[1]]
+    for card in played_cards_p2:
+        room.hands["p2"].remove(card)
+    room.all_played_cards.extend(played_cards_p2)
+    
+    recycled = room.recycle_cards()
+    assert len(recycled) == 54
+    assert set(recycled) == set(range(54))
