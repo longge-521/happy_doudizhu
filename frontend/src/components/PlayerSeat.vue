@@ -62,7 +62,7 @@ defineProps<{
           :no-hover="true"
           size="sm"
           class="shown-card"
-          :style="{ marginLeft: index === 0 ? '0px' : '-34px', zIndex: index }"
+          :style="{ marginLeft: index === 0 ? '0px' : '-38px', zIndex: index }"
         />
       </div>
       <div v-else-if="player.remaining !== undefined" class="card-back-count">
@@ -328,27 +328,28 @@ defineProps<{
 .shown-cards-row {
   display: flex;
   align-items: center;
-  max-width: 320px;
   background: rgba(0, 0, 0, 0.45);
   padding: 6px 10px;
   border-radius: 8px;
   border: 1px solid rgba(255, 255, 255, 0.15);
   box-shadow: inset 0 1px 0 rgba(255,255,255,0.1), 0 4px 10px rgba(0,0,0,0.3);
+  flex-shrink: 0;
 }
 
 .shown-card {
   transition: transform 0.2s ease;
+  flex-shrink: 0;
 }
 
 .player-seat.left .shown-cards-row {
   position: absolute;
-  top: -145px;
+  top: -110px;
   left: 0;
 }
 
 .player-seat.right .shown-cards-row {
   position: absolute;
-  top: -145px;
+  top: -110px;
   right: 0;
 }
 </style>
