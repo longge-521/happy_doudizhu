@@ -27,6 +27,7 @@
 - **规避 AsyncMock 防御性校验拦截**：在编写 RabbitMQ、Redis 等网络适配器的单元测试时，如果被测方法包含类似于 `if not self.channel or self.channel.is_closed:` 的防御性连接校验，Mock 该属性（如 `bus.channel = AsyncMock()`）后，必须显式为其指定布尔状态（如 `bus.channel.is_closed = False`）。否则 AsyncMock 会默认将其当作一个新的 Mock 对象，在 Python 的 `if` 条件评估中被强行拦截为 `True`，从而抛出虚假的 `ConnectionError`。
 - **Windows 开发环境多进程文件锁规避**：在设计多进程并发写入的日志滚动组件（如 `RotatingFileHandler`）时，由于 Windows 下强制文件锁的限制，日志切分重命名会因句柄占用抛出 `PermissionError: [WinError 32]`。开发时应当检测 `os.name == 'nt'`，并在 Windows 环境下自动降级使用常规的 `logging.FileHandler`（仅限本地开发测试阶段），避免切分冲突以保证优秀的本地调试体验。
 - **Redis 临时状态 TTL 最终一致性防御**：所有分布式临时缓存状态（如对局房间快照、Outbox 信箱、去重命令集合等），除了对局正常解散时的物理删除，必须在 Redis 写入（如 Lua 脚本）时附加合理的过期时间（TTL，通常与对局最大存活期一致，如 2 小时）。这能保障在删除动作网络抖动失败、或进程突发宕机时，数据仍能最终超时销毁，从物理上杜绝僵尸数据堆积造成的 Redis 内存泄露。
+- **测试进程挂起与僵尸进程清理规约**：在编写或执行 pytest 单元测试后，部分持久化长连接（如 Redis 客户端、RabbitMQ 频道）若未在 teardown 中被显式 close，可能导致测试进程挂起（Hang）无法完全退出，残留在后台中转圈。智能体在开发测试时应确保所有长连接被释放关闭；同时在每次执行完测试命令后，必须显式检查并使用 `manage_task` 工具的 `kill` 动作将后台残留的挂起 pytest 进程彻底终止，禁止遗留任何后台转圈任务。
 
 ---
 
