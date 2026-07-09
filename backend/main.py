@@ -240,62 +240,421 @@ async def instance_event_consumer(app_instance: FastAPI, bus):
         logger.error(f"[EventConsumer] Error in instance event consumer: {e}")
 
 
+def _distributed_action_events(action, player_id, result, room, phase_before):
+    """把一次领域动作转换成前端已经支持的游戏事件。"""
+    events = []
+    if action in ("call_landlord", "skip_call") or (
+        action == "trigger_ai" and phase_before == "CALLING"
+    ):
+        score = int(result.get("score", 0))
+        if action == "call_landlord" or score > 0:
+            events.append({"event": "call_made", "player": player_id, "score": score or 1})
+        else:
+            events.append({"event": "call_skipped", "player": player_id})
+        if result.get("redeal"):
+            events.append({"event": "redeal"})
+        elif result.get("landlord"):
+            events.append(
+                {
+                    "event": "landlord_decided",
+                    "landlord": result["landlord"],
+                    "bottom_cards": result.get("bottom_cards", []),
+                    "multiplier": result.get("multiplier", room.multiplier),
+                }
+            )
+    elif action in ("choose_double", "trigger_ai") and phase_before == "DOUBLING":
+        choice = result.get("double_choice", result.get("choice", "none"))
+        events.append(
+            {
+                "event": "double_chosen",
+                "player": player_id,
+                "choice": choice,
+                "label": {"double": "加倍", "super": "超级加倍"}.get(choice, "不加倍"),
+                "multiplier": result.get("multiplier", room.multiplier),
+            }
+        )
+        if result.get("doubling_finished"):
+            event = {
+                "event": "doubling_finished",
+                "current_turn": result.get("next_turn"),
+                "multiplier": result.get("multiplier", room.multiplier),
+            }
+            if result.get("landlord_confirm_required"):
+                event["landlord_confirm_required"] = True
+            events.append(event)
+    elif action in ("landlord_show", "trigger_ai") and phase_before == "LANDLORD_CONFIRM":
+        show_result = result.get("show_result")
+        event = {
+            "event": "landlord_show_decided",
+            "player": player_id,
+            "show": bool(result.get("show")),
+            "multiplier": result.get("multiplier", room.multiplier),
+        }
+        if show_result:
+            event["cards"] = show_result.get("cards", [])
+        events.append(event)
+    elif action == "show_cards":
+        events.append(
+            {
+                "event": "cards_shown",
+                "player": player_id,
+                "cards": result.get("cards", []),
+                "show_multiplier": result.get("show_multiplier", 2),
+                "total_multiplier": result.get("total_multiplier", room.multiplier),
+            }
+        )
+    elif action == "set_auto_play":
+        events.append(
+            {
+                "event": "auto_play_changed",
+                "player": player_id,
+                "enabled": bool(result.get("enabled")),
+            }
+        )
+    elif action in ("play_cards", "trigger_ai", "trigger_auto_play") and result.get("game_over"):
+        events.append(
+            {
+                "event": "game_over",
+                "winner": result["winner"],
+                "winner_side": result["winner_side"],
+                "scores": result["scores"],
+                "multiplier": result["multiplier"],
+                "all_hands": result["all_hands"],
+            }
+        )
+    elif action in ("play_cards", "trigger_ai", "trigger_auto_play") and result.get("cards_played"):
+        events.append(
+            {
+                "event": "cards_played",
+                "player": player_id,
+                "cards": result["cards_played"],
+                "card_type": result.get("card_type"),
+                "remaining": result.get("remaining"),
+            }
+        )
+    elif action in ("pass_turn", "trigger_ai", "trigger_auto_play") and result.get("next_turn"):
+        event = {"event": "turn_passed", "player": player_id}
+        if result.get("new_round"):
+            event["new_round"] = True
+        events.append(event)
+    return events
+
+
+async def _build_distributed_outbox_events(app_instance, room, event_payloads, trace_id):
+    from app.application.game.schemas import GameEventSchema
+    import time
+    import uuid
+
+    events = []
+    presence_service = app_instance.state.presence_service
+    next_version = int(getattr(room, "envelope_version", 0)) + 1
+    for player in room.players:
+        if player.is_ai:
+            continue
+        presence = await presence_service.get_presence(player.id)
+        epoch = int((presence or {}).get("connection_epoch", 0))
+        room_view = room.get_player_view(player.id)
+        for payload in event_payloads:
+            message = {**payload, "room_state": room_view}
+            events.append(
+                GameEventSchema(
+                    event_id=f"evt-{uuid.uuid4().hex}",
+                    event=payload["event"],
+                    room_id=room.room_id,
+                    room_version=next_version,
+                    target_player_id=player.id,
+                    target_connection_epoch=epoch,
+                    payload=message,
+                    created_at=time.time(),
+                    trace_id=trace_id,
+                )
+            )
+    return events
+
+
+async def _schedule_distributed_follow_up(repo, room):
+    """每次提交后最多安排一个后续动作，避免一个命令内多次保存同一房间。"""
+    from app.application.game.schemas import ScheduledTaskSchema
+    import time
+
+    phase = room.phase.name if hasattr(room.phase, "name") else str(room.phase)
+    player = None
+    action = None
+    delay = 15.0
+
+    if phase == "DOUBLING":
+        player = next(
+            (p for p in room.players if p.is_ai and p.id not in room.doubling_choices),
+            None,
+        )
+        if player:
+            action, delay = "trigger_ai", 1.0
+    elif phase in ("CALLING", "LANDLORD_CONFIRM", "PLAYING") and room.current_turn:
+        player = next((p for p in room.players if p.id == room.current_turn), None)
+        if player and player.is_ai:
+            action = "trigger_ai"
+            delay = 1.5
+        elif (
+            player
+            and phase == "PLAYING"
+            and player.id in room.auto_play_players
+        ):
+            action = "trigger_auto_play"
+            delay = 0.1
+        elif player and phase == "CALLING":
+            action = "skip_call"
+        elif player and phase == "LANDLORD_CONFIRM":
+            action = "landlord_show"
+        elif player and phase == "PLAYING":
+            action = "pass_turn"
+
+    if not player or not action or not hasattr(repo, "schedule_game_task"):
+        return
+    version = int(getattr(room, "envelope_version", 0))
+    deadline_token = int(float(room.turn_deadline or 0) * 1000)
+    task = ScheduledTaskSchema(
+        task_id=f"{action}_{room.room_id}_{player.id}_{deadline_token}",
+        room_id=room.room_id,
+        task_type=action,
+        due_at=time.time() + delay,
+        expected_room_version=version,
+        created_at=time.time(),
+        payload={
+            "player_id": player.id,
+            "expected_turn_deadline": room.turn_deadline,
+        },
+    )
+    await repo.schedule_game_task(task)
+
+
 async def dispatch_game_command(app_instance: FastAPI, command):
-    """
-    分片命令分发处理器：
-    作为分片 Worker 接收并消费 GameCommandSchema 命令包，执行真正的领域游戏逻辑修改。
-    """
+    """消费一个房间命令，并且只执行一次房间 CAS 提交。"""
     from app.infrastructure.game.context import current_outbox_events, current_command_id
     from app.infrastructure.config import settings
     import binascii
-    
+
     game_service = app_instance.state.game_service
-    lease_manager = app_instance.state.lease_manager
-    
+    repo = game_service._repo
     room_id = command.room_id
     action = command.action
-    player_id = command.player_id
     payload = command.payload
-    cmd_id = command.command_id
-    
-    room = await game_service._get_player_room(player_id)
-    if not room or room.room_id != room_id:
-        logger.warning(f"[dispatch_game_command] Room {room_id} not found or mismatch for player {player_id}.")
+
+    room = await repo.get_room(room_id)
+    if not room:
+        logger.warning("[dispatch_game_command] Room %s not found.", room_id)
         return
 
-    # 校验并续期该房间所有权
-    shard_id = binascii.crc32(room_id.encode('utf-8')) % 16
-    my_held_shards = getattr(app_instance.state, "my_held_shards", {})
-    token = my_held_shards.get(shard_id, 0)
-    
+    expected_version = payload.get("expected_room_version")
+    if expected_version is not None and int(expected_version) != int(room.envelope_version):
+        phase = room.phase.name if hasattr(room.phase, "name") else str(room.phase)
+        target_player_id = payload.get("player_id", command.player_id)
+        target_player = next(
+            (player for player in room.players if player.id == target_player_id),
+            None,
+        )
+        expected_turn_deadline = payload.get("expected_turn_deadline")
+        deadline_matches = (
+            expected_turn_deadline is not None
+            and float(expected_turn_deadline) == float(room.turn_deadline)
+        )
+        still_applicable = False
+        if action == "trigger_ai" and target_player and target_player.is_ai:
+            if phase == "DOUBLING":
+                still_applicable = target_player_id not in room.doubling_choices
+            else:
+                still_applicable = room.current_turn == target_player_id
+        elif action == "trigger_auto_play":
+            still_applicable = (
+                phase == "PLAYING"
+                and room.current_turn == target_player_id
+                and target_player_id in room.auto_play_players
+            )
+        elif action == "skip_call":
+            still_applicable = (
+                phase == "CALLING" and room.current_turn == target_player_id
+            )
+        elif action == "pass_turn":
+            still_applicable = (
+                phase == "PLAYING" and room.current_turn == target_player_id
+            )
+        elif action == "landlord_show":
+            still_applicable = (
+                phase == "LANDLORD_CONFIRM"
+                and room.current_turn == target_player_id
+            )
+
+        if not still_applicable or not deadline_matches:
+            logger.info(
+                "[dispatch_game_command] Ignore stale command %s: expected=%s, actual=%s",
+                command.command_id,
+                expected_version,
+                room.envelope_version,
+            )
+            return
+        logger.info(
+            "[dispatch_game_command] Continue stale-but-applicable command %s: "
+            "expected=%s, actual=%s, player=%s",
+            command.command_id,
+            expected_version,
+            room.envelope_version,
+            target_player_id,
+        )
+
+    shard_id = binascii.crc32(room_id.encode("utf-8")) % 16
+    token = 0
+    for _ in range(15):
+        token = getattr(app_instance.state, "my_held_shards", {}).get(shard_id, 0)
+        if token or not settings.DISTRIBUTED_MODE:
+            break
+        await asyncio.sleep(0.1)
     if settings.DISTRIBUTED_MODE and not token:
-        logger.error(f"[dispatch_game_command] Drop command {cmd_id} because this instance does not hold lease for shard {shard_id}.")
+        logger.error(
+            "[dispatch_game_command] Drop command %s because shard %s lease is absent.",
+            command.command_id,
+            shard_id,
+        )
         return
 
-    # 绑定租约属性
     room.envelope_fencing_token = token
     room.envelope_owner = settings.INSTANCE_ID
-    
-    events_list = []
-    token_outbox = current_outbox_events.set(events_list)
-    token_cmd = current_command_id.set(cmd_id)
-    
+    player_id = command.player_id
+    phase_before = room.phase.name if hasattr(room.phase, "name") else str(room.phase)
+    token_outbox = current_outbox_events.set([])
+    token_cmd = current_command_id.set(command.command_id)
+
     try:
-        if action == "call_landlord":
-            score = int(payload.get("score", 0))
-            await game_service.handle_call(player_id, score)
-        elif action == "skip_call":
-            await game_service.handle_skip_call(player_id)
-        elif action == "play_cards":
-            cards = payload.get("cards", [])
-            await game_service.handle_play(player_id, cards)
-        elif action == "pass_turn":
-            await game_service.handle_pass(player_id)
+        if action == "trigger_ai":
+            if phase_before == "DOUBLING":
+                ai_player = next(
+                    (
+                        p
+                        for p in room.players
+                        if p.is_ai and p.id not in room.doubling_choices
+                    ),
+                    None,
+                )
+                if not ai_player:
+                    return
+                room.current_turn = ai_player.id
+                player_id = ai_player.id
+            else:
+                ai_player = next(
+                    (p for p in room.players if p.id == room.current_turn), None
+                )
+                if not ai_player or not ai_player.is_ai:
+                    return
+                player_id = ai_player.id
+            result = await game_service.handle_ai_turn(
+                room, persist=False, thinking_delay=False
+            )
+        elif action == "trigger_auto_play":
+            if (
+                room.phase.name != "PLAYING"
+                or room.current_turn != player_id
+                or player_id not in room.auto_play_players
+            ):
+                return
+            result = await game_service.handle_auto_play_turn(room, persist=False)
         else:
-            logger.warning(f"[dispatch_game_command] Unknown action {action} for room {room_id}")
-            
-    except Exception as e:
-        logger.error(f"[dispatch_game_command] Executing {action} failed: {e}", exc_info=True)
+            if player_id not in {p.id for p in room.players}:
+                logger.warning(
+                    "[dispatch_game_command] Player %s is not in room %s.",
+                    player_id,
+                    room_id,
+                )
+                return
+            if action == "call_landlord":
+                result = room.call_landlord(player_id, int(payload.get("score", 1)))
+            elif action == "skip_call":
+                result = room.skip_call(player_id)
+            elif action == "play_cards":
+                result = room.play_cards(player_id, payload.get("cards", []))
+            elif action == "pass_turn":
+                result = room.pass_turn(player_id)
+            elif action == "choose_double":
+                result = room.choose_double(player_id, payload.get("choice", "none"))
+            elif action == "show_cards":
+                result = room.show_cards(
+                    player_id, int(payload.get("show_multiplier", 2))
+                )
+            elif action == "landlord_show":
+                show = bool(payload.get("show", False))
+                show_result = room.landlord_show_cards(player_id) if show else None
+                result = room.finish_landlord_confirm() if not show else show_result
+                result = {
+                    **result,
+                    "show": show,
+                    "show_result": show_result,
+                    "multiplier": room.multiplier,
+                }
+            elif action == "set_auto_play":
+                enabled = bool(payload.get("enabled", False))
+                if enabled:
+                    room.auto_play_players.add(player_id)
+                else:
+                    room.auto_play_players.discard(player_id)
+                result = {
+                    "success": True,
+                    "player": player_id,
+                    "enabled": enabled,
+                }
+            else:
+                logger.warning(
+                    "[dispatch_game_command] Unknown action %s for room %s",
+                    action,
+                    room_id,
+                )
+                return
+            if result.get("redeal"):
+                room.deal()
+
+        if result.get("success") is False or result.get("error"):
+            logger.warning(
+                "[dispatch_game_command] Reject command %s: %s",
+                command.command_id,
+                result.get("error"),
+            )
+            return
+
+        event_payloads = _distributed_action_events(
+            action, player_id, result, room, phase_before
+        )
+        events = await _build_distributed_outbox_events(
+            app_instance, room, event_payloads, command.trace_id
+        )
+        current_outbox_events.set(events)
+        await repo.save_room(room)
+        if result.get("game_over"):
+            settlement_service = getattr(
+                app_instance.state,
+                "game_settlement_service",
+                None,
+            )
+            if settlement_service is None:
+                from app.application.game.settlement_service import GameSettlementService
+
+                settlement_service = GameSettlementService()
+            try:
+                await asyncio.to_thread(settlement_service.settle, room, result)
+            except Exception:
+                logger.exception(
+                    "[dispatch_game_command] Settlement failed; keep room for recovery: %s",
+                    room.room_id,
+                )
+                return
+            await game_service.cleanup_room(
+                room.room_id,
+                [player.id for player in room.players],
+            )
+            return
+        await _schedule_distributed_follow_up(repo, room)
+    except Exception as exc:
+        logger.error(
+            "[dispatch_game_command] Executing %s failed: %s",
+            action,
+            exc,
+            exc_info=True,
+        )
     finally:
         current_outbox_events.reset(token_outbox)
         current_command_id.reset(token_cmd)
@@ -383,20 +742,112 @@ async def shard_lease_coordinator(app_instance: FastAPI):
         logger.error(f"[Coordinator] Error in lease loop: {e}")
 
 
+def _scheduled_task_to_command(task):
+    """恢复调度任务的真实目标玩家和预期房间版本。"""
+    from app.application.game.schemas import GameCommandSchema
+    import time
+
+    payload = dict(task.payload)
+    player_id = payload.get("player_id")
+    if not player_id:
+        raise ValueError(f"调度任务缺少 player_id: {task.task_id}")
+    payload["expected_room_version"] = task.expected_room_version
+    return GameCommandSchema(
+        command_id=f"sched-{task.task_id}",
+        action=task.task_type,
+        room_id=task.room_id,
+        player_id=player_id,
+        connection_epoch=0,
+        payload=payload,
+        created_at=time.time(),
+        trace_id=f"sched-trace-{task.task_id}",
+        source_instance_id="scheduler-poller",
+    )
+
+
+async def scheduler_poller(app_instance: FastAPI):
+    """
+    后台任务：以 1 秒为周期从 Redis 延时队列中原子拉取到期的超时任务，
+    并计算分片路由投递至 RabbitMQ 队列进行 Worker 执行。
+    """
+    from app.infrastructure.redis_client import redis_client
+    from app.application.game.schemas import GameCommandSchema, ScheduledTaskSchema
+    import time
+    import binascii
+    
+    zset_key = "game:scheduler:tasks"
+    hash_key = "game:scheduler:task_details"
+    
+    lua_script = """
+    local zset_key = KEYS[1]
+    local hash_key = KEYS[2]
+    local now = tonumber(ARGV[1])
+    
+    local tids = redis.call('zrangebyscore', zset_key, 0, now)
+    local results = {}
+    if #tids > 0 then
+        for _, tid in ipairs(tids) do
+            local detail = redis.call('hget', hash_key, tid)
+            if detail then
+                table.insert(results, detail)
+                redis.call('hdel', hash_key, tid)
+            end
+        end
+        redis.call('zremrangebyscore', zset_key, 0, now)
+    end
+    return results
+    """
+    
+    bus = app_instance.state.game_message_bus
+    logger.info("[SchedulerPoller] Starting scheduler poller...")
+    
+    try:
+        while True:
+            now = time.time()
+            try:
+                raw_tasks = await redis_client.eval(lua_script, 2, zset_key, hash_key, now)
+                if raw_tasks:
+                    for raw in raw_tasks:
+                        if isinstance(raw, bytes):
+                            raw = raw.decode("utf-8")
+                        
+                        task = ScheduledTaskSchema.model_validate_json(raw)
+                        
+                        command = _scheduled_task_to_command(task)
+                        
+                        shard_id = binascii.crc32(task.room_id.encode('utf-8')) % 16
+                        await bus.publish_command(shard_id, command)
+                        logger.debug(f"[SchedulerPoller] Routed expired task {task.task_id} to shard {shard_id}")
+            except Exception as poll_err:
+                logger.error(f"[SchedulerPoller] Error scanning delay queue: {poll_err}")
+                
+            await asyncio.sleep(1.0)
+    except asyncio.CancelledError:
+        logger.info("[SchedulerPoller] Stopping scheduler poller...")
+
+
 @asynccontextmanager
 async def lifespan(app_instance: FastAPI):
     settings.validate_production_settings()
     
     # 0. 根据模式初始化消息总线和在线位置服务
-    from app.infrastructure.game.memory_adapters import MemoryMessageBus, MemoryPresenceService, MemoryLeaseManager, MemoryOutboxService
+    from app.infrastructure.game.memory_adapters import (
+        MemoryMessageBus,
+        MemoryPresenceService,
+        MemoryLeaseManager,
+        MemoryOutboxService,
+        MemorySchedulerService
+    )
     from app.infrastructure.game.rabbitmq_bus import RabbitMQMessageBus
     from app.infrastructure.game.redis_presence import RedisPresenceService
     from app.infrastructure.game.redis_lease import RedisLeaseManager
     from app.infrastructure.game.redis_outbox import RedisOutboxService
+    from app.infrastructure.game.redis_scheduler import RedisSchedulerService
     
     dist_heartbeat_task = None
     dist_consumer_task = None
     dist_coord_task = None
+    dist_scheduler_task = None
     bus = None
 
     if settings.DISTRIBUTED_MODE:
@@ -405,26 +856,31 @@ async def lifespan(app_instance: FastAPI):
         presence = RedisPresenceService()
         lease_manager = RedisLeaseManager()
         outbox_service = RedisOutboxService()
+        scheduler_service = RedisSchedulerService()
         
         app_instance.state.game_message_bus = bus
         app_instance.state.presence_service = presence
         app_instance.state.lease_manager = lease_manager
         app_instance.state.outbox_service = outbox_service
+        app_instance.state.scheduler_service = scheduler_service
         app_instance.state.my_held_shards = {}
         
         dist_heartbeat_task = asyncio.create_task(instance_heartbeat_sender(app_instance))
         dist_consumer_task = asyncio.create_task(instance_event_consumer(app_instance, bus))
         dist_coord_task = asyncio.create_task(shard_lease_coordinator(app_instance))
+        dist_scheduler_task = asyncio.create_task(scheduler_poller(app_instance))
     else:
         bus = MemoryMessageBus()
         presence = MemoryPresenceService()
         lease_manager = MemoryLeaseManager()
         outbox_service = MemoryOutboxService()
+        scheduler_service = MemorySchedulerService(bus)
         
         app_instance.state.game_message_bus = bus
         app_instance.state.presence_service = presence
         app_instance.state.lease_manager = lease_manager
         app_instance.state.outbox_service = outbox_service
+        app_instance.state.scheduler_service = scheduler_service
         app_instance.state.my_held_shards = {s: 1 for s in range(16)}
 
     # 1. 自动创建/确认 MySQL 表结构
@@ -456,6 +912,8 @@ async def lifespan(app_instance: FastAPI):
         outbox_service=app_instance.state.outbox_service
     )
     game_service = GameAppService(game_repo)
+    from app.application.game.settlement_service import GameSettlementService
+    game_settlement_service = GameSettlementService()
 
     # 状态保留于 FastAPI app.state
     app_instance.state.websocket_manager = websocket_manager
@@ -464,6 +922,8 @@ async def lifespan(app_instance: FastAPI):
     app_instance.state.mq_adapter = mq_adapter
     app_instance.state.game_ws_manager = game_ws_manager
     app_instance.state.game_service = game_service
+    app_instance.state.game_settlement_service = game_settlement_service
+    app_instance.state.scheduler_service = scheduler_service
 
     # 启动时清理超时的孤儿临时上传目录
     upload_service.cleanup_stale_uploads(timeout_hours=2.0)
@@ -499,10 +959,13 @@ async def lifespan(app_instance: FastAPI):
             dist_consumer_task.cancel()
         if dist_coord_task:
             dist_coord_task.cancel()
+        if dist_scheduler_task:
+            dist_scheduler_task.cancel()
         await asyncio.gather(
             dist_heartbeat_task, 
             dist_consumer_task, 
             dist_coord_task,
+            dist_scheduler_task,
             return_exceptions=True
         )
         if bus:

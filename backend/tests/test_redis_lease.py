@@ -50,4 +50,4 @@ async def test_redis_lease_manager():
         await local_redis.delete(manager._shard_key(shard_id))
         await local_redis.delete(manager._room_key("room_test_9"))
     finally:
-        await local_redis.close()
+        await local_redis.aclose()

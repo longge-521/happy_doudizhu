@@ -47,6 +47,32 @@ class GameWebSocketHandler:
         self.settlement_service = settlement_service or GameSettlementService()
         self.connection_epoch = connection_epoch
 
+    @staticmethod
+    def _build_settlement_event(room) -> dict:
+        """从 SETTLING 快照重建断线玩家需要的 game_over 事件。"""
+        winner = next(
+            (player.id for player in room.players if not room.hands.get(player.id)),
+            None,
+        )
+        if winner is None:
+            return {"event": "error", "msg": "结算快照缺少获胜玩家"}
+        landlord_won = winner == room.landlord
+        base_score = room.multiplier * room.base_score
+        scores = {}
+        for player in room.players:
+            if player.id == room.landlord:
+                scores[player.id] = base_score * 2 if landlord_won else -base_score * 2
+            else:
+                scores[player.id] = -base_score if landlord_won else base_score
+        return {
+            "event": "game_over",
+            "winner": winner,
+            "winner_side": "landlord" if landlord_won else "farmer",
+            "scores": scores,
+            "multiplier": room.multiplier,
+            "all_hands": dict(room.hands),
+        }
+
     async def run(self):
         await self.manager.connect(self.ws, self.player_id)
 
@@ -60,12 +86,12 @@ class GameWebSocketHandler:
                 text = await self.ws.receive_text()
                 await self._handle_message(text)
         except WebSocketDisconnect:
-            self.manager.disconnect(self.player_id)
+            self.manager.disconnect(self.player_id, self.ws)
             logger.info(f"游戏WS: 玩家 '{self.player_id}' 断开连接")
             # 在实际业务中可能启动托管/掉线倒计时
         except Exception as e:
             logger.error(f"游戏WS: 玩家 '{self.player_id}' 错误: {e}")
-            self.manager.disconnect(self.player_id)
+            self.manager.disconnect(self.player_id, self.ws)
 
     async def _send(self, data: dict):
         await self.manager.send_to_player(self.player_id, data)
@@ -253,6 +279,17 @@ class GameWebSocketHandler:
 
         action = data.get("action")
 
+        # 尝试取消本地可能存在的延迟超时任务（主要为了兼容单机测试）
+        if action in ("call_landlord", "skip_call", "play_cards", "pass_turn"):
+            try:
+                room = await self.service._get_player_room(self.player_id)
+                if room:
+                    room_ver = getattr(room, "envelope_version", 0)
+                    task_id = f"timeout_{room.room_id}_{self.player_id}_{room_ver}"
+                    await self.ws.app.state.scheduler_service.cancel_task(task_id)
+            except Exception:
+                pass
+
         if action == "join_match":
             nickname = data.get("nickname", self.player_id)
             base_score = data.get("base_score", 10)
@@ -343,6 +380,10 @@ class GameWebSocketHandler:
 
         elif action == "show_cards":
             show_multiplier = data.get("multiplier", 2)
+            if await self._forward_distributed_command(
+                "show_cards", {"show_multiplier": show_multiplier}
+            ):
+                return
             result = await self.service.handle_show_cards(self.player_id, show_multiplier)
             if result.get("error") or result.get("success") is False:
                 await self._send({"event": "error", "msg": result.get("error", "明牌失败")})
@@ -360,6 +401,8 @@ class GameWebSocketHandler:
 
         elif action == "landlord_show":
             show = data.get("show", False)
+            if await self._forward_distributed_command("landlord_show", {"show": show}):
+                return
             result = await self.service.handle_landlord_show(self.player_id, show)
             if result.get("error") or result.get("success") is False:
                 await self._send({"event": "error", "msg": result.get("error", "地主明牌操作失败")})
@@ -380,6 +423,10 @@ class GameWebSocketHandler:
 
         elif action == "choose_double":
             choice = data.get("choice", "none")
+            if await self._forward_distributed_command(
+                "choose_double", {"choice": choice}
+            ):
+                return
             result = await self.service.handle_double_choice(self.player_id, choice)
             if result.get("error") or result.get("success") is False:
                 await self._send({"event": "error", "msg": result.get("error", "加倍失败")})
@@ -465,6 +512,10 @@ class GameWebSocketHandler:
 
         elif action == "set_auto_play":
             enabled = bool(data.get("enabled", False))
+            if await self._forward_distributed_command(
+                "set_auto_play", {"enabled": enabled}
+            ):
+                return
             result = await self.service.set_auto_play(self.player_id, enabled)
             if result.get("error"):
                 await self._send({"event": "error", "msg": result["error"]})
@@ -499,12 +550,106 @@ class GameWebSocketHandler:
             room_state = await self.service.get_room_state(self.player_id)
             if room_state:
                 await self._send({"event": "reconnected", **room_state})
-                # 重新拉起 AI 处理协程，防止重连后 AI 协程挂起不动作
+                
+                # ── 重连推进自愈 ──
                 room_id = await self.service._repo.get_player_room(self.player_id)
                 if room_id:
                     room = await self.service._repo.get_room(room_id)
                     if room:
-                        asyncio.create_task(self._process_ai_turns(room))
+                        if room.phase == GamePhase.SETTLING:
+                            settlement_event = self._build_settlement_event(room)
+                            await self._send(
+                                {
+                                    **settlement_event,
+                                    "room_state": room.get_player_view(self.player_id),
+                                }
+                            )
+                            await self._on_game_over(room, settlement_event)
+                            return
+                        from app.infrastructure.config import settings
+                        if settings.DISTRIBUTED_MODE:
+                            current_p = next((p for p in room.players if p.id == room.current_turn), None) if room.current_turn else None
+                            # 1. 若当前轮到 AI，或加倍阶段存在待决策 AI，则发送 trigger_ai 唤醒命令给分片 Worker
+                            is_ai_doubling = room.phase.name == "DOUBLING" and any(p.is_ai and p.id not in room.doubling_choices for p in room.players)
+                            if (current_p and current_p.is_ai) or is_ai_doubling:
+                                from app.application.game.schemas import ScheduledTaskSchema
+                                import time
+                                target_ai = current_p
+                                if is_ai_doubling:
+                                    target_ai = next(
+                                        (
+                                            p for p in room.players
+                                            if p.is_ai and p.id not in room.doubling_choices
+                                        ),
+                                        None,
+                                    )
+                                if target_ai is None:
+                                    return
+                                room_ver = getattr(room, "envelope_version", 0)
+                                deadline_token = int(room.turn_deadline * 1000)
+                                due_at = time.time() + 0.1
+                                if (
+                                    room.phase.name == "CALLING"
+                                    and not room._call_scores
+                                    and room._first_bidder is None
+                                ):
+                                    due_at = max(
+                                        due_at,
+                                        room.turn_deadline - 15.5,
+                                    )
+                                task = ScheduledTaskSchema(
+                                    task_id=(
+                                        f"trigger_ai_{room.room_id}_{target_ai.id}_"
+                                        f"{deadline_token}"
+                                    ),
+                                    room_id=room.room_id,
+                                    task_type="trigger_ai",
+                                    due_at=due_at,
+                                    expected_room_version=room_ver,
+                                    created_at=time.time(),
+                                    payload={
+                                        "player_id": target_ai.id,
+                                        "expected_turn_deadline": room.turn_deadline,
+                                    },
+                                )
+                                if hasattr(self.service._repo, "schedule_game_task"):
+                                    await self.service._repo.schedule_game_task(task)
+                                    logger.info(
+                                        "[GameHandler] Ensured AI recovery task %s for room %s",
+                                        task.task_id,
+                                        room.room_id,
+                                    )
+                            else:
+                                # 2. 若轮到真人，为其重新注册/补齐 15 秒超时定时任务
+                                if room.current_turn:
+                                    next_p = next((p for p in room.players if p.id == room.current_turn), None)
+                                    if next_p and not next_p.is_ai:
+                                        from app.application.game.schemas import ScheduledTaskSchema
+                                        import time
+                                        action_type = "skip_call" if (hasattr(room.phase, "name") and room.phase.name == "CALLING" or str(room.phase) == "CALLING") else "pass_turn"
+                                        room_ver = getattr(room, "envelope_version", 0)
+                                        deadline_token = int(room.turn_deadline * 1000)
+                                        task = ScheduledTaskSchema(
+                                            task_id=(
+                                                f"{action_type}_{room.room_id}_{next_p.id}_"
+                                                f"{deadline_token}"
+                                            ),
+                                            room_id=room.room_id,
+                                            task_type=action_type,
+                                            due_at=max(time.time(), room.turn_deadline),
+                                            expected_room_version=room_ver,
+                                            created_at=time.time(),
+                                            payload={
+                                                "player_id": next_p.id,
+                                                "expected_turn_deadline": room.turn_deadline,
+                                            }
+                                        )
+                                        if hasattr(self.service._repo, "schedule_game_task"):
+                                            await self.service._repo.schedule_game_task(task)
+                                            logger.info(f"[GameHandler] Self-healed and scheduled timeout task {task.task_id} on reconnection sync")
+                        else:
+                            # 单机非分布式模式，依然在网关本地拉起 AI 协程
+                            asyncio.create_task(self._process_ai_turns(room))
 
         else:
             await self._send({"event": "error", "msg": f"未知动作: {action}"})
@@ -570,6 +715,11 @@ class GameWebSocketHandler:
 
     async def _do_process_ai_turns(self, room):
         """循环处理 AI 回合，直到轮到真人玩家"""
+        from app.infrastructure.config import settings
+        if settings.DISTRIBUTED_MODE:
+            # 分布式模式下，网关实例不直接处理 AI 回合。所有的 AI 决策流转和存盘由分片 Worker 统一执行。
+            return
+            
         logger.info(f"游戏WS [room={room.room_id}]: 开始 _do_process_ai_turns. 阶段={room.phase.value}, 当前回合={room.current_turn}")
         
         # 0. 优先处理并行的加倍阶段 (DOUBLING)
@@ -677,6 +827,30 @@ class GameWebSocketHandler:
             is_auto_player = bool(current_player and current in getattr(room, "auto_play_players", set()))
             if not current_player or (not current_player.is_ai and not is_auto_player):
                 logger.info(f"游戏WS [room={room.room_id}]: 轮到真人玩家 {current}，跳出 AI 自动处理器")
+                # 如果是单机普通模式，由网关在本地为真人调度超时
+                from app.infrastructure.config import settings
+                if not settings.DISTRIBUTED_MODE:
+                    from app.application.game.schemas import ScheduledTaskSchema
+                    import time
+                    action_type = "skip_call" if (hasattr(room.phase, "name") and room.phase.name == "CALLING" or str(room.phase) == "CALLING") else "pass_turn"
+                    room_ver = getattr(room, "envelope_version", 0)
+                    task = ScheduledTaskSchema(
+                        task_id=f"timeout_{room.room_id}_{current}_{room_ver}",
+                        room_id=room.room_id,
+                        task_type=action_type,
+                        due_at=time.time() + 15.0,
+                        expected_room_version=room_ver,
+                        created_at=time.time(),
+                        payload={
+                            "player_id": current,
+                            "expected_turn_deadline": room.turn_deadline,
+                        }
+                    )
+                    try:
+                        await self.ws.app.state.scheduler_service.schedule_task(task)
+                        logger.info(f"[GameHandler] Scheduled local timeout task {task.task_id} for player {current}")
+                    except Exception as sched_err:
+                        logger.error(f"[GameHandler] Failed to schedule local timeout: {sched_err}")
                 break
             # AI 延迟 1~2 秒模拟思考（或者直接在此睡眠）
             await asyncio.sleep(0.5)

@@ -63,6 +63,17 @@ class MemoryPresenceService(IPresenceService):
         }
         self._epochs[player_id] = epoch
 
+    async def refresh_presence(self, player_id: str, instance_id: str, epoch: int) -> bool:
+        presence = self._presences.get(player_id)
+        if (
+            presence
+            and presence.get("instance_id") == instance_id
+            and presence.get("connection_epoch") == epoch
+        ):
+            presence["last_seen_at"] = time.time()
+            return True
+        return False
+
     async def increment_epoch(self, player_id: str) -> int:
         current = self._epochs.get(player_id, 0)
         new_epoch = current + 1

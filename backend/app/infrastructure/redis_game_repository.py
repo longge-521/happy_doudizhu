@@ -197,3 +197,21 @@ class RedisGameRepository:
     async def delete_match_player_meta(self, player_id: str) -> None:
         key = f"game:match_player:{player_id}"
         await self._redis.delete(key)
+
+    # ── 延时调度 ──
+
+    async def schedule_game_task(self, task) -> None:
+        if self._outbox:
+            from app.infrastructure.game.redis_scheduler import RedisSchedulerService
+            scheduler = RedisSchedulerService(self._redis)
+            await scheduler.schedule_task(task)
+
+    async def cancel_game_task(self, task_id: str) -> None:
+        if self._outbox:
+            from app.infrastructure.game.redis_scheduler import RedisSchedulerService
+            scheduler = RedisSchedulerService(self._redis)
+            await scheduler.cancel_task(task_id)
+
+    async def publish_game_command(self, shard_id: int, command) -> None:
+        if self._bus:
+            await self._bus.publish_command(shard_id, command)

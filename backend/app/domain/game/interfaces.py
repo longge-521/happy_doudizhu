@@ -43,6 +43,11 @@ class IPresenceService(ABC):
         pass
 
     @abstractmethod
+    async def refresh_presence(self, player_id: str, instance_id: str, epoch: int) -> bool:
+        """仅当实例和连接代次匹配时续期 Presence。"""
+        pass
+
+    @abstractmethod
     async def increment_epoch(self, player_id: str) -> int:
         """原子递增玩家的连接代次（epoch），返回新的代次。"""
         pass

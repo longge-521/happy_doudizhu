@@ -6,6 +6,7 @@ from app.domain.game.interfaces import IPresenceService
 from app.infrastructure.redis_client import redis_client
 
 logger = logging.getLogger("happy_doudizhu")
+PRESENCE_TTL_SECONDS = 60
 
 class RedisPresenceService(IPresenceService):
     """基于 Redis 的分布式 Presence 共享服务。"""
@@ -42,9 +43,50 @@ class RedisPresenceService(IPresenceService):
         }
         try:
             # 存入 JSON string，TTL 为 60 秒
-            await self._client.set(key, json.dumps(payload), ex=60)
+            await self._client.set(
+                key,
+                json.dumps(payload),
+                ex=PRESENCE_TTL_SECONDS,
+            )
         except Exception as e:
             logger.error(f"[RedisPresenceService] Failed to set presence for {player_id}: {e}")
+
+    async def refresh_presence(self, player_id: str, instance_id: str, epoch: int) -> bool:
+        key = self._presence_key(player_id)
+        lua_script = """
+        local current = redis.call('get', KEYS[1])
+        if not current then
+            return 0
+        end
+        local data = cjson.decode(current)
+        if data.instance_id ~= ARGV[1]
+            or data.connection_epoch ~= tonumber(ARGV[2]) then
+            return 0
+        end
+        data.last_seen_at = tonumber(ARGV[3])
+        redis.call(
+            'set',
+            KEYS[1],
+            cjson.encode(data),
+            'EX',
+            tonumber(ARGV[4])
+        )
+        return 1
+        """
+        try:
+            result = await self._client.eval(
+                lua_script,
+                1,
+                key,
+                instance_id,
+                epoch,
+                time.time(),
+                PRESENCE_TTL_SECONDS,
+            )
+            return bool(result == 1)
+        except Exception as e:
+            logger.error(f"[RedisPresenceService] Failed to refresh presence for {player_id}: {e}")
+            raise
 
     async def increment_epoch(self, player_id: str) -> int:
         key = self._epoch_key(player_id)

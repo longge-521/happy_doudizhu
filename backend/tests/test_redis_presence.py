@@ -38,6 +38,21 @@ async def test_redis_presence_service():
         assert presence is not None
         assert presence["instance_id"] == "instance_test_a"
         assert presence["connection_epoch"] == epoch2
+
+        # 在线 WebSocket 必须定期续期，否则 60 秒后事件将失去路由目标
+        await local_redis.expire(service._presence_key(player_id), 1)
+        refreshed = await service.refresh_presence(
+            player_id,
+            "instance_test_a",
+            epoch2,
+        )
+        assert refreshed is True
+        assert await local_redis.ttl(service._presence_key(player_id)) > 1
+        assert await service.refresh_presence(
+            player_id,
+            "instance_test_a",
+            epoch1,
+        ) is False
         
         # 4. 删除 presence - epoch 不匹配时删除应该失败
         removed = await service.remove_presence(player_id, 999)
@@ -55,4 +70,4 @@ async def test_redis_presence_service():
         await local_redis.delete(service._presence_key(player_id))
         await local_redis.delete(service._epoch_key(player_id))
     finally:
-        await local_redis.close()
+        await local_redis.aclose()

@@ -69,6 +69,26 @@ describe('useGameWebSocket', () => {
     expect(MockWebSocket.instances).toHaveLength(1)
   })
 
+  it('requests room state when no websocket event arrives for five seconds', async () => {
+    const playerStore = usePlayerStore()
+    playerStore.playerId = 'player1'
+    playerStore.authToken = 'token'
+    const { useGameStore } = await import('@/stores/gameStore')
+    const gameStore = useGameStore()
+    gameStore.roomId = 'room-1'
+
+    const { connect } = useGameWebSocket()
+    connect()
+    const socket = MockWebSocket.instances[0]!
+    socket.readyState = MockWebSocket.OPEN
+    socket.onopen?.()
+
+    await vi.advanceTimersByTimeAsync(5_100)
+
+    const actions = socket.sentMessages.map((message) => JSON.parse(message))
+    expect(actions.some((action) => action.action === 'sync_room_state')).toBe(true)
+  })
+
   it('syncs double choice events and plays matching voice', async () => {
     const playerStore = usePlayerStore()
     playerStore.playerId = 'p1'

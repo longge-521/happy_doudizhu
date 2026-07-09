@@ -115,4 +115,4 @@ async def test_redis_outbox_service():
         await local_redis.delete(service._commands_key(room_id))
         await local_redis.delete(service._outbox_key(room_id))
     finally:
-        await local_redis.close()
+        await local_redis.aclose()

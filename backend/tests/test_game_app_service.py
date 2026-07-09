@@ -62,6 +62,7 @@ _install_douzero_adapter_stub()
 
 from app.application.game.game_app_service import GameAppService
 from app.domain.game.room import GameRoom, Player, GamePhase
+from app.infrastructure.config import settings
 
 
 @pytest.fixture
@@ -153,6 +154,46 @@ class TestGameAppService:
             result = await service.match_ai_for_player("p1", "玩家1", base_score=10)
             mock_fill.assert_called_once_with(["p1", "p2"], base_score=10)
             assert result == {"status": "room_created"}
+
+    @pytest.mark.asyncio
+    async def test_create_room_works_when_distributed_mode_is_enabled(
+        self, monkeypatch, service, mock_repo
+    ):
+        monkeypatch.setattr(settings, "DISTRIBUTED_MODE", True)
+        mock_repo.get_match_player_meta = AsyncMock(return_value=None)
+        mock_repo.delete_match_player_meta = AsyncMock()
+        mock_repo.publish_game_command = AsyncMock()
+        mock_repo.schedule_game_task = AsyncMock()
+
+        result = await service._create_room(
+            ["player-1", "ai_bot_1", "ai_bot_2"],
+            base_score=20,
+        )
+
+        assert result["status"] == "room_created"
+        assert result["room_id"].startswith("room_")
+
+    @pytest.mark.asyncio
+    async def test_initial_ai_waits_for_deal_animation_before_calling(
+        self, monkeypatch, service, mock_repo
+    ):
+        monkeypatch.setattr(settings, "DISTRIBUTED_MODE", True)
+        mock_repo.get_match_player_meta = AsyncMock(return_value=None)
+        mock_repo.delete_match_player_meta = AsyncMock()
+        mock_repo.publish_game_command = AsyncMock()
+        mock_repo.schedule_game_task = AsyncMock()
+
+        with patch("random.randint", return_value=0):
+            await service._create_room(
+                ["ai_bot_1", "player-1", "ai_bot_2"],
+                base_score=20,
+            )
+
+        mock_repo.publish_game_command.assert_not_awaited()
+        task = mock_repo.schedule_game_task.await_args.args[0]
+        assert task.task_type == "trigger_ai"
+        assert task.payload["player_id"] == "ai_bot_1"
+        assert 2.0 <= task.due_at - task.created_at <= 3.0
 
 
 def test_game_room_serializes_auto_play_players():
