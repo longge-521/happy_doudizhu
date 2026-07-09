@@ -35,4 +35,4 @@
 为了保证文档单一事实来源（Single Source of Truth），本文件不再保留关于项目结构、目录、技术栈、对局协议和开发运行命令的重复叙述。
 
 关于以上所有项目背景，请直接查阅并严格遵循项目根目录下的：
-👉 **[README.md](file:///d:/Project_2023/happy_doudizhu-欢乐斗地主/README.md)**
+👉 **[README.md](README.md)**
