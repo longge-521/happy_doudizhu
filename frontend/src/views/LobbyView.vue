@@ -1,7 +1,7 @@
 <!-- frontend/src/views/LobbyView.vue -->
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import { usePlayerStore } from '@/stores/playerStore'
 import { useGameStore } from '@/stores/gameStore'
 import { useGameWebSocket } from '@/composables/useGameWebSocket'
@@ -10,6 +10,7 @@ import SettingsModal from '@/components/SettingsModal.vue'
 import { PROFILE_DEBUG_ENABLED } from '@/utils/runtimeFeatures'
 
 const router = useRouter()
+const route = useRoute()
 const playerStore = usePlayerStore()
 const gameStore = useGameStore()
 const { connect, disconnect, sendAction } = useGameWebSocket()
@@ -82,7 +83,8 @@ const TIER_MIN_BEANS: Record<number, number> = {
 const selectedBaseScore = ref(80) // 默认初级场 80 分
 const selectedTier = ref(TIERS[1]!)
 const showReadyPage = ref(false)
-const playMode = ref<'classic' | 'no_shuffle'>('classic')
+const initialPlayMode = (route.query.play_mode as 'classic' | 'no_shuffle') || 'classic'
+const playMode = ref<'classic' | 'no_shuffle'>(initialPlayMode)
 
 const RANK_NAMES = [
   "", "包身工", "短工", "长工", "中农", "富农", "掌柜", "商人", "小财主", "大财主",
@@ -168,8 +170,14 @@ function handleHelpClick() {
 }
 
 function handleSidebarClick(item: SidebarItem) {
-  if (item.active) {
-    openFeatureNotice('经典玩法', '当前已经在经典玩法大厅。')
+  if (item.name === '经典') {
+    playMode.value = 'classic'
+    sidebarItems.value.forEach(i => i.active = (i.name === '经典'))
+    return
+  }
+  if (item.name === '不洗牌') {
+    playMode.value = 'no_shuffle'
+    sidebarItems.value.forEach(i => i.active = (i.name === '不洗牌'))
     return
   }
   openFeatureNotice(item.name)
@@ -482,14 +490,14 @@ function formatTime(seconds: number): string {
 }
 
 // 侧边栏菜单列表
-const sidebarItems: SidebarItem[] = [
+const sidebarItems = ref<SidebarItem[]>([
   { name: '510K', badge: '热门' },
-  { name: '欢乐经典', badge: '' },
-  { name: '经典', badge: '最近', active: true },
+  { name: '经典', badge: '最近', active: initialPlayMode === 'classic' },
+  { name: '不洗牌', badge: '', active: initialPlayMode === 'no_shuffle' },
   { name: '天地癞子', badge: '' },
   { name: '血流麻将', badge: '热门' },
   { name: '更多玩法', badge: '' }
-]
+])
 
 // 资产数值格式化
 function formatBeans(beans: number): string {
@@ -604,13 +612,6 @@ function handleHotPlayHint() {
 
         <!-- 中部场次卡片区 -->
         <main class="lobby-grid-main">
-          <!-- 玩法切换 Tabs -->
-          <div class="mode-tabs-container">
-            <div class="mode-tabs glass-panel">
-              <button :class="{ active: playMode === 'classic' }" @click="playMode = 'classic'">经典玩法</button>
-              <button :class="{ active: playMode === 'no_shuffle' }" @click="playMode = 'no_shuffle'">不洗牌场</button>
-            </div>
-          </div>
 
           <div class="grid-container">
             <div
@@ -937,7 +938,7 @@ function handleHotPlayHint() {
       <!-- 中部水印与说明 -->
       <div class="ready-brand-center">
         <div class="ready-logo">欢乐斗地主</div>
-        <div class="ready-subtitle">经典{{ selectedTier.name }} 底分{{ selectedTier.baseScore }}</div>
+        <div class="ready-subtitle">{{ playMode === 'no_shuffle' ? '不洗牌' : '经典' }}{{ selectedTier.name }} 底分{{ selectedTier.baseScore }}</div>
       </div>
 
       <!-- 准备页核心操作按钮 -->

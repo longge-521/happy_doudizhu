@@ -492,8 +492,9 @@ function chooseDoubling(type: 'double' | 'super' | 'none') {
 
 // 闁稿繑濞婂Λ瀵哥磼閹惧墎鏆梻鍫涘灪濠㈡﹢鏁嶅畝鍕缂傚喚鍠楅弳鐔煎箲椤旇壈瀚欓弶鈺傛煥濞叉牗寰勮瀹?
 function handleCloseSettlement() {
+  const currentMode = gameStore.playMode || 'classic'
   gameStore.reset()
-  router.push('/lobby')
+  router.push(`/lobby?play_mode=${currentMode}`)
 }
 
 // 退出房间
@@ -502,8 +503,9 @@ function handleExitRoom() {
   if (confirm('确定要退出当前游戏吗？这将会使您托管或流失积分！')) {
     stopBgm()
     disconnect()
+    const currentMode = gameStore.playMode || 'classic'
     gameStore.reset()
-    router.push('/lobby')
+    router.push(`/lobby?play_mode=${currentMode}`)
   }
 }
 
