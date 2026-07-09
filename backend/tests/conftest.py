@@ -17,15 +17,62 @@ def setup_test_settings(monkeypatch):
     try:
         from app.infrastructure.redis_client import redis_client
         async def clear_redis_test_keys():
-            keys = await redis_client.keys("game:*")
-            if keys:
-                # 过滤并保留分布式长生存的 shard_owner 与 instance 状态，只清理对局临时数据
-                keys_to_del = [k for k in keys if b"shard_owner" not in k and b"instance" not in k]
-                if keys_to_del:
-                    await redis_client.delete(*keys_to_del)
+            try:
+                keys = await redis_client.keys("game:*")
+                if keys:
+                    # 过滤并保留分布式长生存的 shard_owner 与 instance 状态，只清理对局临时数据
+                    keys_to_del = [k for k in keys if b"shard_owner" not in k and b"instance" not in k]
+                    if keys_to_del:
+                        await redis_client.delete(*keys_to_del)
+            except Exception:
+                pass
                     
-        loop = asyncio.get_event_loop()
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            
         if loop.is_running():
             asyncio.create_task(clear_redis_test_keys())
+        else:
+            loop.run_until_complete(clear_redis_test_keys())
+    except Exception:
+        pass
+
+
+@pytest.fixture(scope="session", autouse=True)
+def cleanup_connections_session():
+    """在整个测试 session 结束时，强制释放所有 Redis 与数据库连接池，从根本上防止 pytest 挂起和产生僵尸进程"""
+    yield
+    
+    async def _close_all():
+        # 1. 物理关闭 Redis 异步客户端与连接池
+        try:
+            from app.infrastructure.redis_client import redis_client
+            if redis_client:
+                await redis_client.aclose()
+        except Exception:
+            pass
+            
+        # 2. 释放 SQLAlchemy 数据库连接池
+        try:
+            from app.infrastructure.database.session import engine
+            if engine:
+                engine.dispose()
+        except Exception:
+            pass
+            
+    try:
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            
+        if loop.is_running():
+            loop.create_task(_close_all())
+        else:
+            loop.run_until_complete(_close_all())
     except Exception:
         pass
