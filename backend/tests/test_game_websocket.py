@@ -29,9 +29,12 @@ def mock_game_service():
 @pytest.fixture(autouse=True)
 def setup_app_state(monkeypatch, mock_game_service):
     # 使用 monkeypatch 模拟 app.state，测试结束后会自动还原
+    from app.infrastructure.game.memory_adapters import MemoryPresenceService, MemoryMessageBus
     monkeypatch.setattr(settings, "APP_ENV", "development")
     monkeypatch.setattr(app.state, "game_service", mock_game_service, raising=False)
     monkeypatch.setattr(app.state, "game_ws_manager", GameWSConnectionManager(), raising=False)
+    monkeypatch.setattr(app.state, "presence_service", MemoryPresenceService(), raising=False)
+    monkeypatch.setattr(app.state, "game_message_bus", MemoryMessageBus(), raising=False)
 
 
 def test_game_websocket_unauthorized(monkeypatch):

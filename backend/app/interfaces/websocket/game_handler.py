@@ -36,6 +36,7 @@ class GameWebSocketHandler:
         manager: GameWSConnectionManager,
         game_service: "GameAppService",
         settlement_service=None,
+        connection_epoch: int = 0,
     ):
         from app.application.game.settlement_service import GameSettlementService
 
@@ -44,6 +45,7 @@ class GameWebSocketHandler:
         self.manager = manager
         self.service = game_service
         self.settlement_service = settlement_service or GameSettlementService()
+        self.connection_epoch = connection_epoch
 
     async def run(self):
         await self.manager.connect(self.ws, self.player_id)
@@ -69,13 +71,47 @@ class GameWebSocketHandler:
         await self.manager.send_to_player(self.player_id, data)
 
     async def _broadcast_room_event(self, room, event_data: dict):
-        """向房间内所有在线真人玩家广播事件"""
+        """向房间内所有在线真人玩家广播事件，支持跨实例路由"""
+        from app.infrastructure.config import settings
+        from app.application.game.schemas import GameEventSchema
+        import uuid
+        import time
+
+        presence_service = self.ws.app.state.presence_service
+        message_bus = self.ws.app.state.game_message_bus
+
         for p in room.players:
-            if not p.is_ai and p.id in self.manager.connections:
-                # 每个玩家收到自己的视角
-                player_view = room.get_player_view(p.id)
-                msg = {**event_data, "room_state": player_view}
+            if p.is_ai:
+                continue
+
+            player_view = room.get_player_view(p.id)
+            msg = {**event_data, "room_state": player_view}
+
+            # 如果玩家连接在当前实例上
+            if p.id in self.manager.connections:
                 await self.manager.send_to_player(p.id, msg)
+            elif settings.DISTRIBUTED_MODE:
+                # 跨实例中转路由
+                presence = await presence_service.get_presence(p.id)
+                if presence:
+                    target_instance = presence.get("instance_id")
+                    target_epoch = presence.get("connection_epoch")
+                    if target_instance:
+                        event = GameEventSchema(
+                            event_id=f"evt-{uuid.uuid4().hex[:8]}",
+                            event=event_data.get("event", "room_event"),
+                            room_id=room.room_id,
+                            room_version=room.version if hasattr(room, "version") else 0,
+                            target_player_id=p.id,
+                            target_connection_epoch=target_epoch,
+                            payload=msg,
+                            created_at=time.time(),
+                            trace_id=event_data.get("trace_id", f"relay-trace-{p.id}")
+                        )
+                        try:
+                            await message_bus.publish_event(target_instance, event)
+                        except Exception as e:
+                            logger.error("跨实例事件路由广播失败: player_id=%s, error=%s", p.id, e)
 
     async def _handle_voice_state(self, data: dict):
         room = await self.service._get_player_room(self.player_id)
@@ -93,6 +129,8 @@ class GameWebSocketHandler:
         )
 
     async def _handle_voice_signal(self, data: dict):
+        from app.infrastructure.config import settings
+        
         room = await self.service._get_player_room(self.player_id)
         if not room:
             await self._send({"event": "error", "msg": "当前不在房间内，无法发送语音信号"})
@@ -119,16 +157,44 @@ class GameWebSocketHandler:
             await self._send({"event": "error", "msg": "语音信令内容过大"})
             return
 
-        await self.manager.send_to_player(
-            target_player,
-            {
-                "event": "voice_signal",
-                "player": self.player_id,
-                "target_player": target_player,
-                "signal_type": signal_type,
-                "payload": payload,
-            },
-        )
+        msg = {
+            "event": "voice_signal",
+            "player": self.player_id,
+            "target_player": target_player,
+            "signal_type": signal_type,
+            "payload": payload,
+        }
+
+        if target_player in self.manager.connections:
+            await self.manager.send_to_player(target_player, msg)
+        elif settings.DISTRIBUTED_MODE:
+            from app.application.game.schemas import GameEventSchema
+            import uuid
+            import time
+
+            presence_service = self.ws.app.state.presence_service
+            message_bus = self.ws.app.state.game_message_bus
+
+            presence = await presence_service.get_presence(target_player)
+            if presence:
+                target_instance = presence.get("instance_id")
+                target_epoch = presence.get("connection_epoch")
+                if target_instance:
+                    event = GameEventSchema(
+                        event_id=f"v-sig-{uuid.uuid4().hex[:8]}",
+                        event="voice_signal",
+                        room_id=room.room_id,
+                        room_version=0,
+                        target_player_id=target_player,
+                        target_connection_epoch=target_epoch,
+                        payload=msg,
+                        created_at=time.time(),
+                        trace_id=f"v-trace-{target_player}"
+                    )
+                    try:
+                        await message_bus.publish_event(target_instance, event)
+                    except Exception as e:
+                        logger.error("跨实例语音信令路由发送失败: player_id=%s, error=%s", target_player, e)
 
     async def _handle_message(self, text: str):
         try:

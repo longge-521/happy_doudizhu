@@ -84,6 +84,61 @@ async def game_websocket_endpoint(
         await websocket.close(code=1008, reason="Forbidden")
         return
 
+    # 3. 在线 Presence 管理与重复登录 kick
+    from app.infrastructure.config import settings
+    from app.application.game.schemas import GameEventSchema
+    import time
+    import uuid
+
+    presence_service = websocket.app.state.presence_service
+    message_bus = websocket.app.state.game_message_bus
+
+    new_epoch = await presence_service.increment_epoch(player_id)
+    old_presence = await presence_service.get_presence(player_id)
+
+    if old_presence:
+        old_instance = old_presence.get("instance_id")
+        old_epoch = old_presence.get("connection_epoch")
+        if old_instance == settings.INSTANCE_ID:
+            old_ws = manager.connections.get(player_id)
+            if old_ws:
+                logger.info("游戏WS: 检测到同一实例重复登录，本地踢出旧连接, player_id=%s", player_id)
+                try:
+                    await old_ws.close(code=1008, reason="DuplicateLogin")
+                except Exception:
+                    pass
+                manager.disconnect(player_id)
+        elif old_instance:
+            logger.info("游戏WS: 检测到跨实例重复登录，发送 kick 广播给旧实例 %s, player_id=%s", old_instance, player_id)
+            kick_event = GameEventSchema(
+                event_id=f"kick-{uuid.uuid4().hex[:8]}",
+                event="kick",
+                room_id="lobby",
+                room_version=0,
+                target_player_id=player_id,
+                target_connection_epoch=old_epoch,
+                payload={},
+                created_at=time.time(),
+                trace_id=f"kick-trace-{player_id}"
+            )
+            try:
+                await message_bus.publish_event(old_instance, kick_event)
+            except Exception as e:
+                logger.error("游戏WS: 发送 kick 消息中转失败: %s", e)
+
+    await presence_service.set_presence(player_id, settings.INSTANCE_ID, new_epoch)
+
     from app.interfaces.websocket.game_handler import GameWebSocketHandler
-    handler = GameWebSocketHandler(websocket, player_id, manager, game_service)
-    await handler.run()
+    handler = GameWebSocketHandler(
+        websocket, 
+        player_id, 
+        manager, 
+        game_service, 
+        connection_epoch=new_epoch
+    )
+    
+    try:
+        await handler.run()
+    finally:
+        logger.info("游戏WS: 玩家连接释放，尝试清理在线状态, player_id=%s, epoch=%s", player_id, new_epoch)
+        await presence_service.remove_presence(player_id, new_epoch)

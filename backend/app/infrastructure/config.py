@@ -1,4 +1,5 @@
 import os
+import uuid
 from pathlib import Path
 from typing import Optional
 from pydantic import Field
@@ -11,10 +12,14 @@ BACKEND_DIR = Path(__file__).resolve().parents[2]
 class Settings(BaseSettings):
     """系统全局配置类。
 
-    支持自动从系统环境变量和 .env 文件中加载，类型不匹配时自动抛出异常。
+    支持自动从系统环境变量 and .env 文件中加载，类型不匹配时自动抛出异常。
     """
 
     # 1. 基础配置
+    INSTANCE_ID: str = Field(
+        default_factory=lambda: f"inst-{uuid.uuid4().hex[:8]}",
+        description="应用实例唯一标识ID"
+    )
     PORT: int = Field(default=18088, description="后端服务运行端口")
     APP_ENV: str = Field(
         default="development", description="运行环境：development/production"

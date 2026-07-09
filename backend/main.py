@@ -160,11 +160,115 @@ async def stale_upload_reaper(app_instance: FastAPI):
             logger.error(f"Error running stale upload reaper: {e}")
 
 
+# 声明并注入分布式或单机契约组件及其后台任务
+async def instance_heartbeat_sender(app_instance: FastAPI):
+    """后台任务：定时刷新实例在 Redis 中的心跳和状态"""
+    from app.infrastructure.redis_client import redis_client
+    import time
+    
+    instance_id = settings.INSTANCE_ID
+    key = f"game:instance:{instance_id}"
+    logger.info(f"[Lifespan] Starting instance heartbeat sender for {instance_id}")
+    
+    try:
+        while True:
+            info = {
+                "instance_id": instance_id,
+                "heartbeat_at": time.time(),
+                "status": "healthy"
+            }
+            await redis_client.set(key, json.dumps(info), ex=30)
+            await asyncio.sleep(10)
+    except asyncio.CancelledError:
+        logger.info(f"[Lifespan] Stopping instance heartbeat sender for {instance_id}")
+        try:
+            await redis_client.delete(key)
+        except Exception:
+            pass
+    except Exception as e:
+        logger.error(f"[Lifespan] Error in instance heartbeat sender: {e}")
+
+
+async def instance_event_consumer(app_instance: FastAPI, bus):
+    """后台任务：消费 RabbitMQ 中发往当前实例的跨实例玩家事件"""
+    from app.application.game.schemas import GameEventSchema
+    
+    instance_id = settings.INSTANCE_ID
+    queue_name = f"ddz.game.events.{instance_id}"
+    routing_key = f"instance.{instance_id}"
+    
+    logger.info(f"[Lifespan] Starting instance event consumer for {instance_id}")
+    
+    try:
+        channel = bus.channel
+        queue = await channel.declare_queue(
+            queue_name, 
+            durable=True, 
+            exclusive=False, 
+            auto_delete=True
+        )
+        exchange = await channel.get_exchange(bus.event_exchange_name)
+        await queue.bind(exchange, routing_key=routing_key)
+        
+        async with queue.iterator() as queue_iter:
+            async for message in queue_iter:
+                async with message.process():
+                    try:
+                        data_str = message.body.decode("utf-8")
+                        event = GameEventSchema.model_validate_json(data_str)
+                        
+                        game_ws_manager = app_instance.state.game_ws_manager
+                        ws = game_ws_manager.connections.get(event.target_player_id)
+                        
+                        if ws:
+                            if event.event == "kick":
+                                logger.info(f"[EventConsumer] Kicking player {event.target_player_id} due to duplicate login")
+                                try:
+                                    await ws.close(code=1008, reason="DuplicateLogin")
+                                except Exception:
+                                    pass
+                            else:
+                                try:
+                                    await ws.send_text(json.dumps(event.payload, ensure_ascii=False))
+                                except Exception as e:
+                                    logger.error(f"[EventConsumer] Failed to send WS message to {event.target_player_id}: {e}")
+                    except Exception as e:
+                        logger.error(f"[EventConsumer] Error processing cross-instance event: {e}")
+    except asyncio.CancelledError:
+        logger.info(f"[EventConsumer] Stopping instance event consumer for {instance_id}")
+    except Exception as e:
+        logger.error(f"[EventConsumer] Error in instance event consumer: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app_instance: FastAPI):
     settings.validate_production_settings()
+    
+    # 0. 根据模式初始化消息总线和在线位置服务
+    from app.infrastructure.game.memory_adapters import MemoryMessageBus, MemoryPresenceService
+    from app.infrastructure.game.rabbitmq_bus import RabbitMQMessageBus
+    from app.infrastructure.game.redis_presence import RedisPresenceService
+    
+    dist_heartbeat_task = None
+    dist_consumer_task = None
+    bus = None
+
     if settings.DISTRIBUTED_MODE:
-        raise NotImplementedError("Distributed mode is not fully implemented in Phase 1.")
+        bus = RabbitMQMessageBus()
+        await bus.connect()
+        presence = RedisPresenceService()
+        
+        app_instance.state.game_message_bus = bus
+        app_instance.state.presence_service = presence
+        
+        # 启动心跳协程和事件消费协程
+        dist_heartbeat_task = asyncio.create_task(instance_heartbeat_sender(app_instance))
+        dist_consumer_task = asyncio.create_task(instance_event_consumer(app_instance, bus))
+    else:
+        bus = MemoryMessageBus()
+        presence = MemoryPresenceService()
+        app_instance.state.game_message_bus = bus
+        app_instance.state.presence_service = presence
 
     # 1. 自动创建/确认 MySQL 表结构
     if should_auto_init_db():
@@ -224,6 +328,21 @@ async def lifespan(app_instance: FastAPI):
 
     await mq_adapter.close()
     logger.info("Lifespan shutdown: MQ resources cleaned up successfully.")
+
+    # 6. 关闭分布式组件资源
+    if settings.DISTRIBUTED_MODE:
+        if dist_heartbeat_task:
+            dist_heartbeat_task.cancel()
+        if dist_consumer_task:
+            dist_consumer_task.cancel()
+        await asyncio.gather(
+            dist_heartbeat_task, 
+            dist_consumer_task, 
+            return_exceptions=True
+        )
+        if bus:
+            await bus.close()
+            logger.info("Lifespan shutdown: Distributed MessageBus closed.")
 
 
 # 注册 FastAPI 生命周期挂载点
