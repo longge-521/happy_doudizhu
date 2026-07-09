@@ -145,8 +145,12 @@ class RedisGameRepository:
         return room
 
     async def delete_room(self, room_id: str) -> None:
-        key = f"{ROOM_KEY_PREFIX}{room_id}"
-        await self._redis.delete(key)
+        keys_to_del = [
+            f"{ROOM_KEY_PREFIX}{room_id}",
+            f"game:room_commands:{room_id}",
+            f"game:room_outbox:{room_id}"
+        ]
+        await self._redis.delete(*keys_to_del)
 
     # ── 玩家-房间映射 ──
 

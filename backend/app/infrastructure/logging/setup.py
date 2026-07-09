@@ -43,7 +43,13 @@ def setup_logging(default_level=logging.DEBUG):
     # 1. 声明纯文本物理文件 Formatter 与 Handler (无 ANSI 转义纯文本)
     file_format = "%(asctime)s [%(levelname)s] [%(filename)s:%(lineno)d - %(funcName)s]: %(message)s"
     file_formatter = logging.Formatter(file_format)
-    file_handler = RotatingFileHandler(log_path, maxBytes=10*1024*1024, backupCount=5, encoding="utf-8")
+    
+    if os.name == "nt":
+        from logging import FileHandler
+        file_handler = FileHandler(log_path, encoding="utf-8")
+    else:
+        file_handler = RotatingFileHandler(log_path, maxBytes=10*1024*1024, backupCount=5, encoding="utf-8")
+        
     file_handler.setFormatter(file_formatter)
     file_handler.setLevel(default_level)
 

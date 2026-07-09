@@ -137,9 +137,13 @@ class RabbitMQMessageBus(IGameMessageBus):
         if not self.channel or self.channel.is_closed:
             raise ConnectionError("RabbitMQMessageBus is not connected")
         
+        # 剥离可能包含的 GameRoom 等非 JSON 序列化的复杂对象，只保留结算所需的纯净字典
+        clean_payload = dict(result_payload)
+        clean_payload.pop("room", None)
+        
         payload_data = {
             "room_id": room_id,
-            "payload": result_payload
+            "payload": clean_payload
         }
         body = json.dumps(payload_data)
         message = aio_pika.Message(

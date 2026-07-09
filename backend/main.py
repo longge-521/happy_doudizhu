@@ -790,6 +790,20 @@ def _scheduled_task_to_command(task):
     )
 
 
+async def confirm_scheduled_task(task_id: str):
+    """从延时队列中彻底移除确认完成的调度任务"""
+    from app.infrastructure.redis_client import redis_client
+    lua_del = """
+    local zset_key = KEYS[1]
+    local hash_key = KEYS[2]
+    local tid = ARGV[1]
+    redis.call('zrem', zset_key, tid)
+    redis.call('hdel', hash_key, tid)
+    return 1
+    """
+    await redis_client.eval(lua_del, 2, "game:scheduler:tasks", "game:scheduler:task_details", task_id)
+
+
 async def scheduler_poller(app_instance: FastAPI):
     """
     后台任务：以 1 秒为周期从 Redis 延时队列中原子拉取到期的超时任务，
@@ -803,10 +817,12 @@ async def scheduler_poller(app_instance: FastAPI):
     zset_key = "game:scheduler:tasks"
     hash_key = "game:scheduler:task_details"
     
+    # 抢占式领用，先延长 3 秒租约防重，确认发送成功后再彻底 Confirm 物理删除
     lua_script = """
     local zset_key = KEYS[1]
     local hash_key = KEYS[2]
     local now = tonumber(ARGV[1])
+    local claim_deadline = tonumber(ARGV[2])
     
     local tids = redis.call('zrangebyscore', zset_key, 0, now)
     local results = {}
@@ -815,10 +831,9 @@ async def scheduler_poller(app_instance: FastAPI):
             local detail = redis.call('hget', hash_key, tid)
             if detail then
                 table.insert(results, detail)
-                redis.call('hdel', hash_key, tid)
+                redis.call('zadd', zset_key, claim_deadline, tid)
             end
         end
-        redis.call('zremrangebyscore', zset_key, 0, now)
     end
     return results
     """
@@ -830,7 +845,7 @@ async def scheduler_poller(app_instance: FastAPI):
         while True:
             now = time.time()
             try:
-                raw_tasks = await redis_client.eval(lua_script, 2, zset_key, hash_key, now)
+                raw_tasks = await redis_client.eval(lua_script, 2, zset_key, hash_key, now, now + 3.0)
                 if raw_tasks:
                     for raw in raw_tasks:
                         if isinstance(raw, bytes):
@@ -846,12 +861,14 @@ async def scheduler_poller(app_instance: FastAPI):
                             game_service = getattr(app_instance.state, "game_service", None)
                             if game_service:
                                 await game_service.match_ai_for_player(pid, nickname, base_score)
+                            await confirm_scheduled_task(task.task_id)
                             continue
 
                         command = _scheduled_task_to_command(task)
                         
                         shard_id = binascii.crc32(task.room_id.encode('utf-8')) % 16
                         await bus.publish_command(shard_id, command)
+                        await confirm_scheduled_task(task.task_id)
                         logger.debug(f"[SchedulerPoller] Routed expired task {task.task_id} to shard {shard_id}")
             except Exception as poll_err:
                 logger.error(f"[SchedulerPoller] Error scanning delay queue: {poll_err}")

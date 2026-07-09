@@ -61,7 +61,7 @@ async def test_dispatch_command_publishes_settlement_task(mock_app):
         source_instance_id="inst-1"
     )
     
-    # 模拟房间的动作处理，使其直接返回 game_over，补齐所有序列化必需的字段
+    # 模拟房间的动作处理，使其直接返回 game_over，补齐所有序列化必需的字段，并混杂非 JSON 序列化的 room 对象
     mock_result = {
         "success": True, 
         "game_over": True, 
@@ -69,7 +69,8 @@ async def test_dispatch_command_publishes_settlement_task(mock_app):
         "winner_side": "landlord", 
         "multiplier": 2, 
         "all_hands": {"p1": [], "p2": [3, 4], "ai_bot_1": [5]},
-        "scores": {"p1": 100, "p2": -100}
+        "scores": {"p1": 100, "p2": -100},
+        "room": room
     }
     with patch.object(room, "play_cards", return_value=mock_result):
         await dispatch_game_command(mock_app, command)
@@ -110,7 +111,7 @@ async def test_scheduler_poller_intercepts_match_ai():
     mock_eval = AsyncMock(return_value=[task.model_dump_json().encode("utf-8")])
     
     with patch("app.infrastructure.redis_client.redis_client.eval", new=mock_eval):
-        # 运行 poller
+        # 运行 poller 
         poller_task = asyncio.create_task(scheduler_poller(app_mock))
         await asyncio.sleep(0.2)
         poller_task.cancel()
@@ -123,3 +124,59 @@ async def test_scheduler_poller_intercepts_match_ai():
     app_mock.state.game_service.match_ai_for_player.assert_awaited_once_with("p1", "玩家1", 10)
     # 确认没有通过 MQ 往 Shard 队列发命令
     app_mock.state.game_message_bus.publish_command.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_scheduler_poller_claim_and_confirm():
+    # 测试 scheduler_poller 原子抢占延期 3.0 秒与 confirm 逻辑
+    from main import scheduler_poller
+    import time
+    
+    app_mock = MagicMock()
+    app_mock.state.game_message_bus = AsyncMock()
+    
+    task = ScheduledTaskSchema(
+        task_id="timeout-task-1",
+        due_at=time.time() - 1,
+        room_id="room-1",
+        task_type="trigger_ai",
+        expected_room_version=2,
+        created_at=time.time() - 5,
+        payload={"player_id": "ai-1"}
+    )
+    
+    # 模拟 eval 调用的拦截与计数
+    eval_calls = []
+    async def mock_eval(script, numkeys, *args):
+        eval_calls.append((script, numkeys, args))
+        # 第一次调用（scheduler_poller 的 Lua 脚本拉取）：返回任务元数据
+        if "claim_deadline" in script:
+            return [task.model_dump_json().encode("utf-8")]
+        # 第二次调用（confirm_scheduled_task 的 Lua 删除）：返回 1
+        elif "zrem" in script:
+            return 1
+        return None
+        
+    with patch("app.infrastructure.redis_client.redis_client.eval", new=mock_eval):
+        poller_task = asyncio.create_task(scheduler_poller(app_mock))
+        # 挂起当前协程以让 poller 后台执行一轮
+        await asyncio.sleep(0.1)
+        poller_task.cancel()
+        try:
+            await poller_task
+        except asyncio.CancelledError:
+            pass
+            
+    # 验证第一步：扫描到期任务的 eval 参数中，包含了 3.0 秒的延时租约
+    claim_call = next((c for c in eval_calls if "claim_deadline" in c[0]), None)
+    assert claim_call is not None
+    now_arg = claim_call[2][2]
+    claim_deadline_arg = claim_call[2][3]
+    # 验证抢占延期时间推迟了 3 秒
+    assert abs((claim_deadline_arg - now_arg) - 3.0) < 0.01
+    
+    # 验证第二步：消息成功发布到 MQ 后，成功触发了 confirm 删除任务
+    confirm_call = next((c for c in eval_calls if "zrem" in c[0]), None)
+    assert confirm_call is not None
+    assert confirm_call[2][2] == "timeout-task-1" # 删除参数是 task_id
+
