@@ -48,6 +48,7 @@ class GameWebSocketHandler:
         self.settlement_service = settlement_service or GameSettlementService()
         self.connection_epoch = connection_epoch
         self.scheduler_service = scheduler_service
+        self.last_action_time = 0.0
 
     @staticmethod
     def _build_settlement_event(room) -> dict:
@@ -269,10 +270,57 @@ class GameWebSocketHandler:
                         logger.error("跨实例语音信令路由发送失败: player_id=%s, error=%s", target_player, e)
 
     async def _handle_message(self, text: str):
+        # 1. 文本长度硬上限拦截：最大不超过 32KB
+        if len(text) > 32 * 1024:
+            logger.warning("游戏WS拒绝处理: 消息体过大, player_id=%s, size=%s", self.player_id, len(text))
+            await self._send({"event": "error", "msg": "请求消息过长，拒绝处理"})
+            return
+
+        # 2. 动作高频触发防刷拦截：同一连接两次动作间隔不得少于 100ms
+        import time
+        now = time.time()
+        if now - self.last_action_time < 0.1:
+            logger.warning("游戏WS拦截高频请求: player_id=%s, interval=%s", self.player_id, now - self.last_action_time)
+            await self._send({"event": "error", "msg": "请求过于频繁，请稍后再试"})
+            return
+        self.last_action_time = now
+
         try:
             data = json.loads(text)
         except json.JSONDecodeError:
             await self._send({"event": "error", "msg": "无效的 JSON 格式"})
+            return
+
+        # 3. JSON 嵌套深度校验防御：最大层数限制为 5 层，防止恶意深度造成解析递归栈溢出崩溃
+        def get_json_depth(obj) -> int:
+            if isinstance(obj, dict):
+                if not obj:
+                    return 1
+                return 1 + max(get_json_depth(v) for v in obj.values())
+            elif isinstance(obj, list):
+                if not obj:
+                    return 1
+                return 1 + max(get_json_depth(v) for v in obj)
+            return 1
+
+        if get_json_depth(data) > 5:
+            logger.warning("游戏WS拦截恶意嵌套JSON: player_id=%s", self.player_id)
+            await self._send({"event": "error", "msg": "数据层级嵌套过深，拒绝处理"})
+            return
+
+        # 4. 数组元素个数安全上限拦截：任何列表元素数上限为 30 (防止超大数组注入暴刷内存)
+        def has_oversized_array(obj) -> bool:
+            if isinstance(obj, dict):
+                return any(has_oversized_array(v) for v in obj.values())
+            elif isinstance(obj, list):
+                if len(obj) > 30:
+                    return True
+                return any(has_oversized_array(v) for v in obj)
+            return False
+
+        if has_oversized_array(data):
+            logger.warning("游戏WS拦截超长数组注入: player_id=%s", self.player_id)
+            await self._send({"event": "error", "msg": "数据数组元素超出合理范围，拒绝处理"})
             return
 
         if isinstance(data, dict) and "action_id" not in data:
