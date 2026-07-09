@@ -857,10 +857,11 @@ async def scheduler_poller(app_instance: FastAPI):
                             pid = task.payload.get("player_id")
                             nickname = task.payload.get("nickname")
                             base_score = int(task.payload.get("base_score", 10))
-                            logger.info(f"[SchedulerPoller] Executing delayed match_ai for player {pid}")
+                            play_mode = task.payload.get("play_mode", "classic")
+                            logger.info(f"[SchedulerPoller] Executing delayed match_ai for player {pid} in mode {play_mode}")
                             game_service = getattr(app_instance.state, "game_service", None)
                             if game_service:
-                                await game_service.match_ai_for_player(pid, nickname, base_score)
+                                await game_service.match_ai_for_player(pid, nickname, base_score, play_mode=play_mode)
                             await confirm_scheduled_task(task.task_id)
                             continue
 

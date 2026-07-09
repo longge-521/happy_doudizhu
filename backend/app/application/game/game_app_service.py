@@ -21,11 +21,21 @@ class GameAppService:
     def __init__(self, repo: RedisGameRepository):
         self._repo = repo
 
+    async def _check_and_recycle_no_shuffle(self, room: GameRoom):
+        if room.phase == GamePhase.SETTLING and getattr(room, "play_mode", "classic") == "no_shuffle":
+            try:
+                if not getattr(room, "_has_recycled", False):
+                    recycled = room.recycle_cards()
+                    await self._repo.push_no_shuffle_deck(recycled)
+                    room._has_recycled = True
+            except Exception as e:
+                logger.error(f"回收不洗牌失败: {e}")
+
     async def _save_match_player_meta(self, player_id: str, nickname: str, base_score: int):
         if hasattr(self._repo, "save_match_player_meta"):
             await self._repo.save_match_player_meta(player_id, nickname, base_score)
 
-    async def join_match(self, player_id: str, nickname: str, auto_ai: bool = True, base_score: int = 10) -> dict:
+    async def join_match(self, player_id: str, nickname: str, auto_ai: bool = True, base_score: int = 10, play_mode: str = "classic") -> dict:
         """玩家加入匹配队列"""
         # 检查是否已在房间中
         existing_room = await self._repo.get_player_room(player_id)
@@ -33,43 +43,43 @@ class GameAppService:
             return {"error": "你已在游戏房间中", "room_id": existing_room}
 
         await self._save_match_player_meta(player_id, nickname, base_score)
-        await self._repo.add_to_match_queue(player_id, base_score=base_score)
-        queue_len = await self._repo.get_match_queue_length(base_score=base_score)
+        await self._repo.add_to_match_queue(player_id, base_score=base_score, play_mode=play_mode)
+        queue_len = await self._repo.get_match_queue_length(base_score=base_score, play_mode=play_mode)
 
         if queue_len >= 3:
             # 凑够3人，创建房间
-            player_ids = await self._repo.pop_match_players(3, base_score=base_score)
+            player_ids = await self._repo.pop_match_players(3, base_score=base_score, play_mode=play_mode)
             if len(player_ids) >= 3:
-                return await self._create_room(player_ids, base_score=base_score)
+                return await self._create_room(player_ids, base_score=base_score, play_mode=play_mode)
             elif auto_ai and player_ids:
                 # 高并发竞态下虽然原计划拉取 3 人但由于余额不足实际只拉到部分，若允许 AI 补齐则直接发车防止玩家卡死
-                return await self.fill_with_ai(player_ids, base_score=base_score)
+                return await self.fill_with_ai(player_ids, base_score=base_score, play_mode=play_mode)
         elif auto_ai:
             # 不够3人，但启用了自动机器人，则将当前在队列中的人全部弹出，用 AI 补齐并开局
-            player_ids = await self._repo.pop_match_players(queue_len, base_score=base_score)
+            player_ids = await self._repo.pop_match_players(queue_len, base_score=base_score, play_mode=play_mode)
             if player_ids:
-                return await self.fill_with_ai(player_ids, base_score=base_score)
+                return await self.fill_with_ai(player_ids, base_score=base_score, play_mode=play_mode)
 
         return {"status": "waiting", "queue_length": queue_len}
 
-    async def match_ai_for_player(self, player_id: str, nickname: str, base_score: int) -> Optional[dict]:
+    async def match_ai_for_player(self, player_id: str, nickname: str, base_score: int, play_mode: str = "classic") -> Optional[dict]:
         """强制为某个玩家匹配 AI 并开局（如果在队列中），若队列里有其他真人玩家也一并拉入"""
         existing_room = await self._repo.get_player_room(player_id)
         if existing_room:
             return None
 
-        removed = await self._repo.remove_from_match_queue(player_id, base_score=base_score)
+        removed = await self._repo.remove_from_match_queue(player_id, base_score=base_score, play_mode=play_mode)
         if removed and removed > 0:
             await self._save_match_player_meta(player_id, nickname, base_score)
             player_ids = [player_id]
             # 尝试拉入队列中其他正在等待的真人玩家（最多2人）
-            others = await self._repo.pop_match_players(2, base_score=base_score)
+            others = await self._repo.pop_match_players(2, base_score=base_score, play_mode=play_mode)
             if others:
                 player_ids.extend(others)
-            return await self.fill_with_ai(player_ids, base_score=base_score)
+            return await self.fill_with_ai(player_ids, base_score=base_score, play_mode=play_mode)
         return None
 
-    async def fill_with_ai(self, player_ids: List[str], base_score: int = 10) -> dict:
+    async def fill_with_ai(self, player_ids: List[str], base_score: int = 10, play_mode: str = "classic") -> dict:
         """用 AI 填充不足的玩家位并创建房间"""
         import random
         
@@ -80,9 +90,9 @@ class GameAppService:
             player_ids.append(ai_id)
             await self._save_match_player_meta(ai_id, ai_names[i], base_score)
             
-        return await self._create_room(player_ids, base_score=base_score)
+        return await self._create_room(player_ids, base_score=base_score, play_mode=play_mode)
 
-    async def _create_room(self, player_ids: List[str], base_score: int = 10) -> dict:
+    async def _create_room(self, player_ids: List[str], base_score: int = 10, play_mode: str = "classic") -> dict:
         """创建游戏房间并发牌"""
         room_id = f"room_{uuid.uuid4().hex[:12]}"
         players = []
@@ -99,7 +109,18 @@ class GameAppService:
             players.append(Player(id=pid, nickname=nickname, is_ai=is_ai, is_online=True))
 
         room = GameRoom.create(room_id, players, base_score=base_score)
-        room.deal()
+        room.play_mode = play_mode
+        
+        # 尝试从池中拉取牌
+        deck = None
+        if play_mode == "no_shuffle":
+            deck = await self._repo.pop_no_shuffle_deck()
+            
+        if deck:
+            room.deal_with_deck(deck)
+        else:
+            # 如果池空或经典模式，退避使用经典随机发牌
+            room.deal()
 
         # 在分布式模式下，保存房间前封装 match_success 和 game_start 广播至 outbox
         from app.infrastructure.config import settings
@@ -118,6 +139,7 @@ class GameAppService:
                 {
                     "event": "game_start",
                     "current_turn": room.current_turn,
+                    "play_mode": room.play_mode,
                 }
             ]
             events = []
@@ -310,6 +332,7 @@ class GameAppService:
         if not room:
             return {"error": "你不在任何房间中"}
         result = room.play_cards(player_id, card_ids)
+        await self._check_and_recycle_no_shuffle(room)
         await self._repo.save_room(room)
         result["room"] = room
         return result
@@ -377,6 +400,7 @@ class GameAppService:
             result = room.play_cards(player_id, cards)
         else:
             result = room.pass_turn(player_id)
+        await self._check_and_recycle_no_shuffle(room)
         if persist:
             await self._repo.save_room(room)
         result["room"] = room
@@ -468,6 +492,7 @@ class GameAppService:
                 result = room.play_cards(ai_id, cards)
             else:
                 result = room.pass_turn(ai_id)
+            await self._check_and_recycle_no_shuffle(room)
             if persist:
                 await self._repo.save_room(room)
             result["room"] = room
