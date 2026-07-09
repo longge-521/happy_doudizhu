@@ -20,8 +20,10 @@ class GameAppService:
 
     def __init__(self, repo: RedisGameRepository):
         self._repo = repo
-        # 维护一份等待中的玩家信息 (player_id -> nickname)
-        self._pending_players: Dict[str, str] = {}
+
+    async def _save_match_player_meta(self, player_id: str, nickname: str, base_score: int):
+        if hasattr(self._repo, "save_match_player_meta"):
+            await self._repo.save_match_player_meta(player_id, nickname, base_score)
 
     async def join_match(self, player_id: str, nickname: str, auto_ai: bool = True, base_score: int = 10) -> dict:
         """玩家加入匹配队列"""
@@ -30,7 +32,7 @@ class GameAppService:
         if existing_room:
             return {"error": "你已在游戏房间中", "room_id": existing_room}
 
-        self._pending_players[player_id] = nickname
+        await self._save_match_player_meta(player_id, nickname, base_score)
         await self._repo.add_to_match_queue(player_id, base_score=base_score)
         queue_len = await self._repo.get_match_queue_length(base_score=base_score)
 
@@ -55,7 +57,7 @@ class GameAppService:
 
         removed = await self._repo.remove_from_match_queue(player_id, base_score=base_score)
         if removed and removed > 0:
-            self._pending_players[player_id] = nickname
+            await self._save_match_player_meta(player_id, nickname, base_score)
             player_ids = [player_id]
             # 尝试拉入队列中其他正在等待的真人玩家（最多2人）
             others = await self._repo.pop_match_players(2, base_score=base_score)
@@ -67,12 +69,14 @@ class GameAppService:
     async def fill_with_ai(self, player_ids: List[str], base_score: int = 10) -> dict:
         """用 AI 填充不足的玩家位并创建房间"""
         import random
+        
         ai_count = 3 - len(player_ids)
         ai_names = random.sample(AI_NAMES, ai_count)
         for i in range(ai_count):
             ai_id = f"ai_bot_{uuid.uuid4().hex[:8]}"
             player_ids.append(ai_id)
-            self._pending_players[ai_id] = ai_names[i]
+            await self._save_match_player_meta(ai_id, ai_names[i], base_score)
+            
         return await self._create_room(player_ids, base_score=base_score)
 
     async def _create_room(self, player_ids: List[str], base_score: int = 10) -> dict:
@@ -81,10 +85,15 @@ class GameAppService:
         players = []
         for pid in player_ids:
             is_ai = pid.startswith("ai_bot_")
-            nickname = self._pending_players.get(pid, pid)
+            nickname = pid
+            
+            if hasattr(self._repo, "get_match_player_meta"):
+                meta = await self._repo.get_match_player_meta(pid)
+                if meta:
+                    nickname = meta.get("nickname", pid)
+                    await self._repo.delete_match_player_meta(pid)
+
             players.append(Player(id=pid, nickname=nickname, is_ai=is_ai, is_online=True))
-            # 清理临时数据
-            self._pending_players.pop(pid, None)
 
         room = GameRoom.create(room_id, players, base_score=base_score)
         room.deal()
@@ -93,6 +102,63 @@ class GameAppService:
         await self._repo.save_room(room)
         for pid in player_ids:
             await self._repo.set_player_room(pid, room_id)
+
+        # 在分布式模式下，若第一个玩家是 AI，向分片发送 trigger_ai 唤醒消息；若为真人，为其调度 15 秒超时任务
+        from app.infrastructure.config import settings
+        if settings.DISTRIBUTED_MODE:
+            from app.application.game.schemas import ScheduledTaskSchema
+            import time
+
+            first_player = next((p for p in room.players if p.id == room.current_turn), None)
+            if first_player:
+                if first_player.is_ai:
+                    # 等待前端发牌动画完成后，再由持久调度器唤醒首个 AI。
+                    room_ver = getattr(room, "envelope_version", 0)
+                    deadline_token = int(room.turn_deadline * 1000)
+                    task = ScheduledTaskSchema(
+                        task_id=(
+                            f"trigger_ai_{room.room_id}_{first_player.id}_"
+                            f"{deadline_token}"
+                        ),
+                        room_id=room.room_id,
+                        task_type="trigger_ai",
+                        due_at=time.time() + 2.5,
+                        expected_room_version=room_ver,
+                        created_at=time.time(),
+                        payload={
+                            "player_id": first_player.id,
+                            "expected_turn_deadline": room.turn_deadline,
+                        },
+                    )
+                    if hasattr(self._repo, "schedule_game_task"):
+                        await self._repo.schedule_game_task(task)
+                        logger.info(
+                            "[GameAppService] Scheduled initial AI %s after deal animation in room %s",
+                            first_player.id,
+                            room.room_id,
+                        )
+                else:
+                    # 真人，调度 15 秒超时
+                    action = "skip_call" if (hasattr(room.phase, "name") and room.phase.name == "CALLING" or str(room.phase) == "CALLING") else "pass_turn"
+                    room_ver = getattr(room, "envelope_version", 0)
+                    deadline_token = int(room.turn_deadline * 1000)
+                    task = ScheduledTaskSchema(
+                        task_id=(
+                            f"{action}_{room.room_id}_{first_player.id}_"
+                            f"{deadline_token}"
+                        ),
+                        room_id=room.room_id,
+                        task_type=action,
+                        due_at=time.time() + 15.0,
+                        expected_room_version=room_ver,
+                        created_at=time.time(),
+                        payload={
+                            "player_id": first_player.id,
+                            "expected_turn_deadline": room.turn_deadline,
+                        }
+                    )
+                    if hasattr(self._repo, "schedule_game_task"):
+                        await self._repo.schedule_game_task(task)
 
         logger.info(f"游戏房间 {room_id} 已创建: {[p.nickname for p in players]}")
         return {
@@ -105,7 +171,8 @@ class GameAppService:
         """取消匹配"""
         for bs in [10, 20, 80, 300, 900, 2700, 6000]:
             await self._repo.remove_from_match_queue(player_id, base_score=bs)
-        self._pending_players.pop(player_id, None)
+        if hasattr(self._repo, "delete_match_player_meta"):
+            await self._repo.delete_match_player_meta(player_id)
         return {"status": "cancelled"}
 
     async def _get_player_room(self, player_id: str) -> Optional[GameRoom]:
@@ -229,7 +296,12 @@ class GameAppService:
         await self._repo.save_room(room)
         return {"room": room, "player": player_id, "enabled": enabled}
 
-    async def handle_auto_play_turn(self, room: GameRoom) -> dict:
+    async def handle_auto_play_turn(
+        self,
+        room: GameRoom,
+        *,
+        persist: bool = True,
+    ) -> dict:
         """处理真人玩家托管出牌回合"""
         player_id = room.current_turn
         if room.phase != GamePhase.PLAYING:
@@ -248,16 +320,24 @@ class GameAppService:
             result = room.play_cards(player_id, cards)
         else:
             result = room.pass_turn(player_id)
-        await self._repo.save_room(room)
+        if persist:
+            await self._repo.save_room(room)
         result["room"] = room
         result["auto_player"] = player_id
         return result
 
-    async def handle_ai_turn(self, room: GameRoom) -> dict:
+    async def handle_ai_turn(
+        self,
+        room: GameRoom,
+        *,
+        persist: bool = True,
+        thinking_delay: bool = True,
+    ) -> dict:
         """处理 AI 回合"""
         ai_id = room.current_turn
         if room.phase == GamePhase.CALLING:
-            await asyncio.sleep(1.5)  # AI 思考延迟 (由 1.0s 增至 1.5s)
+            if thinking_delay:
+                await asyncio.sleep(1.5)
             hand = room.hands[ai_id]
             call_level = ai_decide_call(hand)
             if room._first_bidder is None:
@@ -279,21 +359,24 @@ class GameAppService:
 
             if result.get("redeal"):
                 room.deal()
-            await self._repo.save_room(room)
+            if persist:
+                await self._repo.save_room(room)
             result["room"] = room
             result["ai_player"] = ai_id
             result["score"] = score_res
             return result
 
         elif room.phase == GamePhase.LANDLORD_CONFIRM:
-            await asyncio.sleep(1.5)
+            if thinking_delay:
+                await asyncio.sleep(1.5)
             # AI 地主明牌决策：牌力极强时明牌
             should_show = self._should_ai_show_cards(room, ai_id)
             show_result = None
             if should_show:
                 show_result = room.landlord_show_cards(ai_id)
             confirm_result = room.finish_landlord_confirm()
-            await self._repo.save_room(room)
+            if persist:
+                await self._repo.save_room(room)
             return {
                 "room": room,
                 "ai_player": ai_id,
@@ -304,17 +387,20 @@ class GameAppService:
             }
 
         elif room.phase == GamePhase.DOUBLING:
-            await asyncio.sleep(1.0)
+            if thinking_delay:
+                await asyncio.sleep(1.0)
             choice = self._decide_ai_double_choice(room, ai_id)
             result = room.choose_double(ai_id, choice)
-            await self._repo.save_room(room)
+            if persist:
+                await self._repo.save_room(room)
             result["room"] = room
             result["ai_player"] = ai_id
             result["double_choice"] = choice
             return result
 
         elif room.phase == GamePhase.PLAYING:
-            await asyncio.sleep(1.5)  # AI 思考延迟 (由 1.0s 增至 1.5s)
+            if thinking_delay:
+                await asyncio.sleep(1.5)
             hand = room.hands[ai_id]
             last_cp = room.last_play.card_play
             must_play = (room.last_play.player is None)
@@ -325,7 +411,8 @@ class GameAppService:
                 result = room.play_cards(ai_id, cards)
             else:
                 result = room.pass_turn(ai_id)
-            await self._repo.save_room(room)
+            if persist:
+                await self._repo.save_room(room)
             result["room"] = room
             result["ai_player"] = ai_id
             return result

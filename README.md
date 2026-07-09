@@ -196,6 +196,7 @@ happy_doudizhu/
 1. 复制或创建后端目录下的环境变量配置文件 `.env`：
    ```ini
    PORT=18088
+   APP_ENV=development
    DB_HOST=127.0.0.1
    DB_PORT=3306
    DB_USER=root
@@ -204,11 +205,18 @@ happy_doudizhu/
    REDIS_HOST=127.0.0.1
    REDIS_PORT=6379
    REDIS_PASSWORD=your_redis_password
-   RABBITMQ_HOST=127.0.0.1
-   RABBITMQ_PORT=5672
-   RABBITMQ_USER=guest
-   RABBITMQ_PASSWORD=guest
+   MQ_HOST=127.0.0.1
+   MQ_PORT=5672
+   MQ_USER=guest
+   MQ_PASSWORD=guest
+   GAME_AUTH_SECRET=replace-with-at-least-32-random-characters
+   GAME_AUTH_TOKEN_TTL_SECONDS=604800
    ```
+
+   生产环境必须将 `APP_ENV` 设置为 `production`，并显式配置至少
+   32 个字符的随机 `GAME_AUTH_SECRET`，否则服务会拒绝启动。大厅中的
+   欢乐豆与段位手动修改仅用于开发调试，生产环境不会展示编辑入口，
+   对应 API 也会返回 403。
 2. 运行一键初始化脚本，自动检测并创建 MySQL 数据库 `happy_doudizhu` 及其所有表结构：
    ```powershell
    # 请确保当前终端处于 backend 目录下，且使用的是 hmp_ai 专属环境的 Python
@@ -227,6 +235,10 @@ happy_doudizhu/
    ```powershell
    D:\ProgramData\miniconda3\envs\hmp_ai\python.exe main.py
    ```
+
+> 当前结算链路已使用房间唯一结算记录保证幂等。MySQL 结算失败时，
+> Redis 房间会保留并记录错误，不会提前清理；持久化自动重试将在后续
+> 分布式 Settlement Worker 阶段接入。
 
 ### 3. 前端配置与启动
 

@@ -43,6 +43,7 @@ describe('useGameWebSocket', () => {
   })
 
   afterEach(() => {
+    useGameWebSocket().disconnect()
     vi.useRealTimers()
     vi.unstubAllGlobals()
     localStorage.clear()
@@ -66,6 +67,26 @@ describe('useGameWebSocket', () => {
     await vi.runOnlyPendingTimersAsync()
 
     expect(MockWebSocket.instances).toHaveLength(1)
+  })
+
+  it('requests room state when no websocket event arrives for five seconds', async () => {
+    const playerStore = usePlayerStore()
+    playerStore.playerId = 'player1'
+    playerStore.authToken = 'token'
+    const { useGameStore } = await import('@/stores/gameStore')
+    const gameStore = useGameStore()
+    gameStore.roomId = 'room-1'
+
+    const { connect } = useGameWebSocket()
+    connect()
+    const socket = MockWebSocket.instances[0]!
+    socket.readyState = MockWebSocket.OPEN
+    socket.onopen?.()
+
+    await vi.advanceTimersByTimeAsync(5_100)
+
+    const actions = socket.sentMessages.map((message) => JSON.parse(message))
+    expect(actions.some((action) => action.action === 'sync_room_state')).toBe(true)
   })
 
   it('syncs double choice events and plays matching voice', async () => {
@@ -158,9 +179,12 @@ describe('useGameWebSocket', () => {
 
     sendAction({ action: 'play_cards', cards: [3, 4, 5] })
 
-    expect(socket.sentMessages).toEqual([
-      JSON.stringify({ action: 'play_cards', cards: [3, 4, 5] }),
-    ])
+    expect(socket.sentMessages).toHaveLength(1)
+    const sentMsg = JSON.parse(socket.sentMessages[0]!)
+    expect(sentMsg.action).toBe('play_cards')
+    expect(sentMsg.cards).toEqual([3, 4, 5])
+    expect(sentMsg.action_id).toBeDefined()
+    expect(typeof sentMsg.action_id).toBe('string')
     disconnect()
   })
 

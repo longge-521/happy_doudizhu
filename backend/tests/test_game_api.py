@@ -4,6 +4,7 @@ import datetime
 from unittest.mock import MagicMock, patch
 from fastapi.testclient import TestClient
 from main import app
+from app.infrastructure.config import settings
 from app.infrastructure.database.session import get_db
 from app.domain.game.entities import PlayerProfile, GameRecord
 
@@ -237,7 +238,8 @@ def test_login_user(mock_db):
         mock_repo.get_user_by_username.assert_called_once_with("testuser")
 
 
-def test_update_player_beans(mock_db):
+def test_update_player_beans(monkeypatch, mock_db):
+    monkeypatch.setattr(settings, "APP_ENV", "development")
     client = TestClient(app)
     with patch("app.interfaces.api.game_routes.SQLGameRepository") as mock_repo_class:
         mock_repo = MagicMock()
@@ -261,7 +263,8 @@ def test_update_player_beans(mock_db):
         mock_repo.update_beans.assert_called_once_with("player123", 25000)
 
 
-def test_update_player_rank(mock_db):
+def test_update_player_rank(monkeypatch, mock_db):
+    monkeypatch.setattr(settings, "APP_ENV", "development")
     client = TestClient(app)
     with patch("app.interfaces.api.game_routes.SQLGameRepository") as mock_repo_class:
         mock_repo = MagicMock()
@@ -292,6 +295,35 @@ def test_update_player_rank(mock_db):
         assert data["sub_rank"] == 4
         assert data["stars"] == 3
         mock_repo.update_rank_profile.assert_called_once_with("player123", 35, 4, 3)
+
+
+@pytest.mark.parametrize(
+    ("path", "payload"),
+    [
+        ("/api/game/profile/player123/beans", {"beans": 25000}),
+        (
+            "/api/game/profile/player123/rank",
+            {"rank_id": 35, "sub_rank": 4, "stars": 3},
+        ),
+    ],
+)
+def test_profile_debug_mutations_are_disabled_in_production(
+    monkeypatch, mock_db, path, payload
+):
+    from app.infrastructure.auth import create_game_auth_token
+
+    monkeypatch.setattr(settings, "APP_ENV", "production")
+    monkeypatch.setattr(settings, "GAME_AUTH_SECRET", "a" * 32)
+    token = create_game_auth_token("player123")
+
+    response = TestClient(app).post(
+        path,
+        json=payload,
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "生产环境不允许手动修改欢乐豆或段位"
 
 
 def test_update_player_avatar(mock_db):

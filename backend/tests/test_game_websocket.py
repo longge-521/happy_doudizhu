@@ -1,11 +1,16 @@
 # backend/tests/test_game_websocket.py
+import json
+from types import SimpleNamespace
+
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from fastapi.testclient import TestClient
 from main import app
 from app.infrastructure import auth
+from app.infrastructure.config import settings
 from app.domain.game.room import GameRoom, Player, GamePhase
 from app.interfaces.websocket.game_routes import GameWSConnectionManager
+from app.interfaces.websocket.game_handler import GameWebSocketHandler
 
 
 @pytest.fixture
@@ -28,8 +33,12 @@ def mock_game_service():
 @pytest.fixture(autouse=True)
 def setup_app_state(monkeypatch, mock_game_service):
     # 使用 monkeypatch 模拟 app.state，测试结束后会自动还原
+    from app.infrastructure.game.memory_adapters import MemoryPresenceService, MemoryMessageBus
+    monkeypatch.setattr(settings, "APP_ENV", "development")
     monkeypatch.setattr(app.state, "game_service", mock_game_service, raising=False)
     monkeypatch.setattr(app.state, "game_ws_manager", GameWSConnectionManager(), raising=False)
+    monkeypatch.setattr(app.state, "presence_service", MemoryPresenceService(), raising=False)
+    monkeypatch.setattr(app.state, "game_message_bus", MemoryMessageBus(), raising=False)
 
 
 def test_game_websocket_unauthorized(monkeypatch):
@@ -189,3 +198,74 @@ def test_game_websocket_set_auto_play(monkeypatch, mock_game_service):
     assert resp["player"] == "player1"
     assert resp["enabled"] is True
     mock_game_service.set_auto_play.assert_called_once_with("player1", True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("message", "expected_action"),
+    [
+        ({"action": "choose_double", "choice": "double"}, "choose_double"),
+        ({"action": "landlord_show", "show": False}, "landlord_show"),
+        ({"action": "show_cards", "multiplier": 2}, "show_cards"),
+        ({"action": "set_auto_play", "enabled": True}, "set_auto_play"),
+    ],
+)
+async def test_distributed_room_writes_are_forwarded_to_shard(
+    monkeypatch, mock_game_service, message, expected_action
+):
+    monkeypatch.setattr(settings, "DISTRIBUTED_MODE", True)
+    room = GameRoom.create(
+        "room-distributed-ws",
+        [
+            Player(id="player1", nickname="P1"),
+            Player(id="ai-1", nickname="AI1", is_ai=True),
+            Player(id="ai-2", nickname="AI2", is_ai=True),
+        ],
+    )
+    mock_game_service._get_player_room = AsyncMock(return_value=room)
+    bus = SimpleNamespace(publish_command=AsyncMock())
+    websocket = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(game_message_bus=bus)))
+    handler = GameWebSocketHandler(
+        websocket,
+        "player1",
+        GameWSConnectionManager(),
+        mock_game_service,
+        connection_epoch=3,
+    )
+
+    await handler._handle_message(json.dumps(message))
+
+    bus.publish_command.assert_awaited_once()
+    command = bus.publish_command.await_args.args[1]
+    assert command.action == expected_action
+
+
+def test_settling_room_can_rebuild_game_over_event_after_reconnect():
+    room = GameRoom.create(
+        "room-settling-reconnect",
+        [
+            Player(id="landlord", nickname="地主"),
+            Player(id="farmer-1", nickname="农民1"),
+            Player(id="farmer-2", nickname="农民2"),
+        ],
+        base_score=20,
+    )
+    room.landlord = "landlord"
+    room.multiplier = 2
+    room.phase = GamePhase.SETTLING
+    room.hands = {
+        "landlord": [1],
+        "farmer-1": [],
+        "farmer-2": [2],
+    }
+
+    event = GameWebSocketHandler._build_settlement_event(room)
+
+    assert event["event"] == "game_over"
+    assert event["winner"] == "farmer-1"
+    assert event["winner_side"] == "farmer"
+    assert event["scores"] == {
+        "landlord": -80,
+        "farmer-1": 40,
+        "farmer-2": 40,
+    }

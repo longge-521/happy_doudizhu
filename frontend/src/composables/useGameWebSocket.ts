@@ -31,6 +31,8 @@ let reconnectTimer: number | null = null
 let manuallyClosed = false
 let socketPlayerId = ''
 let gameOverTimer: number | null = null
+let stateSyncTimer: number | null = null
+let lastServerEventAt = 0
 
 type BaseRoomStateEvent<TEvent extends string> = {
   event: TEvent
@@ -98,7 +100,7 @@ type AutoPlayChangedEvent = {
   enabled: boolean
 }
 
-export type GameClientAction =
+export type GameClientAction = (
   | { action: 'join_match'; nickname: string; base_score: number }
   | { action: 'cancel_match' }
   | { action: 'sync_room_state' }
@@ -119,6 +121,7 @@ export type GameClientAction =
     }
   | { action: 'show_cards'; multiplier: number }
   | { action: 'landlord_show'; show: boolean }
+) & { action_id?: string }
 
 type GameServerEvent =
   | { event: 'match_waiting' }
@@ -165,6 +168,28 @@ type GameServerEvent =
 export { playDoubleChoiceSound }
 
 export function useGameWebSocket() {
+  function stopStateSyncTimer() {
+    if (stateSyncTimer !== null) {
+      clearInterval(stateSyncTimer)
+      stateSyncTimer = null
+    }
+  }
+
+  function startStateSyncTimer() {
+    stopStateSyncTimer()
+    stateSyncTimer = window.setInterval(() => {
+      const gameStore = useGameStore()
+      if (
+        gameStore.roomId
+        && ws?.readyState === WebSocket.OPEN
+        && Date.now() - lastServerEventAt >= 5_000
+      ) {
+        sendAction({ action: 'sync_room_state' })
+        lastServerEventAt = Date.now()
+      }
+    }, 1_000)
+  }
+
   function connect() {
     const playerStore = usePlayerStore()
     if (!playerStore.playerId) {
@@ -198,12 +223,15 @@ export function useGameWebSocket() {
     socket.onopen = () => {
       isConnected.value = true
       reconnectAttempt = 0
+      lastServerEventAt = Date.now()
+      startStateSyncTimer()
       const gameStore = useGameStore()
       gameStore.wsConnected = true
       debugLog('WebSocket: Connected successfully')
     }
 
     socket.onmessage = (event) => {
+      lastServerEventAt = Date.now()
       try {
         const data = JSON.parse(event.data) as GameServerEvent
         handleEvent(data)
@@ -219,6 +247,7 @@ export function useGameWebSocket() {
       const gameStore = useGameStore()
       gameStore.wsConnected = false
       ws = null
+      stopStateSyncTimer()
       debugLog('WebSocket: Connection closed', event.code, event.reason)
       if (event.code === 1008) {
         manuallyClosed = true
@@ -246,6 +275,7 @@ export function useGameWebSocket() {
       clearTimeout(gameOverTimer)
       gameOverTimer = null
     }
+    stopStateSyncTimer()
     clearCardPresentationEffectTimer()
     if (ws) {
       ws.close()
@@ -268,7 +298,9 @@ export function useGameWebSocket() {
 
   function sendAction(action: GameClientAction) {
     if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(action))
+      const action_id = action.action_id || crypto.randomUUID()
+      const actionWithId = { ...action, action_id }
+      ws.send(JSON.stringify(actionWithId))
     } else {
       console.warn('WebSocket: Cannot send action, socket is not open')
     }

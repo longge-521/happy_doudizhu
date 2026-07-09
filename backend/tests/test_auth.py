@@ -18,7 +18,7 @@ def _client_with_token_dependency():
 
 def test_verify_token_no_token_env(monkeypatch):
     monkeypatch.setattr(settings, "API_TOKEN", "")
-    monkeypatch.delenv("APP_ENV", raising=False)
+    monkeypatch.setattr(settings, "APP_ENV", "development")
 
     response = _client_with_token_dependency().get("/test")
     assert response.status_code == 200
@@ -35,7 +35,7 @@ def test_verify_token_requires_token_in_production(monkeypatch):
 
 def test_verify_token_with_token_env(monkeypatch):
     monkeypatch.setattr(settings, "API_TOKEN", "secure-secret-token")
-    monkeypatch.delenv("APP_ENV", raising=False)
+    monkeypatch.setattr(settings, "APP_ENV", "development")
 
     client = _client_with_token_dependency()
 
@@ -56,7 +56,7 @@ def test_verify_token_with_token_env(monkeypatch):
 
 def test_verify_ws_token(monkeypatch):
     monkeypatch.setattr(settings, "API_TOKEN", "ws-secret-token")
-    monkeypatch.delenv("APP_ENV", raising=False)
+    monkeypatch.setattr(settings, "APP_ENV", "development")
 
     assert auth.verify_ws_token({"token": "ws-secret-token"}) is True
     assert auth.verify_ws_token({"token": "wrong-token"}) is False
@@ -77,9 +77,33 @@ def test_verify_ws_token_requires_token_in_production(monkeypatch):
 
 def test_game_auth_secret_required_in_production(monkeypatch):
     monkeypatch.setattr(settings, "API_TOKEN", "")
-    # 需要重置 GAME_AUTH_SECRET 为空以触发生产环境下的校验失败
     monkeypatch.setattr(settings, "GAME_AUTH_SECRET", "")
     monkeypatch.setattr(settings, "APP_ENV", "production")
 
-    with pytest.raises(RuntimeError, match="GAME_AUTH_SECRET or API_TOKEN"):
+    with pytest.raises(RuntimeError, match="GAME_AUTH_SECRET"):
         auth.create_game_auth_token("player123")
+
+
+def test_validate_production_settings_rejects_missing_game_secret(monkeypatch):
+    monkeypatch.setattr(settings, "APP_ENV", "production")
+    monkeypatch.setattr(settings, "GAME_AUTH_SECRET", None)
+
+    with pytest.raises(RuntimeError, match="GAME_AUTH_SECRET"):
+        settings.validate_production_settings()
+
+
+def test_validate_production_settings_accepts_explicit_game_secret(monkeypatch):
+    monkeypatch.setattr(settings, "APP_ENV", "production")
+    monkeypatch.setattr(settings, "GAME_AUTH_SECRET", "a" * 32)
+
+    settings.validate_production_settings()
+
+
+def test_development_uses_local_game_secret_fallback(monkeypatch):
+    monkeypatch.setattr(settings, "APP_ENV", "development")
+    monkeypatch.setattr(settings, "GAME_AUTH_SECRET", None)
+    monkeypatch.setattr(settings, "API_TOKEN", None)
+
+    token = auth.create_game_auth_token("player123")
+
+    assert auth.verify_game_auth_token(token) == "player123"

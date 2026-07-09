@@ -41,6 +41,14 @@ def ensure_player_access(player_id: str, current_player_id: str) -> None:
         raise HTTPException(status_code=403, detail="Forbidden: Cannot access another player")
 
 
+def ensure_profile_debug_mutation_allowed() -> None:
+    if settings.is_production:
+        raise HTTPException(
+            status_code=403,
+            detail="生产环境不允许手动修改欢乐豆或段位",
+        )
+
+
 def normalize_avatar_url(avatar_url: Optional[str]) -> Optional[str]:
     if avatar_url is None:
         return None
@@ -201,6 +209,7 @@ def update_beans(
     db: Session = Depends(get_db),
     current_player_id: str = Depends(require_game_player_id),
 ):
+    ensure_profile_debug_mutation_allowed()
     ensure_player_access(player_id, current_player_id)
     repo = SQLGameRepository(db)
     repo.get_or_create_profile(player_id, player_id)
@@ -220,6 +229,7 @@ def update_player_rank(
     db: Session = Depends(get_db),
     current_player_id: str = Depends(require_game_player_id),
 ):
+    ensure_profile_debug_mutation_allowed()
     ensure_player_access(player_id, current_player_id)
     repo = SQLGameRepository(db)
     repo.get_or_create_profile(player_id, player_id)
