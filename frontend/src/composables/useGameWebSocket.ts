@@ -47,6 +47,10 @@ type GameStartEvent = {
   current_turn: string
   turn_deadline?: number
   players?: RoomStatePlayerPayload[]
+  phase?: 'CALLING' | 'PLAYING'
+  play_mode?: 'classic' | 'no_shuffle' | 'fifty_k'
+  scores?: Record<string, number>
+  bean_balances?: Record<string, number>
 }
 
 type DoubleChosenEvent = BaseRoomStateEvent<'double_chosen'> & {
@@ -73,6 +77,8 @@ type GameOverEvent = {
   multiplier: number
   all_hands?: Record<string, number[]>
   room_state?: GameOverRoomState
+  fifty_k_settlement?: GameSettlement['fifty_k_settlement']
+  rank_changes?: GameSettlement['rank_changes']
 }
 
 type VoiceSignalEvent = {
@@ -165,6 +171,15 @@ type GameServerEvent =
       cards?: number[]
       multiplier: number
     })
+  | {
+      event: 'trick_settled'
+      winner_id: string
+      trick_cards: number[]
+      score_gained: number
+      bean_changes: Record<string, number>
+      bean_balances: Record<string, number>
+      current_scores: Record<string, number>
+    }
 
 export { playDoubleChoiceSound }
 
@@ -373,13 +388,16 @@ export function useGameWebSocket() {
         gameStore.gamePhase = 'IDLE'
         break
       case 'game_start': {
-        const { startBgm } = useSoundEngine()
+        const { startBgm, playQuickChatVoice } = useSoundEngine()
         startBgm('game')
         if (gameOverTimer) {
           clearTimeout(gameOverTimer)
           gameOverTimer = null
         }
-        gameStore.gamePhase = 'CALLING'
+        gameStore.gamePhase = data.phase || (data.play_mode === 'fifty_k' ? 'PLAYING' : 'CALLING')
+        if (data.play_mode) gameStore.playMode = data.play_mode
+        if (data.scores) gameStore.scores = data.scores
+        if (data.bean_balances) gameStore.beanBalances = data.bean_balances
         if (data.room_id) gameStore.roomId = data.room_id
         gameStore.myHand = data.hand
         gameStore.currentTurn = data.current_turn
@@ -392,6 +410,9 @@ export function useGameWebSocket() {
             isOnline: p.is_online, remaining: p.remaining,
             isSelf: p.is_self,
           }))
+        }
+        if (data.play_mode === 'fifty_k' && data.current_turn) {
+          void playQuickChatVoice('梅花3先出', data.current_turn, -1)
         }
         break
       }
@@ -517,7 +538,7 @@ export function useGameWebSocket() {
           }
         }
 
-        playCardPresentationEffects(data.cards, data.player, gameStore)
+        playCardPresentationEffects(data.cards, data.player, gameStore, gameStore.playMode)
         break
       }
       case 'turn_passed': {
@@ -550,7 +571,7 @@ export function useGameWebSocket() {
               ...gameStore.playerActions,
               [lastPlayer]: '',
             }
-            playCardPresentationEffects(lastCards, lastPlayer, gameStore)
+            playCardPresentationEffects(lastCards, lastPlayer, gameStore, gameStore.playMode)
           }
         }
 
@@ -560,13 +581,16 @@ export function useGameWebSocket() {
           scores: data.scores,
           multiplier: data.multiplier,
           allHands: data.all_hands || {},
+          fifty_k_settlement: data.fifty_k_settlement,
+          rank_changes: data.rank_changes,
         }
         gameStore.settlement = settlementData
 
         const myId = playerStoreGO.playerId
         const isLandlord = gameStore.landlord === myId
         const myWon = (data.winner_side === 'landlord' && isLandlord) ||
-                       (data.winner_side === 'farmer' && !isLandlord)
+                       (data.winner_side === 'farmer' && !isLandlord) ||
+                       (data.winner_side === 'individual' && data.winner === myId)
         setTimeout(() => {
           playSoundGO(myWon ? 'gameWin' : 'gameLose')
         }, 1500)
@@ -574,7 +598,9 @@ export function useGameWebSocket() {
         gameStore.showAllHands = true
         gameStore.showGameOverBanner = true
         gameStore.showWinnerBanner = false
-        gameStore.gameOverTitle = data.winner_side === 'landlord' ? '地主胜利' : '农民胜利'
+        gameStore.gameOverTitle = data.winner_side === 'individual'
+          ? `${gameStore.players.find((p) => p.id === data.winner)?.nickname || '玩家'}胜利`
+          : (data.winner_side === 'landlord' ? '地主胜利' : '农民胜利')
 
         setTimeout(() => {
           gameStore.showWinnerBanner = true
@@ -618,6 +644,16 @@ export function useGameWebSocket() {
       case 'error':
         gameStore.errorMsg = data.msg || '未知错误'
         break
+      case 'trick_settled': {
+        if (data.current_scores) {
+          gameStore.scores = data.current_scores
+        }
+        if (data.bean_balances) {
+          gameStore.beanBalances = data.bean_balances
+        }
+        window.dispatchEvent(new CustomEvent('hmp_trick_settled', { detail: data }))
+        break
+      }
     }
   }
 

@@ -7,6 +7,8 @@ from typing import Optional, List, Dict
 from app.domain.game.room import GameRoom, Player, GamePhase
 from app.domain.game.ai_strategy import ai_decide_call, ai_decide_play, ai_rank_play_candidates, build_ai_context
 from app.infrastructure.redis_game_repository import RedisGameRepository
+from app.infrastructure.database.session import transactional_session
+from app.application.game.settlement_service import GameSettlementService
 
 logger = logging.getLogger("happy_doudizhu")
 
@@ -18,8 +20,10 @@ class GameAppService:
 
     MATCH_TIMEOUT_SECONDS = 10
 
-    def __init__(self, repo: RedisGameRepository):
+    def __init__(self, repo: RedisGameRepository, session_scope=transactional_session):
         self._repo = repo
+        self._session_scope = session_scope
+        self._settlement_service = GameSettlementService(session_scope=session_scope)
 
     async def _check_and_recycle_no_shuffle(self, room: GameRoom):
         if room.phase == GamePhase.SETTLING and getattr(room, "play_mode", "classic") == "no_shuffle":
@@ -30,6 +34,42 @@ class GameAppService:
                     room._has_recycled = True
             except Exception as e:
                 logger.error(f"回收不洗牌失败: {e}")
+
+    def complete_action(self, room: GameRoom, result: dict) -> dict:
+        """统一完成一次出牌动作中的牌墩与终局结算。"""
+        if getattr(room, "play_mode", "classic") != "fifty_k":
+            return result
+
+        trick_settlement = result.get("trick_settlement")
+        if trick_settlement and trick_settlement.get("score_gained", 0) > 0:
+            settled = self._settlement_service.settle_fifty_k_trick(
+                room, trick_settlement
+            )
+            room.bean_balances = dict(settled["bean_balances"])
+            for player_id, delta in settled["bean_changes"].items():
+                room.cumulative_bean_changes[player_id] = (
+                    room.cumulative_bean_changes.get(player_id, 0) + int(delta)
+                )
+
+            result["trick_settlement_event"] = {
+                "event": "trick_settled",
+                "trick_no": trick_settlement["trick_no"],
+                "winner_id": trick_settlement["winner_id"],
+                "trick_cards": trick_settlement.get("trick_cards", []),
+                "score_gained": trick_settlement["score_gained"],
+                "base_score": room.base_score,
+                "multiplier": trick_settlement.get("multiplier", room.multiplier),
+                "bean_changes": settled["bean_changes"],
+                "bean_balances": settled["bean_balances"],
+                "current_scores": dict(room.scores),
+            }
+
+        if room.phase == GamePhase.SETTLING and "fifty_k_settlement" not in result:
+            result.update(room.settle())
+        return result
+
+    def _process_trick_settlement(self, room: GameRoom, result: dict) -> dict:
+        return self.complete_action(room, result)
 
     async def _save_match_player_meta(self, player_id: str, nickname: str, base_score: int):
         if hasattr(self._repo, "save_match_player_meta"):
@@ -332,6 +372,7 @@ class GameAppService:
         if not room:
             return {"error": "你不在任何房间中"}
         result = room.play_cards(player_id, card_ids)
+        result = self._process_trick_settlement(room, result)
         await self._check_and_recycle_no_shuffle(room)
         await self._repo.save_room(room)
         result["room"] = room
@@ -343,6 +384,7 @@ class GameAppService:
         if not room:
             return {"error": "你不在任何房间中"}
         result = room.pass_turn(player_id)
+        result = self._process_trick_settlement(room, result)
         await self._repo.save_room(room)
         result["room"] = room
         return result
@@ -362,7 +404,8 @@ class GameAppService:
         must_play = room.last_play.player is None
         ctx = build_ai_context(room, player_id)
         candidates = ai_rank_play_candidates(hand, last_cp, must_play, ctx)
-        return {"candidates": candidates, "source": "douzero", "room": room}
+        source = "fifty_k_rule" if room.play_mode == "fifty_k" else "douzero"
+        return {"candidates": candidates, "source": source, "room": room}
 
     async def set_auto_play(self, player_id: str, enabled: bool) -> dict:
         """设置真人玩家托管状态"""
@@ -400,6 +443,7 @@ class GameAppService:
             result = room.play_cards(player_id, cards)
         else:
             result = room.pass_turn(player_id)
+        result = self._process_trick_settlement(room, result)
         await self._check_and_recycle_no_shuffle(room)
         if persist:
             await self._repo.save_room(room)
@@ -492,6 +536,7 @@ class GameAppService:
                 result = room.play_cards(ai_id, cards)
             else:
                 result = room.pass_turn(ai_id)
+            result = self._process_trick_settlement(room, result)
             await self._check_and_recycle_no_shuffle(room)
             if persist:
                 await self._repo.save_room(room)

@@ -15,6 +15,8 @@ async def test_join_match_and_deal_from_pool():
     mock_repo.get_match_queue_length.return_value = 3
     mock_repo.pop_match_players.return_value = ["p1", "p2", "p3"]
     mock_repo.pop_no_shuffle_deck.return_value = list(range(54))
+    mock_repo.get_match_player_meta = AsyncMock(return_value=None)
+    mock_repo.delete_match_player_meta = AsyncMock()
     
     # 拦截开局 Outbox 注入
     with patch("app.infrastructure.config.settings.DISTRIBUTED_MODE", False):

@@ -1,5 +1,26 @@
 import { describe, it, expect } from 'vitest'
-import { findAllPlayableHints, detectCardPlay } from '../cardUtils'
+import { findAllPlayableHints, detectCardPlay, canBeatCardPlay } from '../cardUtils'
+
+describe('cardUtils - 510K rules', () => {
+  it('isolates 510K detection from classic mode', () => {
+    expect(detectCardPlay([8, 28, 40], 'classic')).toBeNull()
+    expect(detectCardPlay([8, 28, 40], 'fifty_k')?.kind).toBe('fifty_k_true')
+    expect(detectCardPlay([9, 30, 43], 'fifty_k')?.kind).toBe('fifty_k_false')
+  })
+
+  it('uses rocket > true 510K > bomb > false 510K > normal', () => {
+    const rocket = detectCardPlay([52, 53], 'fifty_k')!
+    const true510K = detectCardPlay([8, 28, 40], 'fifty_k')!
+    const bomb = detectCardPlay([0, 1, 2, 3], 'fifty_k')!
+    const false510K = detectCardPlay([9, 30, 43], 'fifty_k')!
+    const single = detectCardPlay([4], 'fifty_k')!
+
+    expect(canBeatCardPlay(rocket, true510K, 'fifty_k')).toBe(true)
+    expect(canBeatCardPlay(true510K, bomb, 'fifty_k')).toBe(true)
+    expect(canBeatCardPlay(bomb, false510K, 'fifty_k')).toBe(true)
+    expect(canBeatCardPlay(false510K, single, 'fifty_k')).toBe(true)
+  })
+})
 
 describe('cardUtils - findAllPlayableHints', () => {
   // 卡牌ID辅助

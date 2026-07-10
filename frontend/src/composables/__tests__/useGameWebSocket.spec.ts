@@ -89,6 +89,87 @@ describe('useGameWebSocket', () => {
     expect(actions.some((action) => action.action === 'sync_room_state')).toBe(true)
   })
 
+  it('starts fifty-k directly in playing phase and applies server balances', async () => {
+    const playerStore = usePlayerStore()
+    playerStore.playerId = 'p1'
+    playerStore.authToken = 'token'
+    const { connect } = useGameWebSocket()
+    connect()
+    const socket = MockWebSocket.instances[0]!
+
+    socket.onmessage?.(new MessageEvent('message', {
+      data: JSON.stringify({
+        event: 'game_start',
+        room_id: 'room-510k',
+        hand: [8, 28, 40],
+        current_turn: 'p1',
+        turn_deadline: 123,
+        phase: 'PLAYING',
+        play_mode: 'fifty_k',
+        scores: { p1: 0, p2: 0, p3: 0 },
+        bean_balances: { p1: 10000, p2: 9000, p3: 8000 },
+        players: [],
+      }),
+    }))
+
+    const { useGameStore } = await import('@/stores/gameStore')
+    const gameStore = useGameStore()
+    expect(gameStore.gamePhase).toBe('PLAYING')
+    expect(gameStore.playMode).toBe('fifty_k')
+    expect(gameStore.beanBalances).toEqual({ p1: 10000, p2: 9000, p3: 8000 })
+  })
+
+  it('announces the club-three starter when a fifty-k game begins', async () => {
+    playQuickChatVoiceMock.mockClear()
+    const playerStore = usePlayerStore()
+    playerStore.playerId = 'p1'
+    playerStore.authToken = 'token'
+    const { connect } = useGameWebSocket()
+    connect()
+    const socket = MockWebSocket.instances[0]!
+
+    socket.onmessage?.(new MessageEvent('message', {
+      data: JSON.stringify({
+        event: 'game_start',
+        room_id: 'room-510k',
+        hand: [2, 8, 28],
+        current_turn: 'p1',
+        phase: 'PLAYING',
+        play_mode: 'fifty_k',
+        players: [],
+      }),
+    }))
+
+    expect(playQuickChatVoiceMock).toHaveBeenCalledWith('梅花3先出', 'p1', -1)
+  })
+
+  it('applies authoritative balances from trick settlement', async () => {
+    const playerStore = usePlayerStore()
+    playerStore.playerId = 'p1'
+    playerStore.authToken = 'token'
+    const { connect } = useGameWebSocket()
+    connect()
+    const socket = MockWebSocket.instances[0]!
+
+    socket.onmessage?.(new MessageEvent('message', {
+      data: JSON.stringify({
+        event: 'trick_settled',
+        trick_no: 1,
+        winner_id: 'p1',
+        trick_cards: [8, 28, 40],
+        score_gained: 35,
+        bean_changes: { p1: 350, p2: -175, p3: -175 },
+        bean_balances: { p1: 10350, p2: 9825, p3: 9825 },
+        current_scores: { p1: 35, p2: 0, p3: 0 },
+      }),
+    }))
+
+    const { useGameStore } = await import('@/stores/gameStore')
+    const gameStore = useGameStore()
+    expect(gameStore.scores).toEqual({ p1: 35, p2: 0, p3: 0 })
+    expect(gameStore.beanBalances).toEqual({ p1: 10350, p2: 9825, p3: 9825 })
+  })
+
   it('syncs double choice events and plays matching voice', async () => {
     const playerStore = usePlayerStore()
     playerStore.playerId = 'p1'

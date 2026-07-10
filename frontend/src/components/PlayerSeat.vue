@@ -13,12 +13,25 @@ defineProps<{
     doubling?: string
     shownCards?: number[]
     showMultiplier?: number
+    fiftyKScore?: number
+    beans?: number
   }
   position: 'left' | 'right' | 'bottom'
   isCurrentTurn: boolean
   lastPlayedCards?: number[]
   lastActionText?: string
 }>()
+
+function formatBeans(beans: number): string {
+  if (beans >= 100000) {
+    return (beans / 10000).toFixed(2) + '万'
+  }
+  if (beans >= 10000) {
+    return (beans / 10000).toFixed(1) + '万'
+  }
+  return beans.toString()
+}
+
 </script>
 
 <template>
@@ -29,22 +42,32 @@ defineProps<{
     <!-- 头像信息卡片 -->
     <div class="avatar-block glass-panel">
       <!-- 地主农民身份标签 -->
-      <span v-if="player.isLandlord" class="role-badge landlord">👑 地主</span>
-      <span v-else-if="player.isLandlord === false" class="role-badge farmer">👨‍🌾 农民</span>
+      <span v-if="player.isLandlord && player.fiftyKScore === undefined" class="role-badge landlord">👑 地主</span>
+      <span v-else-if="player.isLandlord === false && player.fiftyKScore === undefined" class="role-badge farmer">👨‍🌾 农民</span>
       
       <div class="avatar-icon-circle" :class="{ 'is-landlord': player.isLandlord }">
         <span class="emoji-avatar">{{ player.isAi ? '🤖' : '👤' }}</span>
       </div>
       
       <div class="seat-name truncate">{{ player.nickname }}</div>
+
+      <!-- 金豆余额显示 (如果在五十K模式下) -->
+      <div v-if="player.fiftyKScore !== undefined" class="beans-badge">
+        🪙 {{ formatBeans(player.beans || 0) }}
+      </div>
+
+      <!-- 五十K积分显示 (如果在五十K模式下) -->
+      <div v-if="player.fiftyKScore !== undefined" class="fifty-k-score-badge">
+        得分: <span class="score-num">{{ player.fiftyKScore }}</span>
+      </div>
       
       <!-- 加倍状态标识 -->
-      <div v-if="player.doubling" class="doubling-badge" :class="{ 'super': player.doubling.includes('超级') }">
+      <div v-if="player.doubling && player.fiftyKScore === undefined" class="doubling-badge" :class="{ 'super': player.doubling.includes('超级') }">
         ⚡ {{ player.doubling }}
       </div>
 
       <!-- 明牌倍数状态标识 -->
-      <div v-if="player.showMultiplier" class="doubling-badge super" style="margin-top: 4px;">
+      <div v-if="player.showMultiplier && player.fiftyKScore === undefined" class="doubling-badge super" style="margin-top: 4px;">
         📢 明牌 ×{{ player.showMultiplier }}
       </div>
       
@@ -351,5 +374,38 @@ defineProps<{
   position: absolute;
   top: -110px;
   right: 0;
+}
+
+.beans-badge {
+  background: rgba(255, 255, 255, 0.15);
+  color: #ffd700;
+  font-size: 0.7rem;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 6px;
+  margin-top: 2px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  border: 1px solid rgba(255, 215, 0, 0.15);
+}
+
+.fifty-k-score-badge {
+  background: linear-gradient(135deg, #ffd700 0%, #ff8f00 100%);
+  color: #3e2723;
+  font-size: 0.7rem;
+  font-weight: 900;
+  padding: 2px 6px;
+  border-radius: 10px;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+  margin-top: 4px;
+  border: 1.1px solid #ffeb3b;
+  white-space: nowrap;
+}
+
+.fifty-k-score-badge .score-num {
+  font-size: 0.8rem;
+  color: #d84315;
+  font-weight: 900;
 }
 </style>

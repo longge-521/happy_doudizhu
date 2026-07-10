@@ -33,6 +33,7 @@ const push = vi.fn()
 
 vi.mock('vue-router', () => ({
   useRouter: () => ({ push }),
+  useRoute: () => ({ query: {} }),
 }))
 
 function mountLobby(playerOverrides: Record<string, unknown> = {}) {

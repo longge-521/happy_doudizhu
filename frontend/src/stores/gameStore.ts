@@ -14,6 +14,7 @@ export interface PlayerInfo {
   isSelf?: boolean
   shownCards?: number[]
   showMultiplier?: number
+  beans?: number
 }
 
 export interface LastPlay {
@@ -26,7 +27,7 @@ export type GamePhase = 'IDLE' | 'MATCHING' | 'DEALING' | 'CALLING' | 'LANDLORD_
 
 export type DoublingChoice = 'double' | 'super' | 'none'
 
-export type WinnerSide = 'landlord' | 'farmer'
+export type WinnerSide = 'landlord' | 'farmer' | 'individual'
 
 export interface GameSettlement {
   winner: string
@@ -34,6 +35,22 @@ export interface GameSettlement {
   scores: Record<string, number>
   multiplier: number
   allHands?: Record<string, number[]>
+  fifty_k_settlement?: {
+    winner_id: string
+    harvested_scores: Record<string, number>
+    remaining_card_scores?: Record<string, number>
+    trick_bean_changes?: Record<string, number>
+    finish_base_changes?: Record<string, number>
+    remaining_card_changes?: Record<string, number>
+    actual_finish_changes?: Record<string, number>
+    total_bean_changes?: Record<string, number>
+    bean_balances?: Record<string, number>
+  } | null
+  rank_changes?: Record<string, {
+    old_rank: string
+    new_rank: string
+    star_change: number
+  }> | null
 }
 
 export interface RoomStatePlayerPayload {
@@ -74,6 +91,9 @@ export interface RoomStatePayload {
   show_cards_players?: Record<string, number> | null
   auto_play_players?: string[]
   play_mode?: string
+  scores?: Record<string, number>
+  bean_balances?: Record<string, number>
+  cumulative_bean_changes?: Record<string, number>
 }
 
 export const useGameStore = defineStore('game', () => {
@@ -112,7 +132,10 @@ export const useGameStore = defineStore('game', () => {
   const aiHintCandidates = ref<number[][]>([])
   const aiHintSource = ref('')
   const autoPlayPlayers = ref<string[]>([])
-  const playMode = ref<'classic' | 'no_shuffle'>('classic')
+  const playMode = ref<'classic' | 'no_shuffle' | 'fifty_k'>('classic')
+  const scores = ref<Record<string, number>>({})
+  const beanBalances = ref<Record<string, number>>({})
+  const cumulativeBeanChanges = ref<Record<string, number>>({})
 
   const isMyTurn = computed(() => {
     const playerStore = usePlayerStore()
@@ -184,7 +207,10 @@ export const useGameStore = defineStore('game', () => {
     if (state.doubling_choices !== undefined) doublingChoices.value = state.doubling_choices || {}
     if (state.show_cards_players !== undefined) showCardsPlayers.value = state.show_cards_players || {}
     if (state.auto_play_players !== undefined) autoPlayPlayers.value = state.auto_play_players
-    if (state.play_mode !== undefined) playMode.value = state.play_mode as 'classic' | 'no_shuffle'
+    if (state.play_mode !== undefined) playMode.value = state.play_mode as 'classic' | 'no_shuffle' | 'fifty_k'
+    if (state.scores !== undefined) scores.value = state.scores || {}
+    if (state.bean_balances !== undefined) beanBalances.value = state.bean_balances || {}
+    if (state.cumulative_bean_changes !== undefined) cumulativeBeanChanges.value = state.cumulative_bean_changes || {}
   }
 
   function reset() {
@@ -222,6 +248,9 @@ export const useGameStore = defineStore('game', () => {
     aiHintSource.value = ''
     autoPlayPlayers.value = []
     playMode.value = 'classic'
+    scores.value = {}
+    beanBalances.value = {}
+    cumulativeBeanChanges.value = {}
   }
 
   return {
@@ -230,7 +259,7 @@ export const useGameStore = defineStore('game', () => {
     callRound, callScores, firstBidder, landlord, settlement, errorMsg, isMyTurn, playerActions, playerPlayedCards,
     allPlayedCards, baseScore, doublingChoices, showAllHands, showGameOverBanner, showWinnerBanner, gameOverTitle,
     showRedealNotice, activeEffect, showCardsPlayers, showCardsAvailableMultiplier, awaitingLandlordShow,
-    aiHintCandidates, aiHintSource, autoPlayPlayers, playMode,
+    aiHintCandidates, aiHintSource, autoPlayPlayers, playMode, scores, beanBalances, cumulativeBeanChanges,
     toggleCard, clearSelection, selectCards, setAiHintCandidates, clearAiHintCandidates, setAutoPlayPlayer,
     updateFromRoomState, reset,
   }

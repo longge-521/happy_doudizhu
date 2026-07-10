@@ -83,8 +83,8 @@ const TIER_MIN_BEANS: Record<number, number> = {
 const selectedBaseScore = ref(80) // 默认初级场 80 分
 const selectedTier = ref(TIERS[1]!)
 const showReadyPage = ref(false)
-const initialPlayMode = (route.query.play_mode as 'classic' | 'no_shuffle') || 'classic'
-const playMode = ref<'classic' | 'no_shuffle'>(initialPlayMode)
+const initialPlayMode = (route.query.play_mode as 'classic' | 'no_shuffle' | 'fifty_k') || 'classic'
+const playMode = ref<'classic' | 'no_shuffle' | 'fifty_k'>(initialPlayMode)
 
 const RANK_NAMES = [
   "", "包身工", "短工", "长工", "中农", "富农", "掌柜", "商人", "小财主", "大财主",
@@ -126,13 +126,13 @@ function getRankMaxStars(rid: number): number {
 function openEditBeansModal() {
   inputBeansValue.value = playerStore.beans
   editBeansError.value = ''
-  
+
   // 段位初始化参数
   inputRankId.value = playerStore.rankId
   inputSubRank.value = playerStore.subRank
   inputStars.value = playerStore.stars
   editRankError.value = ''
-  
+
   showEditBeansModal.value = true
 }
 
@@ -170,6 +170,11 @@ function handleHelpClick() {
 }
 
 function handleSidebarClick(item: SidebarItem) {
+  if (item.name === '510K') {
+    playMode.value = 'fifty_k'
+    sidebarItems.value.forEach(i => i.active = (i.name === '510K'))
+    return
+  }
   if (item.name === '经典') {
     playMode.value = 'classic'
     sidebarItems.value.forEach(i => i.active = (i.name === '经典'))
@@ -198,11 +203,11 @@ function handleProfileClick() {
 async function handleUpdatePassword() {
   changePasswordError.value = ''
   changePasswordSuccess.value = ''
-  
+
   const oldPwd = oldPassword.value.trim()
   const newPwd = newPassword.value.trim()
   const confirmPwd = confirmPassword.value.trim()
-  
+
   if (!oldPwd || !newPwd || !confirmPwd) {
     changePasswordError.value = '所有密码字段均为必填项'
     return
@@ -219,15 +224,15 @@ async function handleUpdatePassword() {
     changePasswordError.value = '新密码不能与旧密码相同'
     return
   }
-  
+
   const res = await playerStore.modifyPassword(oldPwd, newPwd)
   if (!res.ok) {
     changePasswordError.value = res.error || '修改密码失败，请检查旧密码是否正确'
     return
   }
-  
+
   changePasswordSuccess.value = '密码修改成功！即将在 2 秒后登出重新登录...'
-  
+
   setTimeout(async () => {
     showProfileModal.value = false
     await playerStore.logout()
@@ -256,7 +261,7 @@ function onAvatarFileSelected(event: Event) {
 
 async function handleSaveAvatar() {
   avatarSaveError.value = ''
-  
+
   const newNickname = nicknameInputValue.value.trim()
   if (!newNickname) {
     avatarSaveError.value = '昵称不能为空'
@@ -315,7 +320,7 @@ async function handleSaveBeans() {
     editBeansError.value = '欢乐豆数量不能为负数！'
     return
   }
-  
+
   // 1. 保存欢乐豆
   const resBeans = await playerStore.modifyBeans(inputBeansValue.value)
   if (!resBeans.ok) {
@@ -329,7 +334,7 @@ async function handleSaveBeans() {
     editRankError.value = `当前段位最高只能设定为 ${maxStars} 颗星！`
     return
   }
-  
+
   const resRank = await playerStore.modifyRank(inputRankId.value, inputSubRank.value, inputStars.value)
   if (resRank.ok) {
     showEditBeansModal.value = false
@@ -409,7 +414,7 @@ onMounted(() => {
     playerStore.winRate = 72.8
     playerStore.stars = 4
     playerStore.subRank = 1
-    
+
     leaderboard.value = [
       { player_id: 'mock_player', nickname: '雀圣斗地王', beans: 9999999, rank_title: '至尊斗皇III', win_rate: 72.8, total_games: 2048 },
       { player_id: 'p2', nickname: '发牌大户', beans: 5880000, rank_title: '至尊斗皇I', win_rate: 65.4, total_games: 1500 },
@@ -453,6 +458,19 @@ function handleStartMatch() {
   showSuccessState.value = false
   gameStore.gamePhase = 'MATCHING'
   startMatchTimer()
+  if (isMockMode) {
+    setTimeout(() => {
+      stopMatchTimer()
+      showSuccessState.value = true
+      gameStore.roomId = 'mock_room_888'
+      gameStore.gamePhase = 'PLAYING'
+      gameStore.playMode = playMode.value
+      setTimeout(() => {
+        router.push(`/game/mock_room_888?mock=true&play_mode=${playMode.value}`)
+      }, 1000)
+    }, 1500)
+    return
+  }
   if (gameStore.wsConnected) {
     sendAction({
       action: 'join_match',
@@ -491,7 +509,7 @@ function formatTime(seconds: number): string {
 
 // 侧边栏菜单列表
 const sidebarItems = ref<SidebarItem[]>([
-  { name: '510K', badge: '热门' },
+  { name: '510K', badge: '热门', active: initialPlayMode === 'fifty_k' },
   { name: '经典', badge: '最近', active: initialPlayMode === 'classic' },
   { name: '不洗牌', badge: '', active: initialPlayMode === 'no_shuffle' },
   { name: '天地癞子', badge: '' },
@@ -511,7 +529,8 @@ function formatBeans(beans: number): string {
 }
 
 function handleHotPlayHint() {
-  openFeatureNotice('510K玩法', '510K玩法正在加急开发中，敬请期待！')
+  playMode.value = 'fifty_k'
+  sidebarItems.value.forEach(i => i.active = (i.name === '510K'))
 }
 </script>
 
@@ -866,10 +885,10 @@ function handleHotPlayHint() {
             <div class="stars-row">
               <template v-if="playerStore.rankId < 36">
                 <!-- 循环渲染满星长度 -->
-                <span 
-                  v-for="index in getRankMaxStars(playerStore.rankId)" 
-                  :key="index" 
-                  class="star" 
+                <span
+                  v-for="index in getRankMaxStars(playerStore.rankId)"
+                  :key="index"
+                  class="star"
                   :class="{ active: index <= playerStore.stars }"
                 >
                   ★
@@ -906,7 +925,7 @@ function handleHotPlayHint() {
           <div class="action-btn-wrapper">
             <button class="btn-orange-start" @click="handleLobbyStartClick">
               <span class="btn-title">快速开始</span>
-              <span class="btn-subtitle">经典{{ selectedTier.name }}</span>
+              <span class="btn-subtitle">{{ playMode === 'fifty_k' ? '510K' : (playMode === 'no_shuffle' ? '不洗牌' : '经典') }}{{ selectedTier.name }}</span>
             </button>
           </div>
         </div>
@@ -937,8 +956,9 @@ function handleHotPlayHint() {
 
       <!-- 中部水印与说明 -->
       <div class="ready-brand-center">
-        <div class="ready-logo">欢乐斗地主</div>
-        <div class="ready-subtitle">{{ playMode === 'no_shuffle' ? '不洗牌' : '经典' }}{{ selectedTier.name }} 底分{{ selectedTier.baseScore }}</div>
+        <div v-if="playMode === 'fifty_k'" class="ready-logo">510K各自为战</div>
+        <div v-else class="ready-logo">欢乐斗地主</div>
+        <div class="ready-subtitle">{{ playMode === 'fifty_k' ? '510K' : (playMode === 'no_shuffle' ? '不洗牌' : '经典') }}{{ selectedTier.name }} 底分{{ selectedTier.baseScore }}</div>
       </div>
 
       <!-- 准备页核心操作按钮 -->
@@ -976,10 +996,10 @@ function handleHotPlayHint() {
             <div class="stars-row">
               <template v-if="playerStore.rankId < 36">
                 <!-- 循环渲染满星长度 -->
-                <span 
-                  v-for="index in getRankMaxStars(playerStore.rankId)" 
-                  :key="index" 
-                  class="star" 
+                <span
+                  v-for="index in getRankMaxStars(playerStore.rankId)"
+                  :key="index"
+                  class="star"
                   :class="{ active: index <= playerStore.stars }"
                 >
                   ★
@@ -1123,14 +1143,14 @@ function handleHotPlayHint() {
             maxlength="20"
           />
         </label>
-        
+
         <!-- 修改密码折叠入口 -->
         <div class="profile-password-toggle-row">
           <button class="btn-text-link" type="button" @click="showChangePassword = !showChangePassword">
             {{ showChangePassword ? '🔐 收起密码修改' : '🔐 修改账号密码' }}
           </button>
         </div>
-        
+
         <!-- 修改密码表单区域 -->
         <div v-if="showChangePassword" class="profile-password-form">
           <label class="profile-avatar-field compact-field">
@@ -1162,7 +1182,7 @@ function handleHotPlayHint() {
           </label>
           <p v-if="changePasswordError" class="profile-error compact-error">{{ changePasswordError }}</p>
           <p v-if="changePasswordSuccess" class="profile-success-msg">{{ changePasswordSuccess }}</p>
-          
+
           <div class="profile-password-actions">
             <button class="btn-leaderboard-toggle compact-btn" type="button" @click="handleUpdatePassword">
               确认修改密码
@@ -1218,17 +1238,17 @@ function handleHotPlayHint() {
             />
             <p v-if="editBeansError" style="color: #f44336; margin: 0; font-size: 0.85rem; text-align: left;">{{ editBeansError }}</p>
           </div>
-          
+
           <hr style="border: 0; border-top: 1px solid rgba(255,255,255,0.15); margin: 8px 0;" />
 
           <!-- 段位设定 -->
           <div style="display: flex; flex-direction: column; gap: 12px;">
             <h4 style="color: #ffd700; margin: 0; text-align: left;">🏆 定制段位信息</h4>
-            
+
             <div style="display: flex; flex-direction: column; gap: 6px;">
               <label style="color: #ccc; font-size: 0.85rem; text-align: left;">头衔名称：</label>
-              <select 
-                v-model="inputRankId" 
+              <select
+                v-model="inputRankId"
                 style="background: rgba(0,0,0,0.8); border: 1.5px solid rgba(255,255,255,0.25); border-radius: 8px; padding: 10px; color: #fff; font-size: 1rem; width: 100%; box-sizing: border-box;"
               >
                 <option v-for="(name, idx) in RANK_NAMES" :key="idx" :value="idx" v-show="idx > 0">
@@ -1240,8 +1260,8 @@ function handleHotPlayHint() {
             <div style="display: flex; gap: 12px;" v-show="inputRankId < 36">
               <div style="flex: 1; display: flex; flex-direction: column; gap: 6px;">
                 <label style="color: #ccc; font-size: 0.85rem; text-align: left;">级别后缀：</label>
-                <select 
-                  v-model="inputSubRank" 
+                <select
+                  v-model="inputSubRank"
                   style="background: rgba(0,0,0,0.8); border: 1.5px solid rgba(255,255,255,0.25); border-radius: 8px; padding: 10px; color: #fff; font-size: 1rem; width: 100%;"
                 >
                   <option :value="4">IV 级</option>
@@ -1252,26 +1272,26 @@ function handleHotPlayHint() {
               </div>
               <div style="flex: 1; display: flex; flex-direction: column; gap: 6px;">
                 <label style="color: #ccc; font-size: 0.85rem; text-align: left;">当前星星：</label>
-                <input 
-                  v-model.number="inputStars" 
-                  type="number" 
-                  min="0" 
+                <input
+                  v-model.number="inputStars"
+                  type="number"
+                  min="0"
                   :max="getRankMaxStars(inputRankId)"
                   style="background: rgba(0,0,0,0.8); border: 1.5px solid rgba(255,255,255,0.25); border-radius: 8px; padding: 10px; color: #fff; font-size: 1rem; width: 100%; box-sizing: border-box;"
                 />
               </div>
             </div>
-            
+
             <div style="display: flex; flex-direction: column; gap: 6px;" v-show="inputRankId == 36">
               <label style="color: #ccc; font-size: 0.85rem; text-align: left;">至尊星星数：</label>
-              <input 
-                v-model.number="inputStars" 
-                type="number" 
+              <input
+                v-model.number="inputStars"
+                type="number"
                 min="0"
                 style="background: rgba(0,0,0,0.8); border: 1.5px solid rgba(255,255,255,0.25); border-radius: 8px; padding: 10px; color: #fff; font-size: 1rem; width: 100%; box-sizing: border-box;"
               />
             </div>
-            
+
             <p v-if="editRankError" style="color: #f44336; margin: 0; font-size: 0.85rem; text-align: left;">{{ editRankError }}</p>
           </div>
         </div>
@@ -1305,6 +1325,7 @@ function handleHotPlayHint() {
           <h2>正在速配玩伴..</h2>
           <div class="match-time-digits">{{ formatTime(matchTime) }}</div>
           <p class="matching-detail" v-if="playMode === 'no_shuffle'">匹配场次：不洗牌 - {{ selectedTier.name }}</p>
+          <p class="matching-detail" v-else-if="playMode === 'fifty_k'">匹配场次：510K{{ selectedTier.name }} (底分 {{ selectedTier.baseScore }})</p>
           <p class="matching-detail" v-else>匹配场次：经典{{ selectedTier.name }} (底分 {{ selectedTier.baseScore }})</p>
           <button class="btn-cancel-matching" @click="handleCancelMatch">
             取消匹配
@@ -1333,7 +1354,7 @@ function handleHotPlayHint() {
   justify-content: space-between;
   /* 极度深邃、具有丰富光影空间感的游戏大厅极光背景 */
   background: #020b1e;
-  background-image: 
+  background-image:
     radial-gradient(circle at 50% 25%, rgba(30, 136, 229, 0.55) 0%, transparent 60%),
     radial-gradient(circle at 10% 20%, rgba(13, 71, 161, 0.45) 0%, transparent 55%),
     radial-gradient(circle at 90% 80%, rgba(26, 35, 126, 0.35) 0%, transparent 50%),
@@ -1621,7 +1642,7 @@ function handleHotPlayHint() {
   background: linear-gradient(180deg, #ffca28 0%, #ff8f00 45%, #e65100 100%);
   border: 1.5px solid #ffe082;
   border-left: none;
-  box-shadow: 0 6px 15px rgba(0, 0, 0, 0.45), 
+  box-shadow: 0 6px 15px rgba(0, 0, 0, 0.45),
               inset 0 2px 3px rgba(255, 255, 255, 0.5),
               0 0 10px rgba(255, 143, 0, 0.35);
   width: calc(100% - 10px); /* 宽度大幅拉伸，向右完整贴合 */
@@ -1729,13 +1750,13 @@ function handleHotPlayHint() {
 /* 初级推荐场金色高发光边框 */
 .recommend-card {
   border: 2.5px solid #ffc107;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.55), 
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.55),
               0 0 22px rgba(255, 193, 7, 0.45),
               inset 0 1.5px 2px rgba(255,255,255,0.25);
 }
 
 .recommend-card:hover {
-  box-shadow: 0 18px 45px rgba(0, 0, 0, 0.7), 
+  box-shadow: 0 18px 45px rgba(0, 0, 0, 0.7),
               0 0 32px rgba(255, 193, 7, 0.65);
 }
 

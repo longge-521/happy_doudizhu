@@ -24,6 +24,9 @@ async def test_dispatch_command_publishes_settlement_task(mock_app):
     # 测试游戏结束后，dispatch_game_command 动作能够发布结算任务到可靠结算队列，而不是同步处理
     bus = mock_app.state.game_message_bus
     repo = mock_app.state.game_repository
+    mock_app.state.game_service.complete_action = MagicMock(
+        side_effect=lambda target_room, result: result
+    )
     
     # 模拟房间快照
     room = GameRoom.create("test_settle_room_1", [

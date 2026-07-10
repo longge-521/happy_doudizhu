@@ -72,4 +72,39 @@ describe('gameWebSocketEffects', () => {
     expect(playSoundMock).toHaveBeenCalledWith('3', 'p2')
     expect(gameStore.activeEffect).toBe('')
   })
+
+  it('plays rank voice for a single 5 in 510K mode', () => {
+    const gameStore = { activeEffect: '' as 'bomb' | 'plane' | 'shimmer' | '' }
+
+    playCardPresentationEffects([8], 'p2', gameStore, 'fifty_k')
+
+    expect(playSoundMock).toHaveBeenCalledWith('playCard')
+    vi.advanceTimersByTime(100)
+    expect(playSoundMock).toHaveBeenCalledWith('5', 'p2')
+    expect(playSoundMock).not.toHaveBeenCalledWith('bomb', 'p2')
+  })
+
+  it('plays dedicated voice for true 510K instead of bomb voice', () => {
+    const gameStore = { activeEffect: '' as 'bomb' | 'plane' | 'shimmer' | '' }
+
+    playCardPresentationEffects([8, 28, 40], 'p2', gameStore, 'fifty_k')
+
+    expect(playSoundMock).toHaveBeenCalledWith('playCard')
+    vi.advanceTimersByTime(200)
+    expect(playSoundMock).toHaveBeenCalledWith('fifty_k_true', 'p2')
+    expect(playSoundMock).not.toHaveBeenCalledWith('bomb_effect')
+    expect(playSoundMock).not.toHaveBeenCalledWith('bomb', 'p2')
+  })
+
+  it('plays dedicated voice for false 510K instead of bomb voice', () => {
+    const gameStore = { activeEffect: '' as 'bomb' | 'plane' | 'shimmer' | '' }
+
+    playCardPresentationEffects([9, 30, 43], 'p2', gameStore, 'fifty_k')
+
+    expect(playSoundMock).toHaveBeenCalledWith('playCard')
+    vi.advanceTimersByTime(200)
+    expect(playSoundMock).toHaveBeenCalledWith('fifty_k_false', 'p2')
+    expect(playSoundMock).not.toHaveBeenCalledWith('bomb_effect')
+    expect(playSoundMock).not.toHaveBeenCalledWith('bomb', 'p2')
+  })
 })

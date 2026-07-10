@@ -45,21 +45,38 @@ if (isMockMode) {
   playerStore.rankTitle = '至尊斗皇III'
 
   const mockPlayMode = new URLSearchParams(window.location.search).get('play_mode') || 'no_shuffle'
-  gameStore.playMode = mockPlayMode as 'classic' | 'no_shuffle'
+  gameStore.playMode = mockPlayMode as 'classic' | 'no_shuffle' | 'fifty_k'
 
   gameStore.roomId = 'mock_room_888'
   gameStore.gamePhase = 'PLAYING'
   gameStore.baseScore = 300
   gameStore.multiplier = 64
-  gameStore.landlord = 'mock_player'
-  gameStore.currentTurn = 'mock_player'
-  gameStore.wsConnected = true
-  gameStore.bottomCards = [51, 47, 43]
-  gameStore.players = [
-    { id: 'mock_player', nickname: '雀圣斗地王', isAi: false, isOnline: true, remaining: 20, isLandlord: true, isSelf: true },
-    { id: 'ai_left', nickname: '发牌大户 (AI)', isAi: true, isOnline: true, remaining: 17, isLandlord: false, isSelf: false },
-    { id: 'ai_right', nickname: '明牌炸弹 (AI)', isAi: true, isOnline: true, remaining: 17, isLandlord: false, isSelf: false }
-  ]
+  if (gameStore.playMode === 'fifty_k') {
+    gameStore.landlord = ''
+    gameStore.currentTurn = 'mock_player'
+    gameStore.wsConnected = true
+    gameStore.bottomCards = []
+    gameStore.players = [
+      { id: 'mock_player', nickname: '雀圣斗地王', isAi: false, isOnline: true, remaining: 20, isLandlord: false, isSelf: true },
+      { id: 'ai_left', nickname: '发牌大户 (AI)', isAi: true, isOnline: true, remaining: 17, isLandlord: false, isSelf: false },
+      { id: 'ai_right', nickname: '明牌炸弹 (AI)', isAi: true, isOnline: true, remaining: 17, isLandlord: false, isSelf: false }
+    ]
+    gameStore.scores = {
+      'mock_player': 25,
+      'ai_left': 10,
+      'ai_right': 45
+    }
+  } else {
+    gameStore.landlord = 'mock_player'
+    gameStore.currentTurn = 'mock_player'
+    gameStore.wsConnected = true
+    gameStore.bottomCards = [51, 47, 43]
+    gameStore.players = [
+      { id: 'mock_player', nickname: '雀圣斗地王', isAi: false, isOnline: true, remaining: 20, isLandlord: true, isSelf: true },
+      { id: 'ai_left', nickname: '发牌大户 (AI)', isAi: true, isOnline: true, remaining: 17, isLandlord: false, isSelf: false },
+      { id: 'ai_right', nickname: '明牌炸弹 (AI)', isAi: true, isOnline: true, remaining: 17, isLandlord: false, isSelf: false }
+    ]
+  }
   if (gameStore.playMode === 'no_shuffle') {
     // 不洗牌模式下，发牌 Mock 优先分段并保留炸弹：大王, 小王, 四个2, 四个A, 四个K, 四个Q
     gameStore.myHand = [53, 52, 51, 50, 49, 48, 47, 46, 45, 44, 43, 42, 41, 40, 39, 38, 37, 36, 35, 34]
@@ -144,6 +161,7 @@ function getDoubleChoiceLabel(choice?: string) {
 }
 
 const showDoublingPanel = computed(() => {
+  if (gameStore.playMode === 'fifty_k') return false
   return gameStore.gamePhase === 'DOUBLING' &&
          !gameStore.doublingChoices[playerStore.playerId]
 })
@@ -189,9 +207,24 @@ const orderedSeats = computed(() => {
   const selfPlayer = pList[myIndex]!
 
   // 注入加倍状态描述
-  const decoratedLeft = { ...leftPlayer, doubling: getDoubleChoiceLabel(gameStore.doublingChoices[leftPlayer.id]) }
-  const decoratedRight = { ...rightPlayer, doubling: getDoubleChoiceLabel(gameStore.doublingChoices[rightPlayer.id]) }
-  const decoratedSelf = { ...selfPlayer, doubling: getDoubleChoiceLabel(gameStore.doublingChoices[selfPlayer.id]) }
+  const decoratedLeft = {
+    ...leftPlayer,
+    doubling: getDoubleChoiceLabel(gameStore.doublingChoices[leftPlayer.id]),
+    fiftyKScore: gameStore.playMode === 'fifty_k' ? (gameStore.scores[leftPlayer.id] || 0) : undefined,
+    beans: gameStore.beanBalances[leftPlayer.id] ?? (leftPlayer.id === playerStore.playerId ? playerStore.beans : 0)
+  }
+  const decoratedRight = {
+    ...rightPlayer,
+    doubling: getDoubleChoiceLabel(gameStore.doublingChoices[rightPlayer.id]),
+    fiftyKScore: gameStore.playMode === 'fifty_k' ? (gameStore.scores[rightPlayer.id] || 0) : undefined,
+    beans: gameStore.beanBalances[rightPlayer.id] ?? (rightPlayer.id === playerStore.playerId ? playerStore.beans : 0)
+  }
+  const decoratedSelf = {
+    ...selfPlayer,
+    doubling: getDoubleChoiceLabel(gameStore.doublingChoices[selfPlayer.id]),
+    fiftyKScore: gameStore.playMode === 'fifty_k' ? (gameStore.scores[selfPlayer.id] || 0) : undefined,
+    beans: gameStore.beanBalances[selfPlayer.id] ?? (selfPlayer.id === playerStore.playerId ? playerStore.beans : 0)
+  }
 
   return [
     { player: decoratedLeft, position: 'left' as const },
@@ -222,7 +255,7 @@ const playSuggestion = computed(() => {
   if (gameStore.gamePhase !== 'PLAYING' || !gameStore.isMyTurn) return null
 
   const cards = gameStore.aiHintCandidates.find((candidate) => candidate.length > 0) || []
-  const play = detectCardPlay(cards)
+  const play = detectCardPlay(cards, gameStore.playMode)
   const isLeading = lastCardsToBeat.value.length === 0
 
   if (!cards.length || !play) {
@@ -250,17 +283,17 @@ const selectedPlayState = computed(() => {
     return { valid: false, message: '' }
   }
 
-  const selectedPlay = detectCardPlay(gameStore.selectedCards)
+  const selectedPlay = detectCardPlay(gameStore.selectedCards, gameStore.playMode)
   if (!selectedPlay) {
     return { valid: false, message: '当前选择不是合法牌型' }
   }
 
-  const lastPlay = detectCardPlay(lastCardsToBeat.value)
+  const lastPlay = detectCardPlay(lastCardsToBeat.value, gameStore.playMode)
   if (!lastPlay) {
     return { valid: true, message: getPlayKindLabel(selectedPlay.kind) }
   }
 
-  if (!canBeatCardPlay(selectedPlay, lastPlay)) {
+  if (!canBeatCardPlay(selectedPlay, lastPlay, gameStore.playMode)) {
     return { valid: false, message: '当前选择压不过上家' }
   }
 
@@ -306,8 +339,192 @@ const discardCounts = computed(() => {
   return keys.map(k => ({ key: k, count: Math.max(0, counts[k] ?? 0) }))
 })
 
+interface GoldBean {
+  id: number
+  x: number
+  y: number
+  scale: number
+  opacity: number
+  duration: number
+}
+
+interface FloatingText {
+  id: number
+  x: number
+  y: number
+  scoreGained: string
+  beansGained: string
+}
+
+const activeBeans = ref<GoldBean[]>([])
+const floatingTexts = ref<FloatingText[]>([])
+let beanIdCounter = 0
+let floatIdCounter = 0
+
+function getSeatCenter(position: 'left' | 'right' | 'bottom') {
+  const el = document.querySelector(`.play-seat-zone.${position} .avatar-block`)
+  if (el) {
+    const rect = el.getBoundingClientRect()
+    return {
+      x: rect.left + rect.width / 2,
+      y: rect.top + rect.height / 2
+    }
+  }
+  if (position === 'left') return { x: 100, y: window.innerHeight / 2 }
+  if (position === 'right') return { x: window.innerWidth - 100, y: window.innerHeight / 2 }
+  return { x: 100, y: window.innerHeight - 100 }
+}
+
+function playBeansFlyAnimation(winnerId: string, scoreGained: number, beanChanges: Record<string, number>) {
+  const seats = orderedSeats.value
+  const winnerSeat = seats.find(s => s.player.id === winnerId)
+  if (!winnerSeat) return
+
+  const winnerPos = winnerSeat.position
+  const winnerCenter = getSeatCenter(winnerPos)
+
+  const losers = seats.filter(s => s.player.id !== winnerId)
+  const beansList: GoldBean[] = []
+
+  losers.forEach(loser => {
+    const loserCenter = getSeatCenter(loser.position)
+    const lChange = beanChanges[loser.player.id] || 0
+    if (lChange === 0) return
+
+    for (let i = 0; i < 15; i++) {
+      const id = ++beanIdCounter
+      const offsetX = (Math.random() - 0.5) * 40
+      const offsetY = (Math.random() - 0.5) * 40
+      const bean: GoldBean = {
+        id,
+        x: loserCenter.x + offsetX,
+        y: loserCenter.y + offsetY,
+        scale: 0.6 + Math.random() * 0.5,
+        opacity: 1,
+        duration: 0.7 + Math.random() * 0.5
+      }
+      activeBeans.value.push(bean)
+      beansList.push(bean)
+    }
+  })
+
+  setTimeout(() => {
+    beansList.forEach(bean => {
+      const target = activeBeans.value.find(b => b.id === bean.id)
+      if (target) {
+        target.x = winnerCenter.x
+        target.y = winnerCenter.y
+        target.scale = 0.7
+      }
+    })
+  }, 50)
+
+  setTimeout(() => {
+    const idsToRemove = new Set(beansList.map(b => b.id))
+    activeBeans.value = activeBeans.value.filter(b => !idsToRemove.has(b.id))
+
+    playSound('btnClick')
+
+    const winnerChange = beanChanges[winnerId] || 0
+    const floatId = ++floatIdCounter
+    floatingTexts.value.push({
+      id: floatId,
+      x: winnerCenter.x - 50,
+      y: winnerCenter.y - 65,
+      scoreGained: scoreGained > 0 ? `+${scoreGained}分` : '',
+      beansGained: winnerChange > 0 ? `+${winnerChange}豆` : ''
+    })
+
+    losers.forEach(loser => {
+      const change = beanChanges[loser.player.id] || 0
+      if (change !== 0) {
+        const loserCenter = getSeatCenter(loser.position)
+        const lFloatId = ++floatIdCounter
+        floatingTexts.value.push({
+          id: lFloatId,
+          x: loserCenter.x - 50,
+          y: loserCenter.y - 65,
+          scoreGained: '',
+          beansGained: change.toString()
+        })
+        setTimeout(() => {
+          floatingTexts.value = floatingTexts.value.filter(f => f.id !== lFloatId)
+        }, 1800)
+      }
+    })
+
+    setTimeout(() => {
+      floatingTexts.value = floatingTexts.value.filter(f => f.id !== floatId)
+    }, 1800)
+  }, 1200)
+}
+
+function handleTrickSettledEvent(e: CustomEvent) {
+  const data = e.detail
+  if (data.current_scores) {
+    for (const [pId, val] of Object.entries(data.current_scores)) {
+      gameStore.scores[pId] = val as number
+    }
+  }
+  if (data.bean_balances) {
+    gameStore.beanBalances = { ...data.bean_balances }
+    if (data.bean_balances[playerStore.playerId] !== undefined) {
+      playerStore.beans = data.bean_balances[playerStore.playerId]
+    }
+  }
+  playBeansFlyAnimation(data.winner_id, data.score_gained, data.bean_changes)
+}
+
+function triggerMockTrickSettled() {
+  window.dispatchEvent(new CustomEvent('hmp_trick_settled', {
+    detail: {
+      winner_id: 'mock_player',
+      score_gained: 25,
+      bean_changes: {
+        'mock_player': 2000,
+        'ai_left': -1000,
+        'ai_right': -1000
+      },
+      current_scores: {
+        'mock_player': (gameStore.scores['mock_player'] || 0) + 25,
+        'ai_left': gameStore.scores['ai_left'] || 0,
+        'ai_right': gameStore.scores['ai_right'] || 0
+      }
+    }
+  }))
+}
+
+function triggerMockGameOver() {
+  gameStore.settlement = {
+    winner: 'mock_player',
+    winnerSide: 'farmer',
+    scores: {
+      'mock_player': 65,
+      'ai_left': 25,
+      'ai_right': 0
+    },
+    multiplier: 1,
+    allHands: {
+      'mock_player': [],
+      'ai_left': [8],
+      'ai_right': [28]
+    },
+    fifty_k_settlement: {
+      winner_id: 'mock_player',
+      harvested_scores: {
+        'mock_player': 15,
+        'ai_left': -5,
+        'ai_right': -10
+      }
+    },
+    rank_changes: null
+  }
+  gameStore.gamePhase = 'SETTLING'
+}
+
 onMounted(() => {
   unlockAudio()
+  window.addEventListener('hmp_trick_settled', handleTrickSettledEvent as EventListener)
 
   if (isMockMode) {
     return
@@ -368,6 +585,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  window.removeEventListener('hmp_trick_settled', handleTrickSettledEvent as EventListener)
   if (timerInterval) clearInterval(timerInterval)
   roomVoice.dispose()
   stopBgm()
@@ -585,7 +803,7 @@ watch(
 </script>
 
 <template>
-  <div class="game-table room-modern-layout" :class="{ 'no-shuffle-room': gameStore.playMode === 'no_shuffle' }">
+  <div class="game-table room-modern-layout" :class="{ 'no-shuffle-room': gameStore.playMode === 'no_shuffle', 'fifty-k-room': gameStore.playMode === 'fifty_k' }">
     <!-- 濠㈠爢鍛杺闁绘顫夐弲銉ッ归鑲╂勾 -->
     <div class="poker-effects-layer" :class="{ 'shake-screen': gameStore.activeEffect === 'bomb', 'fire-shaking': gameStore.activeEffect === 'bomb' && gameStore.playMode === 'no_shuffle' }">
       <!-- 炸弹冲击波 -->
@@ -631,10 +849,11 @@ watch(
           <span class="base-score-badge">底分: <strong>{{ gameStore.baseScore }}</strong></span>
           <span class="multiplier-badge font-glow">倍数: <strong>{{ gameStore.multiplier }}倍</strong></span>
           <span v-if="gameStore.playMode === 'no_shuffle'" class="no-shuffle-tag-neon">不洗牌场</span>
+          <span v-else-if="gameStore.playMode === 'fifty_k'" class="no-shuffle-tag-neon" style="background: linear-gradient(135deg, #ffd700 0%, #ff8f00 100%); border-color: #ffeb3b; box-shadow: 0 0 8px rgba(255, 215, 0, 0.6); color: #3e2723;">510K各自为战</span>
         </div>
-        
+
         <!-- 闁瑰灚顭囬鎼佸箰婢舵劖灏?-->
-        <button 
+        <button
           v-if="gameStore.gamePhase === 'PLAYING' || gameStore.gamePhase === 'CALLING' || gameStore.gamePhase === 'DOUBLING'"
           class="btn-autoplay"
           :class="{ active: isAutoPlay }"
@@ -645,10 +864,10 @@ watch(
       </div>
 
       <div class="top-right-hud">
-        <div class="bottom-cards-panel">
+        <div v-if="gameStore.playMode !== 'fifty_k'" class="bottom-cards-panel">
           <div class="bottom-cards-title">地主牌</div>
           <div class="bottom-cards-row">
-            <div 
+            <div
               v-for="(cId, index) in gameStore.bottomCards.length > 0 ? gameStore.bottomCards : [0, 0, 0]"
               :key="index"
               class="bottom-card-flip-container"
@@ -675,11 +894,13 @@ watch(
       </div>
     </header>
 
-    <!-- 婵炴惌鍣ｅú澶愭嚄鐏炵偓鐝疞OGO -->
+    <!-- 婵炴惌LOGO -->
     <div class="brand-logo-watermark">
-      <div class="watermark-main">欢乐斗地主</div>
+      <div v-if="gameStore.playMode === 'fifty_k'" class="watermark-main">510K各自为战</div>
+      <div v-else class="watermark-main">欢乐斗地主</div>
       <div class="watermark-sub">
         <span v-if="gameStore.playMode === 'no_shuffle'">不洗牌新手场</span>
+        <span v-else-if="gameStore.playMode === 'fifty_k'">510K新手场</span>
         <span v-else>经典新手场</span>
         底分{{ gameStore.baseScore }}
       </div>
@@ -688,6 +909,11 @@ watch(
     <!-- 不洗牌模式中央 3D 浮雕印章 -->
     <div class="no-shuffle-stamp" v-if="gameStore.playMode === 'no_shuffle'">
       <span>不洗牌模式</span>
+    </div>
+
+    <!-- 510K 模式中央 3D 浮雕印章 -->
+    <div class="no-shuffle-stamp fifty-k-stamp" v-if="gameStore.playMode === 'fifty_k'">
+      <span>510K 各自为战</span>
     </div>
 
     <!-- 婵℃鐭傚鐗堢▔椤撶偑浜烽柛鎴ｆ婢ф繃绋夋惔鈥承楀ù锝嗙矊閻秶绮堥崫鍕殬 -->
@@ -704,9 +930,9 @@ watch(
             v-if="gameStore.playerActions[seat.player.id]"
             class="action-text-fancy"
             :class="[
-              (gameStore.playerActions[seat.player.id] === '不出' || 
-               gameStore.playerActions[seat.player.id] === '不叫' || 
-               gameStore.playerActions[seat.player.id] === '不抢' || 
+              (gameStore.playerActions[seat.player.id] === '不出' ||
+               gameStore.playerActions[seat.player.id] === '不叫' ||
+               gameStore.playerActions[seat.player.id] === '不抢' ||
                gameStore.playerActions[seat.player.id] === '不加倍') ? 'blue' : 'gold'
             ]"
           >
@@ -785,7 +1011,7 @@ watch(
     <!-- 玩家操作栏区域 -->
     <div class="player-bottom-area">
       <!-- 发牌阶段随时可选的明牌按钮 -->
-      <div v-if="gameStore.showCardsAvailableMultiplier !== null && !gameStore.showCardsPlayers[playerStore.playerId]" class="action-bar-row">
+      <div v-if="gameStore.showCardsAvailableMultiplier !== null && !gameStore.showCardsPlayers[playerStore.playerId] && gameStore.playMode !== 'fifty_k'" class="action-bar-row">
         <button
           class="btn-action-call"
           style="background: linear-gradient(135deg, #ff7043 0%, #d84315 100%); border-color: #ffab91;"
@@ -796,7 +1022,7 @@ watch(
       </div>
 
       <!-- 地主明牌确认面板 -->
-      <div v-if="gameStore.gamePhase === 'LANDLORD_CONFIRM' && gameStore.awaitingLandlordShow" class="action-bar-row">
+      <div v-if="gameStore.gamePhase === 'LANDLORD_CONFIRM' && gameStore.awaitingLandlordShow && gameStore.playMode !== 'fifty_k'" class="action-bar-row">
         <div v-if="gameStore.landlord === playerStore.playerId" class="actions-group">
           <button
             class="btn-action-call"
@@ -805,7 +1031,7 @@ watch(
           >
             明 牌
           </button>
-          
+
           <div class="turn-alarm-clock">
             <div class="clock-icon">⏰</div>
             <span class="time-left-digits">{{ timeLeft }}</span>
@@ -841,7 +1067,7 @@ watch(
             >
               加倍
             </button>
-            
+
             <!-- 闁告梻濮撮埀顒€绉瑰Ο浣糕枔闂堟稑鏁堕柤杈ㄦ⒐濡炲倿鏌﹂悢娲诲悁闁哄啳娉涘▍?-->
             <div class="turn-alarm-clock">
               <div class="clock-icon">⏰</div>
@@ -855,7 +1081,7 @@ watch(
             >
               超级加倍
             </button>
-            
+
             <button
               class="btn-action-pass"
               @click="chooseDoubling('none')"
@@ -876,13 +1102,14 @@ watch(
       <!-- 閺夌儐鍠栭崺宀勬嚊椤忓嫮绠掗柛鎰－閻°儵寮崜浣圭暠闁哄啫鐖奸幐鎾诲磹閹烘洦鍚€闁哄啯婀圭粭宀€鎮扮仦钘壭楅梻鍫涘灪濠?-->
       <div v-if="gameStore.isMyTurn && !showDoublingPanel" class="action-bar-row">
         <!-- 闁告瑯鍋勫﹢瀛樼▔婵犳碍鈻夋繛鍫濈仛濡炲倿鏌﹂悢娲诲悁闁哄啳娉涘▍?-->
-        <div v-if="gameStore.gamePhase === 'CALLING'" class="turn-alarm-clock">
+        <!-- 闁告瑯鍋勫﹢瀛樼▔婵犳碍鈻夋繛鍫濈仛濡炲倿鏌﹂悢娲诲悁闁哄啳娉涘▍?-->
+        <div v-if="gameStore.gamePhase === 'CALLING' && gameStore.playMode !== 'fifty_k'" class="turn-alarm-clock">
           <div class="clock-icon">⏰</div>
           <span class="time-left-digits">{{ timeLeft }}</span>
         </div>
 
         <!-- 闁告瑯鍋勫﹢瀛樼▔婵犳碍鈻夋繛鍫濈仛鐎垫粓鏌?-->
-        <div v-if="gameStore.gamePhase === 'CALLING'" class="actions-group">
+        <div v-if="gameStore.gamePhase === 'CALLING' && gameStore.playMode !== 'fifty_k'" class="actions-group">
           <button class="btn-action-call" @click="handleCall">{{ callActionLabel }}</button>
           <button class="btn-action-pass" @click="handleSkipCall()">{{ passCallLabel }}</button>
         </div>
@@ -903,7 +1130,7 @@ watch(
             >
               不出
             </button>
-            
+
             <!-- 闁告垼娅ｆ晶婵嬫⒓閼告鍞介柛鎰嚀娴犲牓寮崼鏇熷閻犱讲鍓濆鍌炲闯?-->
             <div class="turn-alarm-clock">
               <div class="clock-icon">⏰</div>
@@ -917,7 +1144,7 @@ watch(
             >
               {{ hintButtonText }}
             </button>
-            
+
             <button
               class="btn-action-call"
               :disabled="!canSubmitSelected"
@@ -953,6 +1180,8 @@ watch(
       :settlement="gameStore.settlement"
       :players="gameStore.players"
       :last-played-cards="gameStore.playerPlayedCards"
+      :play-mode="gameStore.playMode"
+      :base-score="gameStore.baseScore"
       @close="handleCloseSettlement"
     />
 
@@ -1000,6 +1229,54 @@ watch(
           {{ text }}
         </div>
       </div>
+    </div>
+
+    <!-- 飞金豆粒子动画层 -->
+    <div class="beans-fly-container">
+      <div
+        v-for="bean in activeBeans"
+        :key="bean.id"
+        class="fly-gold-bean"
+        :style="{
+          left: bean.x + 'px',
+          top: bean.y + 'px',
+          transform: `scale(${bean.scale})`,
+          transition: `all ${bean.duration}s cubic-bezier(0.25, 1, 0.5, 1)`,
+          opacity: bean.opacity
+        }"
+      >
+        🪙
+      </div>
+
+      <!-- 得分/金豆飘字 -->
+      <div
+        v-for="float in floatingTexts"
+        :key="float.id"
+        class="floating-score-text"
+        :style="{
+          left: float.x + 'px',
+          top: float.y + 'px',
+        }"
+      >
+        <span class="score-gain" v-if="float.scoreGained">{{ float.scoreGained }}</span>
+        <span class="beans-gain" v-if="float.beansGained">{{ float.beansGained }}</span>
+      </div>
+    </div>
+
+    <!-- Mock 模式下的吃分特效测试按钮 -->
+    <div v-if="isMockMode && gameStore.playMode === 'fifty_k'" style="position: absolute; bottom: 80px; left: 20px; z-index: 1000;">
+      <button
+        @click="triggerMockTrickSettled"
+        style="padding: 8px 16px; background: linear-gradient(135deg, #ffca28 0%, #ff8f00 100%); border: 1.5px solid #fff; border-radius: 8px; color: #3e2723; font-weight: 800; cursor: pointer; box-shadow: 0 4px 10px rgba(0,0,0,0.3);"
+      >
+        测试吃分飞豆动画
+      </button>
+      <button
+        @click="triggerMockGameOver"
+        style="padding: 8px 16px; margin-left: 10px; background: linear-gradient(135deg, #e040fb 0%, #7c4dff 100%); border: 1.5px solid #fff; border-radius: 8px; color: #fff; font-weight: 800; cursor: pointer; box-shadow: 0 4px 10px rgba(0,0,0,0.3);"
+      >
+        测试终局结算弹窗
+      </button>
     </div>
   </div>
 </template>
@@ -1862,7 +2139,7 @@ watch(
 
 .action-text-fancy.gold {
   color: #ffb300;
-  text-shadow: 
+  text-shadow:
     0 0 10px rgba(255, 179, 0, 0.6),
     2px 2px 0px #ff6f00,
     4px 4px 6px rgba(0, 0, 0, 0.8);
@@ -1870,7 +2147,7 @@ watch(
 
 .action-text-fancy.blue {
   color: #03a9f4;
-  text-shadow: 
+  text-shadow:
     0 0 10px rgba(3, 169, 244, 0.6),
     2px 2px 0px #01579b,
     4px 4px 6px rgba(0, 0, 0, 0.8);
@@ -1902,7 +2179,7 @@ watch(
   font-weight: 900;
   font-style: italic;
   color: #ffd700;
-  text-shadow: 
+  text-shadow:
     0 0 20px rgba(255, 215, 0, 0.8),
     4px 4px 0px #e65100,
     8px 8px 15px rgba(0, 0, 0, 0.9);
@@ -1919,7 +2196,7 @@ watch(
   font-style: italic;
   color: #ff5722;
   transform: rotate(-15deg);
-  text-shadow: 
+  text-shadow:
     0 0 15px rgba(255, 87, 34, 0.8),
     3px 3px 0px #bf360c,
     6px 6px 12px rgba(0, 0, 0, 0.9);
@@ -2241,7 +2518,7 @@ watch(
   font-size: 2.2rem;
   font-weight: 900;
   color: rgba(212, 175, 55, 0.55);
-  text-shadow: 1px 1px 0px rgba(0, 0, 0, 0.6), 
+  text-shadow: 1px 1px 0px rgba(0, 0, 0, 0.6),
                -1px -1px 0px rgba(255, 255, 255, 0.1),
                0 0 12px rgba(212, 175, 55, 0.2);
   letter-spacing: 4px;
@@ -2299,4 +2576,92 @@ watch(
   100% { background: rgba(213, 0, 0, 0); }
 }
 
+/* 510K 专属主题背景，高贵暗金黑夜风格 */
+.game-table.room-modern-layout.fifty-k-room {
+  background: linear-gradient(135deg, #0d1b2a 0%, #1b263b 50%, #0d1b2a 100%) !important;
+}
+
+.fifty-k-stamp {
+  border: 4px double rgba(255, 215, 0, 0.65) !important;
+  color: rgba(255, 215, 0, 0.75) !important;
+  box-shadow: inset 0 0 10px rgba(255, 215, 0, 0.3), 0 4px 20px rgba(0, 0, 0, 0.6) !important;
+  background: radial-gradient(circle, rgba(27, 38, 59, 0.4) 0%, rgba(13, 27, 42, 0.4) 100%) !important;
+  animation: gold-glow-breath 2s infinite alternate;
+}
+
+@keyframes gold-glow-breath {
+  0% {
+    text-shadow: 1px 1px 0px rgba(0, 0, 0, 0.8), 0 0 8px rgba(255, 215, 0, 0.3);
+    box-shadow: inset 0 0 10px rgba(255, 215, 0, 0.3), 0 4px 20px rgba(0, 0, 0, 0.6);
+  }
+  100% {
+    text-shadow: 1px 1px 0px rgba(0, 0, 0, 0.8), 0 0 18px rgba(255, 215, 0, 0.8);
+    box-shadow: inset 0 0 15px rgba(255, 215, 0, 0.5), 0 4px 25px rgba(255, 215, 0, 0.2);
+  }
+}
+
+/* 飞金豆和得分飘字样式 */
+.beans-fly-container {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 9999;
+}
+
+.fly-gold-bean {
+  position: absolute;
+  font-size: 24px;
+  line-height: 1;
+  pointer-events: none;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.5));
+}
+
+.floating-score-text {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  pointer-events: none;
+  animation: float-up-fade 2s ease-out forwards;
+  z-index: 10000;
+}
+
+.score-gain {
+  font-size: 1.8rem;
+  font-weight: 900;
+  color: #ffeb3b;
+  text-shadow: 0 0 8px rgba(255, 235, 59, 0.8), 2px 2px 0px #e65100;
+  font-style: italic;
+  letter-spacing: 1px;
+}
+
+.beans-gain {
+  font-size: 1.4rem;
+  font-weight: 800;
+  color: #ffd700;
+  text-shadow: 0 0 6px rgba(255, 215, 0, 0.8), 1.5px 1.5px 0px #b71c1c;
+}
+
+@keyframes float-up-fade {
+  0% {
+    transform: translateY(20px);
+    opacity: 0.3;
+  }
+  15% {
+    transform: translateY(0);
+    opacity: 1;
+  }
+  80% {
+    transform: translateY(-40px);
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(-60px);
+    opacity: 0;
+  }
+}
 </style>

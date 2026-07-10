@@ -23,6 +23,8 @@ class CardType(Enum):
     ROCKET = "王炸"
     FOUR_TWO_SINGLE = "四带二单"
     FOUR_TWO_PAIR = "四带二对"
+    FIFTY_K_TRUE = "真五十K"
+    FIFTY_K_FALSE = "假五十K"
 
 
 @dataclass
@@ -56,7 +58,7 @@ def _find_consecutive_ranks(ranks: List[int], min_length: int) -> Optional[List[
     return valid
 
 
-def detect_card_type(card_ids: List[int]) -> Optional[CardPlay]:
+def detect_card_type(card_ids: List[int], *, play_mode: str = "classic") -> Optional[CardPlay]:
     """
     检测一组牌的牌型。
     返回 CardPlay 描述，非法牌型返回 None。
@@ -70,6 +72,16 @@ def detect_card_type(card_ids: List[int]) -> Optional[CardPlay]:
     # 王炸: 大小王
     if n == 2 and set(card_ids) == {52, 53}:
         return CardPlay(CardType.ROCKET, main_rank=14, length=1, cards=card_ids)
+
+    # 510K 仅在专属玩法中检测，避免污染经典/不洗牌规则。
+    if play_mode == "fifty_k" and n == 3:
+        ranks = {Card.from_id(cid).rank for cid in card_ids}
+        if ranks == {2, 7, 10}:
+            suits = {Card.from_id(cid).suit for cid in card_ids}
+            if len(suits) == 1:
+                return CardPlay(CardType.FIFTY_K_TRUE, main_rank=0, length=1, cards=card_ids)
+            else:
+                return CardPlay(CardType.FIFTY_K_FALSE, main_rank=0, length=1, cards=card_ids)
 
     # 按出现次数分组
     count_groups = {}  # count -> [rank, ...]
@@ -186,13 +198,19 @@ def detect_card_type(card_ids: List[int]) -> Optional[CardPlay]:
     return None
 
 
-def can_beat(current_play: CardPlay, last_play: CardPlay) -> bool:
+def can_beat(
+    current_play: CardPlay,
+    last_play: CardPlay,
+    *,
+    play_mode: str = "classic",
+) -> bool:
     """
     判断 current_play 是否能压过 last_play。
     规则：
       1. 王炸压一切
-      2. 炸弹压非炸弹，大炸弹压小炸弹
-      3. 相同牌型 + 相同长度 + 更大的 main_rank
+      2. 510K 模式：ROCKET > FIFTY_K_TRUE > BOMB > FIFTY_K_FALSE > 普通牌型
+      4. 同为真 510K 或同为假 510K，判定为“要不起”（返回 False）
+      5. 相同牌型 + 相同长度 + 更大的 main_rank
     """
     # 王炸压一切
     if current_play.card_type == CardType.ROCKET:
@@ -200,13 +218,27 @@ def can_beat(current_play: CardPlay, last_play: CardPlay) -> bool:
     if last_play.card_type == CardType.ROCKET:
         return False
 
-    # 炸弹 vs 非炸弹
-    if current_play.card_type == CardType.BOMB and last_play.card_type != CardType.BOMB:
-        return True
-    if current_play.card_type != CardType.BOMB and last_play.card_type == CardType.BOMB:
-        return False
+    if play_mode == "fifty_k":
+        weights = {
+            CardType.FIFTY_K_FALSE: 1,
+            CardType.BOMB: 2,
+            CardType.FIFTY_K_TRUE: 3,
+        }
+        current_weight = weights.get(current_play.card_type, 0)
+        last_weight = weights.get(last_play.card_type, 0)
+        if current_weight or last_weight:
+            if current_weight != last_weight:
+                return current_weight > last_weight
+            if current_play.card_type == CardType.BOMB:
+                return current_play.main_rank > last_play.main_rank
+            return False
+    else:
+        if current_play.card_type == CardType.BOMB and last_play.card_type != CardType.BOMB:
+            return True
+        if current_play.card_type != CardType.BOMB and last_play.card_type == CardType.BOMB:
+            return False
 
-    # 相同牌型比较
+    # 相同牌型比较 (针对普通牌型)
     if current_play.card_type != last_play.card_type:
         return False
     if current_play.length != last_play.length:

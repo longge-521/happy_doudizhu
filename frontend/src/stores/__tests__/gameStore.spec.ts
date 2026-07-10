@@ -51,6 +51,10 @@ describe('gameStore room state mapping', () => {
         p1: 'super',
         p2: 'none',
       },
+      play_mode: 'fifty_k',
+      scores: { p1: 35, p2: 0 },
+      bean_balances: { p1: 10350, p2: 9825 },
+      cumulative_bean_changes: { p1: 350, p2: -175 },
     }
 
     store.updateFromRoomState(state)
@@ -94,6 +98,10 @@ describe('gameStore room state mapping', () => {
     expect(store.baseScore).toBe(80)
     expect(store.allPlayedCards).toEqual([10, 11, 12])
     expect(store.doublingChoices).toEqual({ p1: 'super', p2: 'none' })
+    expect(store.playMode).toBe('fifty_k')
+    expect(store.scores).toEqual({ p1: 35, p2: 0 })
+    expect(store.beanBalances).toEqual({ p1: 10350, p2: 9825 })
+    expect(store.cumulativeBeanChanges).toEqual({ p1: 350, p2: -175 })
   })
 
   it('resets room state fields after a mapped room state', () => {

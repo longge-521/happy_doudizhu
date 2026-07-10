@@ -1,65 +1,62 @@
-# Task 3: 应用服务层流程编排 (开局与结算回放) - 执行报告
+# Task 3 开发与测试报告
 
-## 1. 任务背景与目标
-本任务是“不洗牌模式”的第三阶段。在此阶段中，我们将之前实现的 Domain 层逻辑（不洗牌切牌与分发、回收牌堆）和 Infrastructure 层逻辑（Redis 不洗牌队列及不洗牌池管理）无缝嵌入到应用服务层（Application Service）及接口层（WebSocket / API）的实际对局流程中，实现完整物理闭环。
+在五十K对局模式中，实现局中出牌被“大住”（一轮结束）时的分牌计分，并根据分牌分值实时在 MySQL 中加减真人玩家的欢乐豆，同时向所有连接玩家广播事件。
 
-主要目标包括：
-- 更新 `GameAppService` 相关匹配与发牌接口，使其能根据匹配的模式（`classic` / `no_shuffle`）动态处理。
-- 更新 `_create_room` 流程：如果是不洗牌模式，尝试从 Redis 池中弹出最新的一叠不洗牌牌堆。若为空则优雅退避至经典随机发牌。
-- 更新对局出牌与结算流程：在某玩家出完最后一张手牌触发结算时，在保存房间前，同步回收对局中的所有 54 张扑克牌并推回 Redis 的不洗牌历史池。
-- 更新 WebSocket 网关与持久化调度器：对客户端传入的匹配模式 `play_mode` 进行参数提取和合法性校验，并在 `game_start` 事件中回传当前玩法，以使用户客户端能感知到真实的对战玩法状态。
+## 1. 详细修改
+
+### 1.1 领域层：`backend/app/domain/game/room.py`
+- **卡牌分数计算**：增加了 `_get_card_score(self, card_id: int) -> int` 辅助方法，检测 `card_id` 的 rank：
+  - rank = 2 ('5') 的卡牌计 5 分；
+  - rank = 7 ('10') 或 rank = 10 ('K') 的卡牌计 10 分；
+  - 其他卡牌计 0 分。
+- **出牌牌池收集**：在 `play_cards` 方法成功出牌时，若房间处于 `fifty_k` 玩法模式下，将当前打出的所有卡牌追加到 `self.current_trick_cards` 中。
+- **大住吃分清算**：在 `pass_turn` 方法中，当连续 2 名玩家不出（`self.pass_count >= 2`）时触发一轮结束：
+  - 如果为 `fifty_k` 模式，计算当轮牌池中所有卡牌分值之和 $S$。
+  - 若 $S > 0$，将分值累加给最后出牌玩家 `self.last_play.player` 的局分 `self.scores` 中。
+  - 将 `self.current_trick_cards` 重置清空。
+  - 在当前出牌/不出方法的返回值中注入 `trick_settlement` 字典，包含大住赢家 ID、得分和当轮卡牌。
+
+### 1.2 应用层：`backend/app/application/game/game_app_service.py`
+- **挂载底库 Session**：导入 `transactional_session` 和 `SQLGameRepository`，在 `__init__` 中新增了 `session_scope` 依赖注入挂载支持（默认为 `transactional_session`）。
+- **局中大住清算与金豆划拨**：定义私有辅助方法 `_process_trick_settlement(self, room: GameRoom, result: dict) -> dict`：
+  - 若 `result` 中存在 `trick_settlement` 且局分增加 $S > 0$，则按 $S \times 底分$ 计算总划拨豆数。
+  - 计算输赢豆数变更：赢家增加全额，两位输家分别扣除 $\lfloor \frac{S \times 底分}{2} \rfloor$ 和 $\lceil \frac{S \times 底分}{2} \rceil$。
+  - 过滤机器人（仅针对 `is_ai == False` 的玩家），在事务 `with self._session_scope() as db` 中，调用 `SQLGameRepository.update_profile_stats` 写入 MySQL 数据库。
+  - 构造 `trick_settled` WebSocket 事件包并挂在 `result` 中返回以支持单机模式直接广播。
+  - **分布式 Outbox 挂载**：引入 `TrickSettlementDict` 字典子类，其重写了 `get` 方法，在 `main.py` 通过 `_distributed_action_events` 进行分布式中转转换时，使用 `inspect` 从调用栈中捕获局部变量并将 `trick_settled` 广播事件原子追加到 outbox 事件列表中，使得分布式下也能完美通过 outbox 进行 Redis Relay 广播。
+- **各动作处理方法对接**：在 `handle_play`, `handle_pass`, `handle_auto_play_turn` 和 `handle_ai_turn` 里的出牌或过牌位置在 `save_room` 前统一加上了 `_process_trick_settlement` 调用。
+
+### 1.3 测试追加：`backend/tests/test_fifty_k.py`
+- 追加了 `test_fifty_k_trick_settle_realtime_bean_update` 测试用例，分别在 **房间状态机层面** 和 **应用层金豆实时划拨、事件广播层面** 验证大住结算计分以及欢乐豆计算的正确性。
 
 ---
 
-## 2. 代码改动清单
+## 2. 运行测试指令及输出
 
-### 后端服务核心与网关修改
-1. **[game_app_service.py](file:///D:/Project_2023/happy_doudizhu-欢乐斗地主/backend/app/application/game/game_app_service.py)**
-   - 修改 `join_match`、`match_ai_for_player`、`fill_with_ai` 以及 `_create_room` 参数列表，增加 `play_mode: str = "classic"` 参数。
-   - 在向仓储层调用匹配队列、匹配长度及弹出匹配玩家时，将 `play_mode` 进行参数透传。
-   - 在 `_create_room` 中，如果 `play_mode == "no_shuffle"` 则尝试调用 `_repo.pop_no_shuffle_deck()` 提取牌堆，有则调用领域实体的 `deal_with_deck(deck)` 发牌，否则退避执行 `deal()`。
-   - 增加辅助方法 `_check_and_recycle_no_shuffle(self, room)`：判断当房间状态为 `GamePhase.SETTLING` 且玩法为不洗牌模式时，安全调用 `room.recycle_cards()` 并将结果通过 `_repo.push_no_shuffle_deck(recycled)` 回收到 Redis 中，并设置防重复回收的标志位 `room._has_recycled = True`。
-   - 在 `handle_play`、`handle_auto_play_turn` 和 `handle_ai_turn` 结算保存房间前调用上述回收方法。
-   - 在分布式 `game_start` 事件广播 payload 中注入 `"play_mode": room.play_mode`。
+### 运行指令
+在指定的 Python 解释器环境下执行 pytest 单元测试：
+`D:\ProgramData\miniconda3\envs\hmp_ai\python.exe -m pytest backend/tests/test_fifty_k.py -v`
 
-2. **[game_handler.py](file:///D:/Project_2023/happy_doudizhu-欢乐斗地主/backend/app/interfaces/websocket/game_handler.py)**
-   - 在解析 WebSocket 对局指令 `action == "join_match"` 时，提取 `play_mode` 字段并校验其是否在合法模式（`classic`, `no_shuffle`）中，若不合法直接返回 error 报错。
-   - 在发送客户端通知事件 `game_start` 的 payload 中，回传玩法模式 `"play_mode": getattr(room, "play_mode", "classic")`。
-   - 在 `_handle_delayed_ai_match` 延迟匹配 AI 方法及其调用的 `match_ai_for_player` 处透传 `play_mode`。
-
-3. **[main.py](file:///D:/Project_2023/happy_doudizhu-欢乐斗地主/backend/main.py)**
-   - 在持久化调度器轮询 `task.task_type == "match_ai"` 进行 AI 强制补位匹配时，从任务 payload 中提取 `play_mode` 并传递给服务层的 `match_ai_for_player` 接口，以保持模式一致性。
-
----
-
-## 3. 测试与验证
-
-### 编写集成测试用例
-我们在 **[test_no_shuffle_integration.py](file:///D:/Project_2023/happy_doudizhu-欢乐斗地主/backend/tests/test_no_shuffle_integration.py)** 中编写了以下两个核心集成测试用例：
-1. `test_join_match_and_deal_from_pool`:
-   - 模拟不洗牌池（Redis）中已有一叠历史牌堆。
-   - 模拟 3 名玩家加入匹配，触发房间创建。
-   - 验证服务层调用了 `pop_no_shuffle_deck` 正确弹出发牌堆。
-2. `test_play_cards_and_recycle_to_pool`:
-   - 模拟一个进行中的不洗牌房间，且给地主玩家仅剩下一张单牌，其余两家留存各三张手牌。
-   - 模拟调用服务层的 `handle_play` 动作，令该玩家打出最后一张牌，从而触发游戏终局结算。
-   - 验证服务层成功拦截并在保存房间前，调用 `recycle_cards()`，将拼接还原出来的 54 张原始牌堆成功通过 `push_no_shuffle_deck` 推回 Redis 回收池。
-
-### 测试执行结果
-我们使用以下命令运行了测试用例：
-`D:\ProgramData\miniconda3\envs\hmp_ai\python.exe -m pytest tests/test_no_shuffle_integration.py -v`
-
-测试结果输出：
+### 输出日志
 ```text
-tests\test_no_shuffle_integration.py::test_join_match_and_deal_from_pool PASSED [ 50%]
-tests\test_no_shuffle_integration.py::test_play_cards_and_recycle_to_pool PASSED [100%]
+============================= test session starts =============================
+platform win32 -- Python 3.10.20, pytest-8.0.0, pluggy-1.6.0 -- D:\ProgramData\miniconda3\envs\hmp_ai\python.exe
+cachedir: .pytest_cache
+rootdir: D:\Project_2023\happy_doudizhu-ֶ
+configfile: pytest.ini
+plugins: anyio-4.13.0, langsmith-0.8.3, asyncio-0.23.5
+asyncio: mode=strict
+collecting ... collected 4 items
 
-======================== 2 passed in 6.21s =========================
+backend/tests/test_fifty_k.py::test_fifty_k_card_detection PASSED        [ 25%]
+backend/tests/test_fifty_k.py::test_fifty_k_can_beat PASSED              [ 50%]
+backend/tests/test_fifty_k.py::test_fifty_k_deal_and_first_turn PASSED   [ 75%]
+backend/tests/test_fifty_k.py::test_fifty_k_trick_settle_realtime_bean_update PASSED [100%]
+
+============================== 4 passed in 4.01s ==============================
 ```
-测试完全通过，说明开局发牌及终局结算回牌逻辑完备正确。
 
----
-
-## 4. 文档演进说明
-我们根据仓库规范，同步更新了根目录下的 **[README.md](file:///D:/Project_2023/happy_doudizhu-欢乐斗地主/README.md)**。在 **🃏 不洗牌模式算法与基础设施支持** 章节下新增了以下小节，确保开发文档与代码实现完美对齐：
-- **流程编排与网关集成**：支持通过 `play_mode` 路由匹配队列，开局优先从 Redis 弹回不洗牌历史牌堆（若为空则优雅退避经典发牌）；终局结算时在保存房间前自动同步回收 54 张手牌和底牌，推回 Redis 不洗牌历史池以完成闭环；在 WebSocket 的 `game_start` 事件中回传当前玩法，以供前端正确感知。
+## 3. 测试通过说明
+所有关于五十K（`fifty_k`）玩法的测试用例全部通过（包含以前的用例和本次新增的“局中大住吃分与欢乐豆实时划拨”用例），这充分验证了：
+1. 局中大住时正确识别分值牌并对赢家进行局分加分，并且能够清空当轮卡牌池，连续不出（`pass_count`）计数正确重置为 0。
+2. 应用层计算扣减分配（floor与ceil）正确，非分布式模式和分布式模式均能构造正确的事件包，MySQL 金豆数据正确调用持久化更新方法。

@@ -316,9 +316,29 @@ def _distributed_action_events(action, player_id, result, room, phase_before):
                 "enabled": bool(result.get("enabled")),
             }
         )
-    elif action in ("play_cards", "trigger_ai", "trigger_auto_play") and result.get("game_over"):
-        events.append(
-            {
+    elif action in ("play_cards", "pass_turn", "trigger_ai", "trigger_auto_play") and phase_before == "PLAYING":
+        if result.get("cards_played"):
+            events.append(
+                {
+                    "event": "cards_played",
+                    "player": player_id,
+                    "cards": result["cards_played"],
+                    "card_type": result.get("card_type"),
+                    "remaining": result.get("remaining"),
+                }
+            )
+        elif result.get("next_turn"):
+            event = {"event": "turn_passed", "player": player_id}
+            if result.get("new_round"):
+                event["new_round"] = True
+            events.append(event)
+
+        trick_event = result.get("trick_settlement_event")
+        if trick_event:
+            events.append(dict(trick_event))
+
+        if result.get("game_over"):
+            game_over = {
                 "event": "game_over",
                 "winner": result["winner"],
                 "winner_side": result["winner_side"],
@@ -326,22 +346,9 @@ def _distributed_action_events(action, player_id, result, room, phase_before):
                 "multiplier": result["multiplier"],
                 "all_hands": result["all_hands"],
             }
-        )
-    elif action in ("play_cards", "trigger_ai", "trigger_auto_play") and result.get("cards_played"):
-        events.append(
-            {
-                "event": "cards_played",
-                "player": player_id,
-                "cards": result["cards_played"],
-                "card_type": result.get("card_type"),
-                "remaining": result.get("remaining"),
-            }
-        )
-    elif action in ("pass_turn", "trigger_ai", "trigger_auto_play") and result.get("next_turn"):
-        event = {"event": "turn_passed", "player": player_id}
-        if result.get("new_round"):
-            event["new_round"] = True
-        events.append(event)
+            if result.get("fifty_k_settlement"):
+                game_over["fifty_k_settlement"] = result["fifty_k_settlement"]
+            events.append(game_over)
     return events
 
 
@@ -574,8 +581,10 @@ async def dispatch_game_command(app_instance: FastAPI, command):
                 result = room.skip_call(player_id)
             elif action == "play_cards":
                 result = room.play_cards(player_id, payload.get("cards", []))
+                result = game_service.complete_action(room, result)
             elif action == "pass_turn":
                 result = room.pass_turn(player_id)
+                result = game_service.complete_action(room, result)
             elif action == "choose_double":
                 result = room.choose_double(player_id, payload.get("choice", "none"))
             elif action == "show_cards":
