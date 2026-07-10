@@ -240,6 +240,55 @@ def _decompose_hand(hand: List[int], play_mode: str = "classic") -> HandPlan:
     def dfs(current_counts: List[int], current_plays: List[dict]):
         nonlocal best_plays_ranks, best_hands_count
 
+        # 任何时候都允许直接将剩余牌做琐碎拆解，作为一个竞争分支参与手数评估
+        temp_plays = list(current_plays)
+        triples_list = []
+        pairs_list = []
+        singles_list = []
+        for r in range(15):
+            cnt = current_counts[r]
+            if cnt == 3:
+                triples_list.append(r)
+            elif cnt == 2:
+                pairs_list.append(r)
+            elif cnt == 1:
+                singles_list.append(r)
+
+        # 模拟三带二/三带一的翅膀合并，计算真实的折算手数
+        usable_pairs = len(pairs_list)
+        usable_singles = len(singles_list)
+        actual_triples = len(triples_list)
+
+        # 优先三条配对子 (三带二)
+        bring_pair = min(actual_triples, usable_pairs)
+        actual_triples -= bring_pair
+        usable_pairs -= bring_pair
+
+        # 其次三条配单张 (三带一)
+        bring_single = min(actual_triples, usable_singles)
+        actual_triples -= bring_single
+        usable_singles -= bring_single
+
+        # 拆散三条的惩罚分：如果某个 rank 原始有 3 张牌，但在当前规划中却没有作为三条保留，惩罚 1.5 手
+        penalty = 0.0
+        for r in range(15):
+            if counts[r] == 3 and r not in triples_list:
+                penalty += 1.5
+
+        # 折算后的实际总手数
+        total_hands = len(temp_plays) + len(triples_list) + len(pairs_list) + len(singles_list) - bring_pair - bring_single + penalty
+
+        if total_hands < best_hands_count:
+            best_hands_count = total_hands
+            flat_plays = list(temp_plays)
+            for r in triples_list:
+                flat_plays.append({"type": "triple", "rank": r})
+            for r in pairs_list:
+                flat_plays.append({"type": "pair", "rank": r})
+            for r in singles_list:
+                flat_plays.append({"type": "single", "rank": r})
+            best_plays_ranks = flat_plays
+
         if len(current_plays) >= best_hands_count:
             return
 
@@ -257,22 +306,6 @@ def _decompose_hand(hand: List[int], play_mode: str = "classic") -> HandPlan:
             for length in range(5, 13 - start):
                 if all(current_counts[r] >= 1 for r in range(start, start + length)):
                     possible_straights.append((start, length))
-
-        if not possible_straights and not possible_double_straights:
-            # 剩余牌做琐碎拆解 (三条/对子/单张)
-            temp_plays = list(current_plays)
-            for r in range(15):
-                cnt = current_counts[r]
-                if cnt == 3:
-                    temp_plays.append({"type": "triple", "rank": r})
-                elif cnt == 2:
-                    temp_plays.append({"type": "pair", "rank": r})
-                elif cnt == 1:
-                    temp_plays.append({"type": "single", "rank": r})
-            if len(temp_plays) < best_hands_count:
-                best_hands_count = len(temp_plays)
-                best_plays_ranks = temp_plays
-            return
 
         # 优先尝试提取连对
         for start, length in possible_double_straights:
@@ -450,6 +483,27 @@ def _pick_lead_play(plan: HandPlan, role: str, ctx: AIContext) -> List[int]:
             sorted_bombs = sorted(plan.bombs, key=lambda b: b.main_rank)
             return sorted_bombs[0].cards
         return []
+
+    # 1. 终局顶防：如果有对手剩余手牌 <= 2 张且拉响警报，且我们无法一次性将整手牌打完 (手数 > 1)，我们首出常规牌必须打出能够防住对手的牌！
+    is_opponent_danger = getattr(ctx, "other_players_min_remaining", 18) <= 2
+    total_hands = len(plan.plays) + len(plan.bombs)
+    if is_opponent_danger and total_hands > 1:
+        min_rem = getattr(ctx, "other_players_min_remaining", 18)
+        if min_rem == 1:
+            # 对手只剩 1 张单牌，说明他要不起任何非单张 (对子、三条、顺子等)
+            # 所以如果我们有非单张牌，优先出这些绝对安全的非单张牌型跑小牌
+            non_singles = [p for p in plan.plays if p.card_type != CardType.SINGLE]
+            if non_singles:
+                sorted_non_singles = sorted(non_singles, key=_get_lead_card_weight)
+                return sorted_non_singles[0].cards
+            else:
+                # 只有单张牌了，必须顶防：出手中最大的常规单张牌
+                sorted_plays = sorted(plan.plays, key=lambda p: p.main_rank, reverse=True)
+                return sorted_plays[0].cards
+        else:
+            # 对手剩 2 张牌，无法判定牌型，首出我们手里最大的常规牌型去顶防
+            sorted_plays = sorted(plan.plays, key=lambda p: p.main_rank, reverse=True)
+            return sorted_plays[0].cards
 
     # 冲刺模式：手牌不多且只剩一两手牌即可出完
     if len(plan.plays) + len(plan.bombs) <= 2:

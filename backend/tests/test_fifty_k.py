@@ -681,5 +681,51 @@ def test_fifty_k_ai_blocks_running_opponent_with_bomb():
     assert set(cards) == {4, 5, 6, 7}
 
 
+def test_fifty_k_ai_preserves_triple_over_double_straight():
+    from app.domain.game.ai_strategy import _decompose_hand
+    from app.domain.game.card_type import CardType
+    
+    # 模拟用户截图中的手牌：红桃 A(48), 对 6(12, 13), 对 5(8, 9), 3张 4(4, 5, 6), 对 3(0, 1)
+    # 按照之前的 DFS 拆分：会由于连对手数优先，被强拆为：33-44-55-66 连对(1) + 4 单张(1) + A 单张(1) = 3手
+    # 但在折算合并后，保留三条的折算手数为：444带33 三带二(1) + 55 对(1) + 66 对(1) + A 单(1) = 4手。
+    # 等等，如果折算后是 4手，连对加单张是 3手。DFS 依然会偏向 3手。
+    # 那如果我们在 DFS 叶子节点对手数进行了更精确的拟合，我们来运行本测试看看 _decompose_hand 的真实产出
+    hand = [0, 1, 4, 5, 6, 8, 9, 12, 13, 48]
+    plan = _decompose_hand(hand, "fifty_k")
+    
+    # 验证在我们的实际规划组合中，三条 4 (rank 1) 被保留为了 TRIPLE，而没有退化被拆散成对子/单张！
+    triples = [p for p in plan.plays if p.card_type == CardType.TRIPLE_TWO or p.card_type == CardType.TRIPLE]
+    assert len(triples) > 0 or any(p.card_type == CardType.TRIPLE_TWO for p in plan.plays)
+
+
+def test_fifty_k_ai_leads_biggest_card_when_opponent_danger():
+    from app.domain.game.ai_strategy import build_ai_context, ai_decide_play
+    p1 = Player(id="p1", nickname="Player1")
+    p2 = Player(id="p2", nickname="Player2")
+    p3 = Player(id="p3", nickname="Player3")
+    room = GameRoom.create("room_test", [p1, p2, p3], base_score=10)
+    room.play_mode = "fifty_k"
+
+    # AI (p1) 剩两手牌且无法出完：单张 4 (card_id = 4) 和单张 2 (card_id = 48)
+    # 对手 p2 只有 1 张牌 (已拉响最高警戒级别听牌警报)
+    room.hands = {
+        "p1": [4, 48],
+        "p2": [0],
+        "p3": [4] * 10
+    }
+    room.current_turn = "p1"
+    room.phase = GamePhase.PLAYING
+
+    ctx = build_ai_context(room, "p1")
+    assert ctx.other_players_min_remaining == 1
+
+    # 轮到 AI 主动首出 (last_play 为 None，must_play 为 True)
+    cards = ai_decide_play(room.hands["p1"], None, True, ctx)
+
+    # 验证 AI 顶牌出大牌 2，绝对不能放手小牌 4
+    assert cards == [48]
+
+
+
 
 
