@@ -7,6 +7,7 @@ from app.infrastructure.database.models import (
     PlayerProfileORM,
     GameRecordORM,
     GameSettlementORM,
+    FiftyKTrickSettlementORM,
     UserORM,
 )
 from app.domain.game.entities import PlayerProfile, GameRecord
@@ -101,6 +102,50 @@ class SQLGameRepository:
         return (
             self._db.query(GameSettlementORM)
             .filter_by(room_id=room_id)
+            .with_for_update()
+            .one()
+        )
+
+    def ensure_fifty_k_trick_settlement(
+        self,
+        room_id: str,
+        trick_no: int,
+        result_hash: str,
+        requested_changes_json: str,
+    ) -> FiftyKTrickSettlementORM:
+        settlement = (
+            self._db.query(FiftyKTrickSettlementORM)
+            .filter_by(room_id=room_id, trick_no=trick_no)
+            .first()
+        )
+        if settlement is None:
+            settlement = FiftyKTrickSettlementORM(
+                room_id=room_id,
+                trick_no=trick_no,
+                result_hash=result_hash,
+                requested_changes_json=requested_changes_json,
+                status="pending",
+            )
+            self._db.add(settlement)
+            self._db.flush()
+        return settlement
+
+    def get_fifty_k_trick_settlement_for_update(
+        self,
+        room_id: str,
+        trick_no: int,
+    ) -> FiftyKTrickSettlementORM:
+        return (
+            self._db.query(FiftyKTrickSettlementORM)
+            .filter_by(room_id=room_id, trick_no=trick_no)
+            .with_for_update()
+            .one()
+        )
+
+    def get_profile_orm_for_update(self, player_id: str) -> PlayerProfileORM:
+        return (
+            self._db.query(PlayerProfileORM)
+            .filter_by(player_id=player_id)
             .with_for_update()
             .one()
         )

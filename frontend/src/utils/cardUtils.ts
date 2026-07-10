@@ -53,6 +53,10 @@ export type CardPlayKind =
   | 'rocket'
   | 'four_two_single'
   | 'four_two_pair'
+  | 'fifty_k_true'
+  | 'fifty_k_false'
+
+export type PlayMode = 'classic' | 'no_shuffle' | 'fifty_k'
 
 export interface CardPlayAnalysis {
   kind: CardPlayKind
@@ -76,6 +80,8 @@ const PLAY_KIND_LABELS: Record<CardPlayKind, string> = {
   rocket: '王炸',
   four_two_single: '四带二',
   four_two_pair: '四带两对',
+  fifty_k_true: '真510K',
+  fifty_k_false: '假510K',
 }
 
 function getCardRank(cardId: number): number {
@@ -204,7 +210,7 @@ function pickPairSideCards(
   return null
 }
 
-export function detectCardPlay(cardIds: number[]): CardPlayAnalysis | null {
+export function detectCardPlay(cardIds: number[], playMode: PlayMode = 'classic'): CardPlayAnalysis | null {
   if (cardIds.length === 0) return null
 
   const cards = [...cardIds]
@@ -224,6 +230,19 @@ export function detectCardPlay(cardIds: number[]): CardPlayAnalysis | null {
 
   if (n === 2 && cards.includes(52) && cards.includes(53)) {
     return { kind: 'rocket', mainRank: 14, length: 1, cards }
+  }
+
+  if (playMode === 'fifty_k' && n === 3) {
+    const ranks = new Set(cards.map(getCardRank))
+    if (ranks.size === 3 && ranks.has(2) && ranks.has(7) && ranks.has(10)) {
+      const suits = new Set(cards.map(cardId => cardId % 4))
+      return {
+        kind: suits.size === 1 ? 'fifty_k_true' : 'fifty_k_false',
+        mainRank: 0,
+        length: 1,
+        cards,
+      }
+    }
   }
 
   if (n === 1) {
@@ -313,12 +332,31 @@ export function detectCardPlay(cardIds: number[]): CardPlayAnalysis | null {
   return null
 }
 
-export function canBeatCardPlay(current: CardPlayAnalysis, last: CardPlayAnalysis): boolean {
+export function canBeatCardPlay(
+  current: CardPlayAnalysis,
+  last: CardPlayAnalysis,
+  playMode: PlayMode = 'classic',
+): boolean {
   if (current.kind === 'rocket') return true
   if (last.kind === 'rocket') return false
 
-  if (current.kind === 'bomb' && last.kind !== 'bomb') return true
-  if (current.kind !== 'bomb' && last.kind === 'bomb') return false
+  if (playMode === 'fifty_k') {
+    const weights: Partial<Record<CardPlayKind, number>> = {
+      fifty_k_false: 1,
+      bomb: 2,
+      fifty_k_true: 3,
+    }
+    const currentWeight = weights[current.kind] || 0
+    const lastWeight = weights[last.kind] || 0
+    if (currentWeight || lastWeight) {
+      if (currentWeight !== lastWeight) return currentWeight > lastWeight
+      if (current.kind === 'bomb') return current.mainRank > last.mainRank
+      return false
+    }
+  } else {
+    if (current.kind === 'bomb' && last.kind !== 'bomb') return true
+    if (current.kind !== 'bomb' && last.kind === 'bomb') return false
+  }
 
   if (current.kind !== last.kind) return false
   if (current.length !== last.length) return false

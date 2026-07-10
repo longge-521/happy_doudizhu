@@ -205,4 +205,50 @@ describe('useSoundEngine quick chat voice', () => {
     expect(gains.length).toBe(3)
     expect(sources[0]!.start).toHaveBeenCalledWith(0)
   })
+
+  test('speaks dedicated 510K voice names without fetching bomb audio', async () => {
+    const speak = vi.fn()
+    const fetchMock = vi.fn()
+
+    class MockSpeechSynthesisUtterance {
+      lang = ''
+      rate = 1
+      pitch = 1
+      volume = 1
+      voice?: SpeechSynthesisVoice
+
+      constructor(public text: string) {}
+    }
+
+    class MockAudioContext {
+      state: AudioContextState = 'running'
+      destination = {}
+
+      createGain = vi.fn(() => ({ gain: { value: 0 }, connect: vi.fn() }))
+      resume = vi.fn(async () => {})
+    }
+
+    vi.stubGlobal('AudioContext', MockAudioContext)
+    vi.stubGlobal('fetch', fetchMock)
+    vi.stubGlobal('SpeechSynthesisUtterance', MockSpeechSynthesisUtterance)
+    Object.defineProperty(window, 'speechSynthesis', {
+      value: {
+        getVoices: vi.fn(() => []),
+        speak,
+        cancel: vi.fn(),
+        speaking: false,
+        pending: false,
+      },
+      configurable: true,
+    })
+
+    const { useSoundEngine } = await import('../useSoundEngine')
+    const engine = useSoundEngine()
+
+    await engine.playSound('fifty_k_true', 'p2')
+    await engine.playSound('fifty_k_false', 'p2')
+
+    expect(speak.mock.calls.map(call => call[0].text)).toEqual(['真510K', '510K'])
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
 })

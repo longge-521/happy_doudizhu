@@ -171,20 +171,20 @@ class RedisGameRepository:
 
     # ── 匹配队列 ──
 
-    def _get_queue_key(self, base_score: int) -> str:
-        return f"{MATCH_QUEUE_KEY}:{base_score}"
+    def _get_queue_key(self, base_score: int, play_mode: str = "classic") -> str:
+        return f"{MATCH_QUEUE_KEY}:{play_mode}:{base_score}"
 
-    async def add_to_match_queue(self, player_id: str, base_score: int = 10) -> None:
-        key = self._get_queue_key(base_score)
+    async def add_to_match_queue(self, player_id: str, base_score: int = 10, play_mode: str = "classic") -> None:
+        key = self._get_queue_key(base_score, play_mode)
         await self._redis.lrem(key, 0, player_id)
         await self._redis.rpush(key, player_id)
 
-    async def remove_from_match_queue(self, player_id: str, base_score: int = 10) -> int:
-        return await self._redis.lrem(self._get_queue_key(base_score), 1, player_id)
+    async def remove_from_match_queue(self, player_id: str, base_score: int = 10, play_mode: str = "classic") -> int:
+        return await self._redis.lrem(self._get_queue_key(base_score, play_mode), 1, player_id)
 
-    async def pop_match_players(self, count: int = 3, base_score: int = 10) -> List[str]:
+    async def pop_match_players(self, count: int = 3, base_score: int = 10, play_mode: str = "classic") -> List[str]:
         """原子性地从队列头部弹出 count 个玩家"""
-        key = self._get_queue_key(base_score)
+        key = self._get_queue_key(base_score, play_mode)
         raw_players = await self._redis.eval(POP_MATCH_PLAYERS_SCRIPT, 1, key, count)
         players = []
         for pid in raw_players:
@@ -193,9 +193,26 @@ class RedisGameRepository:
             players.append(pid)
         return players
 
-    async def get_match_queue_length(self, base_score: int = 10) -> int:
-        res = await self._redis.llen(self._get_queue_key(base_score))
+    async def get_match_queue_length(self, base_score: int = 10, play_mode: str = "classic") -> int:
+        res = await self._redis.llen(self._get_queue_key(base_score, play_mode))
         return res
+
+    async def pop_no_shuffle_deck(self) -> Optional[List[int]]:
+        key = "game:noshuffle:deck_pool"
+        raw = await self._redis.lpop(key)
+        if not raw:
+            return None
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8")
+        import json
+        return json.loads(raw)
+
+    async def push_no_shuffle_deck(self, deck: List[int]) -> None:
+        key = "game:noshuffle:deck_pool"
+        import json
+        await self._redis.rpush(key, json.dumps(deck))
+        # 保留最新的100叠牌，修剪老数据，防止 Redis 内存暴涨
+        await self._redis.ltrim(key, -100, -1)
 
     # ── 匹配元数据 ──
 

@@ -4,7 +4,7 @@ import time
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 from typing import Optional, List, Dict, Any, Set
-from app.domain.game.card import shuffle_and_deal, sort_cards, Card
+from app.domain.game.card import shuffle_and_deal, sort_cards, Card, FULL_DECK
 from app.domain.game.card_type import detect_card_type, can_beat, CardPlay
 
 
@@ -44,7 +44,7 @@ class GameRoom:
 
     MAX_REDEAL = 3  # 最多重新发牌次数
 
-    def __init__(self):
+    def __init__(self, play_mode: str = "classic"):
         self.room_id: str = ""
         self.phase: GamePhase = GamePhase.DEALING
         self.players: List[Player] = []
@@ -64,6 +64,13 @@ class GameRoom:
         self.all_played_cards: List[int] = []
         self.play_history: List[Dict[str, Any]] = []
         self.auto_play_players: Set[str] = set()
+        self.play_mode: str = play_mode
+        self.scores: Dict[str, int] = {}
+        self.current_trick_cards: List[int] = []
+        self.trick_no: int = 0
+        self.cumulative_bean_changes: Dict[str, int] = {}
+        self.bean_balances: Dict[str, int] = {}
+        self.player_triggered_boost: Set[str] = set()
 
         # 叫地主状态
         self._call_index: int = 0       # 当前叫地主的玩家索引
@@ -98,6 +105,41 @@ class GameRoom:
 
     def deal(self) -> Dict[str, List[int]]:
         """洗牌发牌，状态从 DEALING → CALLING"""
+        self.player_triggered_boost = set()
+        if self.play_mode == "fifty_k":
+            import random
+            deck = FULL_DECK.copy()
+            random.shuffle(deck)
+            ids = self._player_ids()
+            h1 = sort_cards(deck[0:18])
+            h2 = sort_cards(deck[18:36])
+            h3 = sort_cards(deck[36:54])
+            self.hands = {ids[0]: h1, ids[1]: h2, ids[2]: h3}
+            self.bottom_cards = []
+            self.phase = GamePhase.PLAYING
+            self.landlord = None
+            self.last_play = LastPlay()
+            self.pass_count = 0
+            self.scores = {p.id: 0 for p in self.players}
+            self.current_trick_cards = []
+            self.trick_no = 0
+            self.cumulative_bean_changes = {p.id: 0 for p in self.players}
+            self.doubling_choices = {}
+            self.show_cards_players = {}
+            self.all_played_cards = []
+            self.play_history = []
+            self.auto_play_players = set()
+
+            # 梅花 3（ID=2）持有者获得首出权。
+            club_3_player = None
+            for pid, hand in self.hands.items():
+                if 2 in hand:
+                    club_3_player = pid
+                    break
+            self.current_turn = club_3_player
+            self.turn_deadline = time.time() + 30
+            return dict(self.hands)
+
         h1, h2, h3, bottom = shuffle_and_deal()
         ids = self._player_ids()
         self.hands = {ids[0]: h1, ids[1]: h2, ids[2]: h3}
@@ -126,6 +168,94 @@ class GameRoom:
         self.current_turn = ids[self._first_caller_index]
         self.turn_deadline = time.time() + 18  # 15s 叫牌时间 + 3s 发牌动画缓冲
         return dict(self.hands)
+
+    def deal_with_deck(self, deck: List[int]) -> Dict[str, List[int]]:
+        """传入预设牌堆发牌，应用切牌并切片分发"""
+        self.player_triggered_boost = set()
+        ids = self._player_ids()
+        from app.domain.game.card import cut_cards
+
+        if self.play_mode == "fifty_k":
+            cut_deck = cut_cards(deck)
+            h1 = sort_cards(cut_deck[0:18])
+            h2 = sort_cards(cut_deck[18:36])
+            h3 = sort_cards(cut_deck[36:54])
+
+            self.hands = {ids[0]: h1, ids[1]: h2, ids[2]: h3}
+            self.bottom_cards = []
+            self.phase = GamePhase.PLAYING
+            self.landlord = None
+            self.last_play = LastPlay()
+            self.pass_count = 0
+            self.scores = {p.id: 0 for p in self.players}
+            self.current_trick_cards = []
+            self.trick_no = 0
+            self.cumulative_bean_changes = {p.id: 0 for p in self.players}
+            self.doubling_choices = {}
+            self.show_cards_players = {}
+            self.all_played_cards = []
+            self.play_history = []
+            self.auto_play_players = set()
+
+            # 梅花 3（ID=2）持有者获得首出权。
+            club_3_player = None
+            for pid, hand in self.hands.items():
+                if 2 in hand:
+                    club_3_player = pid
+                    break
+            self.current_turn = club_3_player
+            self.turn_deadline = time.time() + 30
+            return dict(self.hands)
+
+        cut_deck = cut_cards(deck)
+        h1 = sort_cards(cut_deck[0:17])
+        h2 = sort_cards(cut_deck[17:34])
+        h3 = sort_cards(cut_deck[34:51])
+        bottom = sort_cards(cut_deck[51:54])
+
+        self.hands = {ids[0]: h1, ids[1]: h2, ids[2]: h3}
+        self.bottom_cards = bottom
+        self.phase = GamePhase.CALLING
+        self.landlord = None
+        self.last_play = LastPlay()
+        self.pass_count = 0
+        self.doubling_choices = {}
+        self.show_cards_players = {}
+        self.all_played_cards = []
+        self.play_history = []
+        self.auto_play_players = set()
+        self._call_index = 0
+        self._call_scores = {}
+        self._call_round = 1
+        self._first_bidder = None
+        self._round2_queue = []
+        self._round2_scores = {}
+        self._grab_count = {}
+        self._declined_players = set()
+
+        import random
+        self._first_caller_index = random.randint(0, 2)
+        self._call_index = self._first_caller_index
+        self.current_turn = ids[self._first_caller_index]
+        self.turn_deadline = time.time() + 18
+        return dict(self.hands)
+
+    def recycle_cards(self) -> List[int]:
+        """回收已打出和未打出的牌堆"""
+        recycled = list(self.all_played_cards)
+        # 按玩家座位顺序收集剩余手牌
+        for p in self.players:
+            recycled.extend(self.hands.get(p.id, []))
+        # 如果底牌没有发给任何人且未出现在出牌/手牌中，则追加底牌
+        if self.landlord is None:
+            recycled.extend(self.bottom_cards)
+
+        # 严格校验是否构成完整的54张牌
+        if len(recycled) == 54 and sorted(recycled) == list(range(54)):
+            return recycled
+        # 失败防御兜底
+        return list(range(54))
+
 
     # ── 叫地主 ──
 
@@ -358,13 +488,13 @@ class GameRoom:
                 return {"success": False, "error": f"你没有牌 {cid}"}
 
         # 检测牌型
-        play = detect_card_type(card_ids)
+        play = detect_card_type(card_ids, play_mode=self.play_mode)
         if play is None:
             return {"success": False, "error": "不合法的牌型"}
 
         # 如果有上家出牌，必须压过
         if self.last_play.card_play is not None:
-            if not can_beat(play, self.last_play.card_play):
+            if not can_beat(play, self.last_play.card_play, play_mode=self.play_mode):
                 return {"success": False, "error": "出的牌压不过上家"}
 
         # 炸弹/王炸翻倍
@@ -372,12 +502,18 @@ class GameRoom:
         if play.card_type in (CardType.BOMB, CardType.ROCKET):
             self.multiplier *= 2
 
+        if getattr(self, "play_mode", "classic") == "fifty_k":
+            if play.card_type in (CardType.FIFTY_K_TRUE, CardType.ROCKET):
+                self.player_triggered_boost.add(player_id)
+
         # 从手牌中移除
         new_hand = list(hand)
         for cid in card_ids:
             new_hand.remove(cid)
         self.hands[player_id] = new_hand
         self.all_played_cards.extend(card_ids)
+        if self.play_mode == "fifty_k":
+            self.current_trick_cards.extend(card_ids)
 
         # 更新出牌记录
         self.last_play = LastPlay(
@@ -391,6 +527,19 @@ class GameRoom:
 
         # 检查是否出完
         if len(new_hand) == 0:
+            if getattr(self, "play_mode", "classic") == "fifty_k":
+                self.phase = GamePhase.SETTLING
+                result = {
+                    "success": True,
+                    "cards_played": card_ids,
+                    "card_type": play.card_type.value,
+                    "remaining": 0,
+                    "next_turn": None,
+                }
+                trick_settlement = self._close_fifty_k_trick(player_id)
+                if trick_settlement:
+                    result["trick_settlement"] = trick_settlement
+                return result
             return self._settle(player_id)
 
         # 轮到下一个玩家
@@ -404,6 +553,33 @@ class GameRoom:
             "next_turn": self.current_turn,
         }
 
+    def _get_card_score(self, card_id: int) -> int:
+        if card_id < 52:
+            rank = card_id // 4
+            if rank == 2:  # '5'
+                return 5
+            elif rank == 7:  # '10'
+                return 10
+            elif rank == 10:  # 'K'
+                return 10
+        return 0
+
+    def _close_fifty_k_trick(self, winner_id: str) -> Optional[dict]:
+        score = sum(self._get_card_score(card_id) for card_id in self.current_trick_cards)
+        trick_cards = list(self.current_trick_cards)
+        self.current_trick_cards = []
+        if score <= 0:
+            return None
+        self.scores[winner_id] = self.scores.get(winner_id, 0) + score
+        self.trick_no += 1
+        return {
+            "trick_no": self.trick_no,
+            "winner_id": winner_id,
+            "score_gained": score,
+            "trick_cards": trick_cards,
+            "multiplier": self.multiplier,
+        }
+
     def pass_turn(self, player_id: str) -> dict:
         """玩家不出（过）"""
         if self.phase != GamePhase.PLAYING:
@@ -413,6 +589,12 @@ class GameRoom:
 
         # 新一轮的首位出牌者不能不出
         if self.last_play.player is None:
+            hand = self.hands.get(player_id, [])
+            if hand:
+                from app.domain.game.card import sort_cards
+                sorted_hand = sort_cards(hand)
+                min_card = [sorted_hand[0]]
+                return self.play_cards(player_id, min_card)
             return {"success": False, "error": "新一轮必须出牌"}
 
         self.pass_count += 1
@@ -420,11 +602,21 @@ class GameRoom:
 
         # 如果连续2人不出，最后出牌的人获得新一轮主导权
         if self.pass_count >= 2:
+            trick_settlement = None
+            if self.play_mode == "fifty_k":
+                winner_id = self.last_play.player
+                if winner_id:
+                    trick_settlement = self._close_fifty_k_trick(winner_id)
+
             self.current_turn = self.last_play.player
             self.last_play = LastPlay()  # 清空上家，新一轮
             self.pass_count = 0
             self.turn_deadline = time.time() + 15
-            return {"success": True, "new_round": True, "next_turn": self.current_turn}
+
+            res = {"success": True, "new_round": True, "next_turn": self.current_turn}
+            if trick_settlement:
+                res["trick_settlement"] = trick_settlement
+            return res
 
         self.current_turn = self._next_player(player_id)
         self.turn_deadline = time.time() + 15
@@ -457,6 +649,84 @@ class GameRoom:
             "all_hands": dict(self.hands),
         }
 
+    def settle(self) -> dict:
+        """五十K终局结算与收割分数"""
+        if self.play_mode != "fifty_k":
+            return {}
+
+        # 找出最先跑完手牌的玩家 winner_id
+        winner_id = None
+        for pid, hand in self.hands.items():
+            if len(hand) == 0:
+                winner_id = pid
+                break
+
+        if not winner_id:
+            return {"success": False, "error": "无人出完牌，无法结算"}
+
+        self.phase = GamePhase.SETTLING
+
+        # 统计其余两名玩家手牌里的剩余分牌；历史吃分不得倒扣。
+        harvested_scores = {}
+        remaining_card_scores = {}
+        total_harvested = 0
+        for pid, hand in self.hands.items():
+            if pid == winner_id:
+                continue
+
+            s_single = sum(self._get_card_score(cid) for cid in hand)
+            harvested_scores[pid] = -s_single
+            remaining_card_scores[pid] = s_single
+            total_harvested += s_single
+
+        # 赢家最终得分增加 S_rem
+        self.scores[winner_id] = self.scores.get(winner_id, 0) + total_harvested
+        harvested_scores[winner_id] = total_harvested
+
+        final_multiplier = int(self.multiplier)
+        losers = [player.id for player in self.players if player.id != winner_id]
+        finish_base_changes = {player.id: 0 for player in self.players}
+        remaining_card_changes = {player.id: 0 for player in self.players}
+        for loser_id in losers:
+            fixed_loss = 4500 * final_multiplier
+            remaining_loss = (
+                remaining_card_scores.get(loser_id, 0)
+                * self.base_score
+                * final_multiplier
+            )
+            finish_base_changes[loser_id] = -fixed_loss
+            remaining_card_changes[loser_id] = -remaining_loss
+        finish_base_changes[winner_id] = -sum(finish_base_changes.values())
+        remaining_card_changes[winner_id] = -sum(remaining_card_changes.values())
+        total_bean_changes = {
+            player.id: (
+                self.cumulative_bean_changes.get(player.id, 0)
+                + finish_base_changes[player.id]
+                + remaining_card_changes[player.id]
+            )
+            for player in self.players
+        }
+
+        return {
+            "success": True,
+            "game_over": True,
+            "winner": winner_id,
+            "winner_side": "individual",
+            "multiplier": final_multiplier,
+            "scores": dict(self.scores),
+            "all_hands": dict(self.hands),
+            "fifty_k_settlement": {
+                "winner_id": winner_id,
+                "final_multiplier": final_multiplier,
+                "harvested_scores": harvested_scores,
+                "remaining_card_scores": remaining_card_scores,
+                "trick_bean_changes": dict(self.cumulative_bean_changes),
+                "finish_base_changes": finish_base_changes,
+                "remaining_card_changes": remaining_card_changes,
+                "total_bean_changes": total_bean_changes,
+            }
+        }
+
     # ── 序列化 ──
 
     def to_dict(self) -> dict:
@@ -464,6 +734,7 @@ class GameRoom:
         return {
             "room_id": self.room_id,
             "phase": self.phase.value,
+            "play_mode": self.play_mode,
             "players": [
                 {"id": p.id, "nickname": p.nickname, "is_ai": p.is_ai, "is_online": p.is_online}
                 for p in self.players
@@ -497,6 +768,12 @@ class GameRoom:
             "declined_players": list(self._declined_players),
             "show_cards_players": self.show_cards_players,
             "auto_play_players": list(self.auto_play_players),
+            "scores": self.scores,
+            "current_trick_cards": self.current_trick_cards,
+            "trick_no": self.trick_no,
+            "cumulative_bean_changes": self.cumulative_bean_changes,
+            "bean_balances": self.bean_balances,
+            "player_triggered_boost": list(self.player_triggered_boost),
         }
 
     @classmethod
@@ -504,6 +781,7 @@ class GameRoom:
         """从 dict 反序列化"""
         room = cls()
         room.room_id = data["room_id"]
+        room.play_mode = data.get("play_mode", "classic")
         room.phase = GamePhase(data["phase"])
         room.players = [
             Player(id=p["id"], nickname=p["nickname"], is_ai=p["is_ai"], is_online=p["is_online"])
@@ -522,7 +800,10 @@ class GameRoom:
         )
         # 如果有上家出牌，重建 card_play 对象
         if room.last_play.cards:
-            room.last_play.card_play = detect_card_type(room.last_play.cards)
+            room.last_play.card_play = detect_card_type(
+                room.last_play.cards,
+                play_mode=room.play_mode,
+            )
         room.pass_count = data.get("pass_count", 0)
         room.multiplier = data.get("multiplier", 1)
         room.doubling_choices = data.get("doubling_choices", {})
@@ -542,6 +823,14 @@ class GameRoom:
         room.all_played_cards = data.get("all_played_cards", [])
         room.play_history = data.get("play_history", [])
         room.auto_play_players = set(data.get("auto_play_players", []))
+        room.scores = {k: int(v) for k, v in data.get("scores", {}).items()}
+        room.current_trick_cards = list(data.get("current_trick_cards", []))
+        room.trick_no = int(data.get("trick_no", 0))
+        room.cumulative_bean_changes = {
+            k: int(v) for k, v in data.get("cumulative_bean_changes", {}).items()
+        }
+        room.bean_balances = {k: int(v) for k, v in data.get("bean_balances", {}).items()}
+        room.player_triggered_boost = set(data.get("player_triggered_boost", []))
         return room
 
     def get_player_view(self, player_id: str) -> dict:
@@ -559,7 +848,7 @@ class GameRoom:
             if p.id in self.show_cards_players:
                 pv["shown_cards"] = sort_cards(self.hands.get(p.id, []))
                 pv["show_multiplier"] = self.show_cards_players[p.id]
-            
+
             # 只有地主最终敲定后才设置 is_landlord 标志
             if is_landlord_decided:
                 pv["is_landlord"] = (p.id == self.landlord)
@@ -587,6 +876,10 @@ class GameRoom:
             "all_played_cards": self.all_played_cards,
             "show_cards_players": dict(self.show_cards_players),
             "auto_play_players": list(self.auto_play_players),
+            "play_mode": self.play_mode,
+            "scores": dict(self.scores),
+            "bean_balances": dict(self.bean_balances),
+            "cumulative_bean_changes": dict(self.cumulative_bean_changes),
         }
         # 地主确定后且非叫地主阶段才公开底牌，否则为 []
         if is_landlord_decided:

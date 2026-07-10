@@ -24,6 +24,8 @@ export type SoundName =
   | 'landlordDecided'
   | 'pass'
   | 'bomb'
+  | 'fifty_k_true'
+  | 'fifty_k_false'
   | 'rocket'
   | 'airplane'
   | 'straight'
@@ -675,6 +677,14 @@ export function useSoundEngine() {
     }
 
     // 1. 本地合成的即时音效 (发牌、点击、倒计时)
+    if (name === 'fifty_k_true' || name === 'fifty_k_false') {
+      const spoken = name === 'fifty_k_true' ? '真510K' : '510K'
+      if (!playSpeechSynthesis(spoken, getSpeechGender(playerId))) {
+        playLocalPlayCard(ctx, sfxGain)
+      }
+      return
+    }
+
     if (name === 'dealCard') {
       playLocalDealCard(ctx, sfxGain)
       return

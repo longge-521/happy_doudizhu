@@ -24,6 +24,9 @@ async def test_dispatch_command_publishes_settlement_task(mock_app):
     # 测试游戏结束后，dispatch_game_command 动作能够发布结算任务到可靠结算队列，而不是同步处理
     bus = mock_app.state.game_message_bus
     repo = mock_app.state.game_repository
+    mock_app.state.game_service.complete_action = MagicMock(
+        side_effect=lambda target_room, result: result
+    )
     
     # 模拟房间快照
     room = GameRoom.create("test_settle_room_1", [
@@ -121,7 +124,7 @@ async def test_scheduler_poller_intercepts_match_ai():
             pass
             
     # 确认是否直接调用了 match_ai_for_player
-    app_mock.state.game_service.match_ai_for_player.assert_awaited_once_with("p1", "玩家1", 10)
+    app_mock.state.game_service.match_ai_for_player.assert_awaited_once_with("p1", "玩家1", 10, play_mode="classic")
     # 确认没有通过 MQ 往 Shard 队列发命令
     app_mock.state.game_message_bus.publish_command.assert_not_called()
 

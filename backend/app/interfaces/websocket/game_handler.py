@@ -343,6 +343,10 @@ class GameWebSocketHandler:
         if action == "join_match":
             nickname = data.get("nickname", self.player_id)
             base_score = data.get("base_score", 10)
+            play_mode = data.get("play_mode", "classic")
+            if play_mode not in ("classic", "no_shuffle", "fifty_k"):
+                await self._send({"event": "error", "msg": f"不支持的玩法模式: {play_mode}"})
+                return
             
             # 加入金币准入条件核查
             from app.infrastructure.database.session import transactional_session
@@ -359,12 +363,12 @@ class GameWebSocketHandler:
                     })
                     return
 
-            result = await self.service.join_match(self.player_id, nickname, auto_ai=False, base_score=base_score)
+            result = await self.service.join_match(self.player_id, nickname, auto_ai=False, base_score=base_score, play_mode=play_mode)
             if result.get("error"):
                 await self._send({"event": "error", "msg": result["error"]})
             elif result.get("status") == "waiting":
                 await self._send({"event": "match_waiting", "count": result["queue_length"]})
-                asyncio.create_task(self._handle_delayed_ai_match(self.player_id, nickname, base_score))
+                asyncio.create_task(self._handle_delayed_ai_match(self.player_id, nickname, base_score, play_mode=play_mode))
             elif result.get("status") == "room_created":
                 await self._on_room_created(result)
 
@@ -512,6 +516,18 @@ class GameWebSocketHandler:
             else:
                 room = result.get("room")
                 if room:
+                    if result.get("cards_played"):
+                        await self._broadcast_room_event(room, {
+                            "event": "cards_played",
+                            "player": self.player_id,
+                            "cards": result["cards_played"],
+                            "card_type": result["card_type"],
+                            "remaining": result["remaining"],
+                        })
+                    if result.get("trick_settlement_event"):
+                        await self._broadcast_room_event(
+                            room, result["trick_settlement_event"]
+                        )
                     if result.get("game_over"):
                         event = {
                             "event": "game_over",
@@ -521,17 +537,13 @@ class GameWebSocketHandler:
                             "multiplier": result["multiplier"],
                             "all_hands": result["all_hands"],
                         }
+                        if "fifty_k_settlement" in result:
+                            event["fifty_k_settlement"] = result["fifty_k_settlement"]
+                        if "rank_changes" in result:
+                            event["rank_changes"] = result["rank_changes"]
                         await self._broadcast_room_event(room, event)
                         await self._on_game_over(room, result)
                     else:
-                        event = {
-                            "event": "cards_played",
-                            "player": self.player_id,
-                            "cards": result["cards_played"],
-                            "card_type": result["card_type"],
-                            "remaining": result["remaining"],
-                        }
-                        await self._broadcast_room_event(room, event)
                         await self._process_ai_turns(room)
 
         elif action == "pass_turn":
@@ -547,6 +559,10 @@ class GameWebSocketHandler:
                     if result.get("new_round"):
                         event["new_round"] = True
                     await self._broadcast_room_event(room, event)
+                    if result.get("trick_settlement_event"):
+                        await self._broadcast_room_event(
+                            room, result["trick_settlement_event"]
+                        )
                     await self._process_ai_turns(room)
 
         elif action == "get_ai_hints":
@@ -727,6 +743,11 @@ class GameWebSocketHandler:
                         "hand": view["hand"],
                         "players": view["players"],
                         "current_turn": room.current_turn,
+                        "turn_deadline": room.turn_deadline,
+                        "phase": room.phase.value,
+                        "play_mode": getattr(room, "play_mode", "classic"),
+                        "scores": view.get("scores", {}),
+                        "bean_balances": view.get("bean_balances", {}),
                     })
 
             # 评估 AI 发牌阶段明牌
@@ -921,6 +942,23 @@ class GameWebSocketHandler:
             # 广播 AI 的操作
             ai_id = result.get("ai_player") or result.get("auto_player")
             logger.info(f"游戏WS [room={room.room_id}]: 自动玩家 {ai_id} 回合决策返回: {result.keys()}")
+            if result.get("cards_played"):
+                await self._broadcast_room_event(room, {
+                    "event": "cards_played",
+                    "player": ai_id,
+                    "cards": result["cards_played"],
+                    "card_type": result.get("card_type"),
+                    "remaining": result.get("remaining"),
+                })
+            elif result.get("next_turn") and "score" not in result:
+                await self._broadcast_room_event(
+                    room, {"event": "turn_passed", "player": ai_id}
+                )
+            if result.get("trick_settlement_event"):
+                await self._broadcast_room_event(
+                    room, result["trick_settlement_event"]
+                )
+
             if room.phase == GamePhase.SETTLING or result.get("game_over"):
                 event = {
                     "event": "game_over",
@@ -930,6 +968,10 @@ class GameWebSocketHandler:
                     "multiplier": result.get("multiplier", 1),
                     "all_hands": result.get("all_hands", {}),
                 }
+                if "fifty_k_settlement" in result:
+                    event["fifty_k_settlement"] = result["fifty_k_settlement"]
+                if "rank_changes" in result:
+                    event["rank_changes"] = result["rank_changes"]
                 await self._broadcast_room_event(room, event)
                 await self._on_game_over(room, result)
                 break
@@ -957,18 +999,6 @@ class GameWebSocketHandler:
                     # AI 获得地主身份，需在当前 AI 回合内递归调用处理后续的地主明牌/加倍等流程，防止退出循环导致流程卡死
                     await self._do_process_ai_turns(room)
                     break
-            elif result.get("cards_played"):
-                event = {
-                    "event": "cards_played",
-                    "player": ai_id,
-                    "cards": result["cards_played"],
-                    "card_type": result.get("card_type"),
-                    "remaining": result.get("remaining"),
-                }
-                await self._broadcast_room_event(room, event)
-            elif result.get("next_turn"):
-                event = {"event": "turn_passed", "player": ai_id}
-                await self._broadcast_room_event(room, event)
 
     async def _on_game_over(self, room, result: dict) -> bool:
         """游戏结束后的清理与结算入库"""
@@ -986,7 +1016,7 @@ class GameWebSocketHandler:
         await self.service.cleanup_room(room.room_id, player_ids)
         return True
 
-    async def _handle_delayed_ai_match(self, player_id: str, nickname: str, base_score: int):
+    async def _handle_delayed_ai_match(self, player_id: str, nickname: str, base_score: int, play_mode: str = "classic"):
         """延迟 3 秒尝试匹配机器人"""
         from app.infrastructure.config import settings
         if settings.DISTRIBUTED_MODE and self.scheduler_service:
@@ -1002,14 +1032,15 @@ class GameWebSocketHandler:
                 payload={
                     "player_id": player_id,
                     "nickname": nickname,
-                    "base_score": base_score
+                    "base_score": base_score,
+                    "play_mode": play_mode
                 }
             )
             await self.scheduler_service.schedule_task(task)
-            logger.info(f"[GameWebSocketHandler] Scheduled durable match_ai task for player {player_id}")
+            logger.info(f"[GameWebSocketHandler] Scheduled durable match_ai task for player {player_id} in mode {play_mode}")
         else:
             await asyncio.sleep(3)
-            result = await self.service.match_ai_for_player(player_id, nickname, base_score=base_score)
+            result = await self.service.match_ai_for_player(player_id, nickname, base_score=base_score, play_mode=play_mode)
             if result and result.get("status") == "room_created":
                 await self._on_room_created(result)
 

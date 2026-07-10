@@ -1,5 +1,5 @@
 import { CHAT_PRESETS } from '@/constants/chatPresets'
-import { detectCardPlay } from '@/utils/cardUtils'
+import { detectCardPlay, type PlayMode } from '@/utils/cardUtils'
 import { useSoundEngine } from './useSoundEngine'
 
 export type PresentationEffect = 'bomb' | 'plane' | 'shimmer' | ''
@@ -37,9 +37,10 @@ export function playCardPresentationEffects(
   cards: number[],
   playerId: string,
   gameStore: GameEffectStore,
+  playMode: PlayMode = 'classic',
 ) {
   const { playSound } = useSoundEngine()
-  const play = detectCardPlay(cards)
+  const play = detectCardPlay(cards, playMode)
   if (!play) {
     playSound('playCard', playerId)
     return
@@ -51,6 +52,10 @@ export function playCardPresentationEffects(
     playSound('bomb_effect')
     setTimeout(() => playSound('bomb', playerId), 200)
     setTimedEffect(gameStore, 'bomb')
+  } else if (play.kind === 'fifty_k_true' || play.kind === 'fifty_k_false') {
+    const voiceName = play.kind === 'fifty_k_true' ? 'fifty_k_true' : 'fifty_k_false'
+    playSound('playCard')
+    setTimeout(() => playSound(voiceName, playerId), 200)
   } else if (play.kind === 'rocket') {
     playSound('bomb_effect')
     setTimeout(() => playSound('rocket', playerId), 200)

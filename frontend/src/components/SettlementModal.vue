@@ -9,6 +9,8 @@ const props = defineProps<{
   settlement: GameSettlement
   players: Array<Pick<PlayerInfo, 'id' | 'nickname' | 'isLandlord' | 'showMultiplier'>>
   lastPlayedCards?: Record<string, number[]>
+  playMode?: 'classic' | 'no_shuffle' | 'fifty_k'
+  baseScore?: number
 }>()
 
 const emit = defineEmits<{
@@ -37,12 +39,18 @@ function getCardColor(cardId: number) {
 
 // 当前玩家是否胜利
 const isWin = computed(() => {
+  if (props.playMode === 'fifty_k') {
+    return playerStore.playerId === props.settlement.winner
+  }
   const myScore = props.settlement.scores[playerStore.playerId] || 0
   return myScore > 0
 })
 
 // 计算自己赢了多少欢乐豆
 const myBeansChange = computed(() => {
+  if (props.playMode === 'fifty_k') {
+    return getFiftyKInfo(playerStore.playerId).beansChange
+  }
   return props.settlement.scores[playerStore.playerId] || 0
 })
 
@@ -66,6 +74,21 @@ const streakCount = computed(() => {
 const titleScoreChange = computed(() => {
   return isWin.value ? 11 : -8
 })
+
+const harvestedScores = computed(() => {
+  return props.settlement.fifty_k_settlement?.harvested_scores || {}
+})
+
+function getFiftyKInfo(playerId: string) {
+  const harvested = harvestedScores.value[playerId] || 0
+  const finalScore = props.settlement.scores[playerId] || 0
+  const initialCapture = Math.max(0, finalScore - harvested)
+  return {
+    initialCapture,
+    harvested,
+    beansChange: harvested * (props.baseScore || 80)
+  }
+}
 
 function getRankMaxStars(rid: number): number {
   if (rid < 10) return 3
@@ -153,8 +176,10 @@ const starChangeDesc = computed(() => {
       <div class="settlement-detail-table">
         <div class="detail-th">
           <span>昵称</span>
-          <span>底分</span>
-          <span>倍数</span>
+          <span v-if="playMode !== 'fifty_k'">底分</span>
+          <span v-if="playMode !== 'fifty_k'">倍数</span>
+          <span v-if="playMode === 'fifty_k'">抓分</span>
+          <span v-if="playMode === 'fifty_k'">收割</span>
           <span>欢乐豆</span>
         </div>
 
@@ -169,34 +194,61 @@ const starChangeDesc = computed(() => {
           >
             <!-- 名字与地主图标 -->
             <div class="name-cell">
-              <span v-if="p.isLandlord" class="role-hat">👑</span>
-              <span v-else class="role-hat">👨‍🌾</span>
-              <span class="player-name truncate">{{ p.nickname }}</span>
-              <span v-if="p.showMultiplier" class="settle-show-cards-badge">明牌×{{ p.showMultiplier }}</span>
-            </div>
-
-            <!-- 底分 -->
-            <div class="center-cell">{{ computedBaseScore }}</div>
-
-            <!-- 倍数 (地主显示2倍倍数，农民显示基础倍数) -->
-            <div class="center-cell">
-              {{ p.isLandlord ? settlement.multiplier * 2 : settlement.multiplier }}
-            </div>
-
-            <!-- 输赢数值 -->
-            <div class="score-cell">
-              <span
-                class="beans-change-text"
-                :class="{
-                  positive: (settlement.scores[p.id] || 0) > 0,
-                  negative: (settlement.scores[p.id] || 0) < 0
-                }"
-              >
-                {{ (settlement.scores[p.id] || 0) >= 0 ? '+' : '' }}{{ settlement.scores[p.id] || 0 }}
+              <span v-if="playMode === 'fifty_k'">
+                <span v-if="p.id === settlement.winner" class="role-hat">👑</span>
+                <span v-else class="role-hat">👤</span>
               </span>
-              <!-- 非自己可以显示加好友按钮 -->
-              <button v-if="p.id !== playerStore.playerId" class="btn-add-friend" title="加好友">+</button>
+              <span v-else>
+                <span v-if="p.isLandlord" class="role-hat">👑</span>
+                <span v-else class="role-hat">👨‍🌾</span>
+              </span>
+              <span class="player-name truncate">{{ p.nickname }}</span>
+              <span v-if="p.showMultiplier && playMode !== 'fifty_k'" class="settle-show-cards-badge">明牌×{{ p.showMultiplier }}</span>
             </div>
+
+            <!-- 数据区：如果是五十K -->
+            <template v-if="playMode === 'fifty_k'">
+              <div class="center-cell">{{ getFiftyKInfo(p.id).initialCapture }}分</div>
+              <div class="center-cell" :class="{ 'positive-score': getFiftyKInfo(p.id).harvested > 0, 'negative-score': getFiftyKInfo(p.id).harvested < 0 }">
+                {{ getFiftyKInfo(p.id).harvested >= 0 ? '+' : '' }}{{ getFiftyKInfo(p.id).harvested }}
+              </div>
+              <div class="score-cell">
+                <span
+                  class="beans-change-text"
+                  :class="{
+                    positive: getFiftyKInfo(p.id).beansChange > 0,
+                    negative: getFiftyKInfo(p.id).beansChange < 0
+                  }"
+                >
+                  {{ getFiftyKInfo(p.id).beansChange >= 0 ? '+' : '' }}{{ getFiftyKInfo(p.id).beansChange }}
+                </span>
+                <button v-if="p.id !== playerStore.playerId" class="btn-add-friend" title="加好友">+</button>
+              </div>
+            </template>
+            <template v-else>
+              <!-- 底分 -->
+              <div class="center-cell">{{ computedBaseScore }}</div>
+
+              <!-- 倍数 (地主显示2倍倍数，农民显示基础倍数) -->
+              <div class="center-cell">
+                {{ p.isLandlord ? settlement.multiplier * 2 : settlement.multiplier }}
+              </div>
+
+              <!-- 输赢数值 -->
+              <div class="score-cell">
+                <span
+                  class="beans-change-text"
+                  :class="{
+                    positive: (settlement.scores[p.id] || 0) > 0,
+                    negative: (settlement.scores[p.id] || 0) < 0
+                  }"
+                >
+                  {{ (settlement.scores[p.id] || 0) >= 0 ? '+' : '' }}{{ settlement.scores[p.id] || 0 }}
+                </span>
+                <!-- 非自己可以显示加好友按钮 -->
+                <button v-if="p.id !== playerStore.playerId" class="btn-add-friend" title="加好友">+</button>
+              </div>
+            </template>
           </div>
 
           <!-- 显示玩家剩余手牌 -->
@@ -609,5 +661,14 @@ const starChangeDesc = computed(() => {
   border: 1px solid rgba(255, 255, 255, 0.2);
   display: inline-block;
   line-height: 1.2;
+}
+
+.positive-score {
+  color: #ffd700;
+  font-weight: bold;
+}
+
+.negative-score {
+  color: #90caf9;
 }
 </style>

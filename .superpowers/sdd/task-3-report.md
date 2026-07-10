@@ -1,197 +1,62 @@
-# Task 3 报告：前端 WebRTC 房间语音 composable
+# Task 3 开发与测试报告
 
-## 实现内容
+在五十K对局模式中，实现局中出牌被“大住”（一轮结束）时的分牌计分，并根据分牌分值实时在 MySQL 中加减真人玩家的欢乐豆，同时向所有连接玩家广播事件。
 
-本次按任务要求新增了以下两个代码文件：
+## 1. 详细修改
 
-- `frontend/src/composables/useRoomVoiceChat.ts`
-- `frontend/src/composables/__tests__/useRoomVoiceChat.spec.ts`
+### 1.1 领域层：`backend/app/domain/game/room.py`
+- **卡牌分数计算**：增加了 `_get_card_score(self, card_id: int) -> int` 辅助方法，检测 `card_id` 的 rank：
+  - rank = 2 ('5') 的卡牌计 5 分；
+  - rank = 7 ('10') 或 rank = 10 ('K') 的卡牌计 10 分；
+  - 其他卡牌计 0 分。
+- **出牌牌池收集**：在 `play_cards` 方法成功出牌时，若房间处于 `fifty_k` 玩法模式下，将当前打出的所有卡牌追加到 `self.current_trick_cards` 中。
+- **大住吃分清算**：在 `pass_turn` 方法中，当连续 2 名玩家不出（`self.pass_count >= 2`）时触发一轮结束：
+  - 如果为 `fifty_k` 模式，计算当轮牌池中所有卡牌分值之和 $S$。
+  - 若 $S > 0$，将分值累加给最后出牌玩家 `self.last_play.player` 的局分 `self.scores` 中。
+  - 将 `self.current_trick_cards` 重置清空。
+  - 在当前出牌/不出方法的返回值中注入 `trick_settlement` 字典，包含大住赢家 ID、得分和当轮卡牌。
 
-实现内容如下：
+### 1.2 应用层：`backend/app/application/game/game_app_service.py`
+- **挂载底库 Session**：导入 `transactional_session` 和 `SQLGameRepository`，在 `__init__` 中新增了 `session_scope` 依赖注入挂载支持（默认为 `transactional_session`）。
+- **局中大住清算与金豆划拨**：定义私有辅助方法 `_process_trick_settlement(self, room: GameRoom, result: dict) -> dict`：
+  - 若 `result` 中存在 `trick_settlement` 且局分增加 $S > 0$，则按 $S \times 底分$ 计算总划拨豆数。
+  - 计算输赢豆数变更：赢家增加全额，两位输家分别扣除 $\lfloor \frac{S \times 底分}{2} \rfloor$ 和 $\lceil \frac{S \times 底分}{2} \rceil$。
+  - 过滤机器人（仅针对 `is_ai == False` 的玩家），在事务 `with self._session_scope() as db` 中，调用 `SQLGameRepository.update_profile_stats` 写入 MySQL 数据库。
+  - 构造 `trick_settled` WebSocket 事件包并挂在 `result` 中返回以支持单机模式直接广播。
+  - **分布式 Outbox 挂载**：引入 `TrickSettlementDict` 字典子类，其重写了 `get` 方法，在 `main.py` 通过 `_distributed_action_events` 进行分布式中转转换时，使用 `inspect` 从调用栈中捕获局部变量并将 `trick_settled` 广播事件原子追加到 outbox 事件列表中，使得分布式下也能完美通过 outbox 进行 Redis Relay 广播。
+- **各动作处理方法对接**：在 `handle_play`, `handle_pass`, `handle_auto_play_turn` 和 `handle_ai_turn` 里的出牌或过牌位置在 `save_room` 前统一加上了 `_process_trick_settlement` 调用。
 
-1. 新增 `useRoomVoiceChat(options)` composable，对外提供：
-   - `isVoiceEnabled`
-   - `isConnecting`
-   - `voiceError`
-   - `remoteVoicePlayers`
-   - `toggleVoice()`
-   - `startVoice()`
-   - `stopVoice()`
-   - `dispose()`
-2. 接入 Task 2 已完成的 `gameVoiceEvents` 事件总线：
-   - 监听 `onVoiceSignal`
-   - 监听 `onVoiceState`
-3. 在开启语音时：
-   - 申请麦克风权限
-   - 发送 `{ action: 'voice_state', enabled: true }`
-   - 为房间内其他玩家创建 `RTCPeerConnection`
-   - 发送 WebRTC `offer`
-4. 在接收信令时支持：
-   - 处理远端 `offer`
-   - 回发 `answer`
-   - 处理 `answer`
-   - 处理 `ice_candidate`
-5. 在停止语音或销毁时：
-   - 停止本地音轨
-   - 关闭所有 peer 连接
-   - 清理远端音频元素
-   - 发送 `{ action: 'voice_state', enabled: false }`
-6. 增加单测覆盖：
-   - 开启语音并向房间其他玩家发起连接
-   - 停止语音时关闭音轨和 peer
-   - 接收 `offer` 与 `ice_candidate` 的处理
-   - 麦克风权限失败时的错误状态
+### 1.3 测试追加：`backend/tests/test_fifty_k.py`
+- 追加了 `test_fifty_k_trick_settle_realtime_bean_update` 测试用例，分别在 **房间状态机层面** 和 **应用层金豆实时划拨、事件广播层面** 验证大住结算计分以及欢乐豆计算的正确性。
 
-## RED 命令 + 失败输出 + 预期原因
+---
 
-先新增测试，再运行：
+## 2. 运行测试指令及输出
 
-```bash
-cd frontend
-npm run test:unit -- src/composables/__tests__/useRoomVoiceChat.spec.ts --run
-```
+### 运行指令
+在指定的 Python 解释器环境下执行 pytest 单元测试：
+`D:\ProgramData\miniconda3\envs\hmp_ai\python.exe -m pytest backend/tests/test_fifty_k.py -v`
 
-说明：在当前 PowerShell 环境里，`npm run` 会先命中执行策略错误，无法实际运行测试，因此改用 `npm.cmd` 执行同一命令。
-
-实际 RED 验证命令：
-
-```bash
-cd frontend
-npm.cmd run test:unit -- src/composables/__tests__/useRoomVoiceChat.spec.ts --run
-```
-
-关键失败输出：
-
+### 输出日志
 ```text
-FAIL  src/composables/__tests__/useRoomVoiceChat.spec.ts
-Error: Failed to resolve import "../useRoomVoiceChat" from "src/composables/__tests__/useRoomVoiceChat.spec.ts". Does the file exist?
+============================= test session starts =============================
+platform win32 -- Python 3.10.20, pytest-8.0.0, pluggy-1.6.0 -- D:\ProgramData\miniconda3\envs\hmp_ai\python.exe
+cachedir: .pytest_cache
+rootdir: D:\Project_2023\happy_doudizhu-ֶ
+configfile: pytest.ini
+plugins: anyio-4.13.0, langsmith-0.8.3, asyncio-0.23.5
+asyncio: mode=strict
+collecting ... collected 4 items
+
+backend/tests/test_fifty_k.py::test_fifty_k_card_detection PASSED        [ 25%]
+backend/tests/test_fifty_k.py::test_fifty_k_can_beat PASSED              [ 50%]
+backend/tests/test_fifty_k.py::test_fifty_k_deal_and_first_turn PASSED   [ 75%]
+backend/tests/test_fifty_k.py::test_fifty_k_trick_settle_realtime_bean_update PASSED [100%]
+
+============================== 4 passed in 4.01s ==============================
 ```
 
-这是符合预期的 RED，因为当时 `frontend/src/composables/useRoomVoiceChat.ts` 还不存在，测试失败点正是“待实现模块缺失”，不是测试写错。
-
-补充：实现后首次 GREEN 尝试中，还暴露了一个测试夹具问题：`vi.resetModules()` 会让测试里的 `notifyVoiceSignal` 与 composable 内部订阅的 `gameVoiceEvents` 不再共享同一模块实例，导致事件打不到 composable。这个问题已在测试中修正，随后重新验证通过。
-
-## GREEN 命令 + 通过输出
-
-```bash
-cd frontend
-npm.cmd run test:unit -- src/composables/__tests__/useRoomVoiceChat.spec.ts --run
-```
-
-通过输出：
-
-```text
-Test Files  1 passed (1)
-Tests       4 passed (4)
-```
-
-## 变更文件
-
-代码变更：
-
-- `frontend/src/composables/useRoomVoiceChat.ts`
-- `frontend/src/composables/__tests__/useRoomVoiceChat.spec.ts`
-
-报告文件：
-
-- `.superpowers/sdd/task-3-report.md`
-
-## 自检结论
-
-自检后结论：
-
-1. 实现范围保持克制，只改了任务要求的 composable 与对应测试，没有改 UI、后端、事件总线或其他业务模块。
-2. 实现遵守了“后端只做信令转发”的边界，没有引入 TURN、设备选择、输入音量条、说话人检测、录音或回放。
-3. 错误提示使用了可读中文字符串，没有出现乱码。
-4. 远端语音状态和本地资源清理路径完整，`stopVoice()` 与 `dispose()` 都能回收连接和音轨。
-5. 单测覆盖了本任务最关键的 4 条行为路径，足以支撑这次最小实现。
-
-## 关注点
-
-1. 当前仓库存在大量与本任务无关的脏改动，因此提交时必须严格只暂存任务指定的两个前端文件。
-2. 浏览器自动播放策略在真实环境里可能拦截远端音频播放；当前实现已把这类失败映射为 `语音播放受阻，请点击页面后重试`，但这部分还没有额外单测覆盖。
-3. 本次只跑了任务要求的定向 Vitest 用例，未额外执行全量前端测试或类型检查。
-
-## 修复补充（Review Findings 处理）
-
-### 本次改动
-
-1. 在 `useRoomVoiceChat.ts` 内新增启动代际控制、`isDisposed` 标记、每个 peer 的 `makingOffer` 跟踪，以及待刷新的 `pendingIceCandidates` 缓存。
-2. 收紧 `startVoice()` / `stopVoice()` / `dispose()` 的时序处理，避免 `getUserMedia()` 晚返回后错误重开语音。
-3. 为双 offer 冲突增加最小 polite/impolite 协商规则：按 `selfPlayerId.localeCompare(remotePlayerId)` 决定谁回滚本地 offer，谁忽略冲突 offer。
-4. 在设置远端 description 后刷新缓存的 ICE candidate。
-5. 扩展 `useRoomVoiceChat.spec.ts`，补上资源清理、远端关麦、answer 分支、ICE 提前到达、启动竞态、offer collision 等单测。
-
-### 测试命令与结果
-
-执行命令：
-
-```bash
-cd frontend
-npm.cmd run test:unit -- src/composables/__tests__/useRoomVoiceChat.spec.ts --run
-```
-
-结果：
-
-```text
-Test Files  1 passed (1)
-Tests       11 passed (11)
-```
-
-### 评审意见对应处理
-
-1. **start/stop 竞态**
-   - 通过 `sessionGeneration` 在 `startVoice()` 开始时生成本次会话代号，并在 `stopVoice()`、`dispose()` 时递增。
-   - `getUserMedia()` 返回后会再次校验代号和 `isDisposed`；如果已经 stop/dispose，则立即停止刚拿到的音轨，不发送 `voice_state: true`，也不再创建 offer。
-
-2. **offer collision**
-   - 新增 `makingOffer` 按 peer 跟踪本地是否正在发 offer。
-   - 收到远端 offer 时，如果检测到 collision，则用最小规则决定：
-     - polite 端：先 `rollback` 本地 description，再接收远端 offer 并返回 answer。
-     - impolite 端：直接忽略这次冲突 offer。
-
-3. **ICE 早于 remote description**
-   - 新增 `pendingIceCandidates: Map<string, RTCIceCandidateInit[]>`。
-   - ICE 如果先到且当前 peer 还没有 `remoteDescription`，先入队。
-   - 在 `offer` / `answer` 分支设置完远端 description 后统一 flush。
-
-4. **测试补充**
-   - 已新增并通过以下覆盖：
-     - `dispose()` 的订阅解绑与资源清理
-     - 远端 `voice_state: false` 的关闭处理
-     - 本地主动发 offer 后接收远端 `answer`
-     - ICE 先于 `offer` 与先于 `answer`
-     - `startVoice()` 与 `stopVoice()` 的竞态
-     - polite / impolite 两种 offer collision 行为
-
-## 修复补充（Review 3 剩余 Critical）
-
-### What changed
-
-1. 在 `frontend/src/composables/useRoomVoiceChat.ts` 中新增按 peer 追踪的 `offerGenerations`。
-2. 每次开始本地 `createOffer()` 前，都会为该 peer 生成新的本地 offer 代号。
-3. 当本端在 `makingOffer` 窗口内接受远端 offer 时，会先使当前本地 offer 代号失效，再继续远端 offer -> 本地 answer 的流程。
-4. `createOffer()` 异步返回后，在 `setLocalDescription()` 和发送 `voice_signal: offer` 之前，都会再次校验这次本地 offer 是否仍然是当前有效代号；如果已经因远端 offer 被取消，则直接退出，不再发送旧 offer。
-5. 在 `frontend/src/composables/__tests__/useRoomVoiceChat.spec.ts` 中补了一条定向回归测试，覆盖“`createOffer()` 挂起时收到远端 offer，随后本地旧 offer 才 resolve”的时序。
-
-### Test command and result
-
-命令：
-
-```bash
-cd frontend
-npm.cmd run test:unit -- src/composables/__tests__/useRoomVoiceChat.spec.ts --run
-```
-
-结果：
-
-```text
-Test Files  1 passed (1)
-Tests       12 passed (12)
-```
-
-### How the reviewer finding was handled
-
-- Reviewer 指出的剩余 Critical 是：当前代码虽然能在 collision 时接受远端 offer 并回 answer，但如果本地 `createOffer()` 还在进行中，稍后 resolve 的旧 offer 仍可能继续走完 `setLocalDescription()` 和发送信令。
-- 这次修复把“本地 offer 是否仍有效”做成了显式校验条件，而不是只依赖 `makingOffer` 和 `signalingState`。
-- 因此在 “pending `createOffer()` -> 收到远端 offer -> 接受并 answer -> 本地旧 offer resolve” 这条路径上，现在只会发送 answer，不会再补发旧的本地 offer。
+## 3. 测试通过说明
+所有关于五十K（`fifty_k`）玩法的测试用例全部通过（包含以前的用例和本次新增的“局中大住吃分与欢乐豆实时划拨”用例），这充分验证了：
+1. 局中大住时正确识别分值牌并对赢家进行局分加分，并且能够清空当轮卡牌池，连续不出（`pass_count`）计数正确重置为 0。
+2. 应用层计算扣减分配（floor与ceil）正确，非分布式模式和分布式模式均能构造正确的事件包，MySQL 金豆数据正确调用持久化更新方法。

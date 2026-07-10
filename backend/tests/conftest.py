@@ -10,6 +10,7 @@ def setup_test_settings(monkeypatch):
     2. 测试完成后自动清理 Redis 里产生的临时测试数据（如房间、信箱、命令去重、连接代次等）。
     """
     monkeypatch.setattr(settings, "API_TOKEN", "")
+    monkeypatch.setattr(settings, "DISTRIBUTED_MODE", False)
     
     yield
     

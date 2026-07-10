@@ -28,6 +28,8 @@
 - **Windows 开发环境多进程文件锁规避**：在设计多进程并发写入的日志滚动组件（如 `RotatingFileHandler`）时，由于 Windows 下强制文件锁的限制，日志切分重命名会因句柄占用抛出 `PermissionError: [WinError 32]`。开发时应当检测 `os.name == 'nt'`，并在 Windows 环境下自动降级使用常规的 `logging.FileHandler`（仅限本地开发测试阶段），避免切分冲突以保证优秀的本地调试体验。
 - **Redis 临时状态 TTL 最终一致性防御**：所有分布式临时缓存状态（如对局房间快照、Outbox 信箱、去重命令集合等），除了对局正常解散时的物理删除，必须在 Redis 写入（如 Lua 脚本）时附加合理的过期时间（TTL，通常与对局最大存活期一致，如 2 小时）。这能保障在删除动作网络抖动失败、或进程突发宕机时，数据仍能最终超时销毁，从物理上杜绝僵尸数据堆积造成的 Redis 内存泄露。
 - **测试进程挂起与僵尸进程清理规约**：在编写或执行 pytest 单元测试后，部分持久化长连接（如 Redis 客户端、RabbitMQ 频道）若未在 teardown 中被显式 close，可能导致测试进程挂起（Hang）无法完全退出，残留在后台中转圈。智能体在开发测试时应确保所有长连接被释放关闭；同时在每次执行完测试命令后，必须显式检查并使用 `manage_task` 工具的 `kill` 动作将后台残留的挂起 pytest 进程彻底终止，禁止遗留任何后台转圈任务。
+- **Starlette TestClient 握手断开拦截校验规约**：在编写 WS 鉴权或握手拒绝的单元测试时，由于部分 Starlette 版本对静默断开的测试客户端兼容性限制，必须显式在 `with ws:` 的 block 内部调用一次数据读取方法（如 `ws.receive_text()`），以此强制触发 TestClient 底层捕获并成功抛出 `WebSocketDisconnect` 异常，避免测试因“DID NOT RAISE”而失败。
+- **全局单例 Mock 字典解包 keys() 错误防御**：当 Mock 的应用服务或依赖被测试用例重复复用，且代码中包含对获取到的状态视图执行字典解包（如 `{"event": "reconnected", **room_state}`）时，如果其返回的重连状态可能被 Mock 拦截，必须显式在 Mock 中为该检测方法配置空返回值（如 `service.get_room_state = AsyncMock(return_value=None)`），防止解包时因 Mock 默认生成协程对象调用 keys() 而抛出 `TypeError` 崩溃。
 
 ---
 

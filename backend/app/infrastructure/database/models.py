@@ -131,3 +131,34 @@ class GameSettlementORM(Base):
     )
     completed_at = Column(DateTime, nullable=True)
 
+
+class FiftyKTrickSettlementORM(Base):
+    __tablename__ = "ddz_game_trick_settlement"
+    __table_args__ = (
+        UniqueConstraint(
+            "room_id",
+            "trick_no",
+            name="uq_ddz_game_trick_settlement_room_trick",
+        ),
+        {"comment": "510K牌墩幂等欢乐豆结算记录"},
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    room_id = Column(String(100), nullable=False, index=True)
+    trick_no = Column(Integer, nullable=False)
+    result_hash = Column(String(64), nullable=False)
+    requested_changes_json = Column(Text, nullable=False)
+    actual_changes_json = Column(Text, nullable=True)
+    balances_after_json = Column(Text, nullable=True)
+    status = Column(String(20), nullable=False, default="pending", index=True)
+    attempts = Column(Integer, nullable=False, default=0)
+    last_error = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.now, nullable=False)
+    updated_at = Column(
+        DateTime,
+        default=datetime.datetime.now,
+        onupdate=datetime.datetime.now,
+        nullable=False,
+    )
+    completed_at = Column(DateTime, nullable=True)
+

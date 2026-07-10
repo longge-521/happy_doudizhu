@@ -142,3 +142,51 @@ def test_settlement_rolls_back_player_changes_on_failure(
         assert player_one.total_games == 0
         assert player_two.beans == 10000
         assert player_two.total_games == 0
+
+
+def test_fifty_k_final_settlement_applies_fixed_and_remaining_changes_once(
+    settlement_context,
+):
+    Session, session_scope = settlement_context
+    with session_scope() as db:
+        SQLGameRepository(db).get_or_create_profile("p3", "玩家三")
+
+    room = GameRoom.create(
+        "room_fifty_k_final",
+        [
+            Player(id="p1", nickname="玩家一"),
+            Player(id="p2", nickname="玩家二"),
+            Player(id="p3", nickname="玩家三"),
+        ],
+        base_score=10,
+    )
+    room.play_mode = "fifty_k"
+    room.multiplier = 1
+    room.hands = {"p1": [], "p2": [8], "p3": [28]}
+    room.scores = {"p1": 50, "p2": 30, "p3": 5}
+    room.cumulative_bean_changes = {"p1": 0, "p2": 0, "p3": 0}
+    result = room.settle()
+
+    service = GameSettlementService(session_scope=session_scope)
+    first = service.settle(room, result)
+    second = service.settle(room, result)
+
+    assert first == "completed"
+    assert second == "already_completed"
+    with Session() as db:
+        profiles = {
+            row.player_id: row
+            for row in db.query(PlayerProfileORM).filter(
+                PlayerProfileORM.player_id.in_(["p1", "p2", "p3"])
+            )
+        }
+        assert profiles["p1"].beans == 19150
+        assert profiles["p2"].beans == 5450
+        assert profiles["p3"].beans == 5400
+        assert profiles["p1"].total_games == 1
+        assert profiles["p2"].total_games == 1
+        assert profiles["p3"].total_games == 1
+        assert profiles["p1"].wins == 1
+        assert profiles["p2"].wins == 0
+        assert profiles["p3"].wins == 0
+        assert db.query(GameRecordORM).filter_by(room_id=room.room_id).count() == 3

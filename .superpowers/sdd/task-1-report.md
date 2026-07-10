@@ -1,106 +1,198 @@
-# Task 1 报告：后端 AI 策略层提供 DouZero 候选排序
+# Task 1 Report: 510K 牌型检测与压制判定
 
-## 1. 我实现了什么
+## 1. 任务概述
+在牌型引擎 `card_type.py` 中新增对 510K 特殊牌型（真五十K与假五十K）的检测，并扩展其压制逻辑。
 
-本次仅修改了任务限定的两个代码文件：
+*   **修改文件**：`backend/app/domain/game/card_type.py`
+*   **创建文件**：`backend/tests/test_fifty_k.py`
+*   **同步修改**：`README.md`
 
-- `backend/app/domain/game/ai_strategy.py`
-- `backend/tests/test_ai_strategy.py`
+---
 
-实现内容如下：
+## 2. 代码详细修改
 
-1. 在 AI 策略层新增 `ai_rank_play_candidates(hand, last_play, must_play, ctx, limit=12)`。
-2. 新增 `_dedupe_candidates()`，用于对候选出牌去重。
-3. 新增 `_rule_decide_play()`，把原有规则引擎决策和“冲刺直接出完”逻辑收拢为独立兜底路径。
-4. 调整 `ai_decide_play()`，改为优先消费 `ai_rank_play_candidates(..., limit=1)` 的第一候选；若无结果，再走 `_rule_decide_play()`。
-5. 补充 DouZero 不可用时的规则兜底测试。
-6. 修复了当前工作区内 `ai_strategy.py` 已存在的编码损坏/导入失败问题，使任务代码可被正常导入和验证。
+### 2.1 创建测试文件 `backend/tests/test_fifty_k.py`
+```python
+# backend/tests/test_fifty_k.py
+import pytest
+from app.domain.game.card_type import detect_card_type, can_beat, CardType
 
-## 2. TDD red/green 证据
+def test_fifty_k_card_detection():
+    # ♠5 (ID=8), ♠10 (ID=28), ♠K (ID=40)
+    true_fifty_k = detect_card_type([8, 28, 40])
+    assert true_fifty_k is not None
+    assert true_fifty_k.card_type == CardType.FIFTY_K_TRUE
 
-说明：brief 预期的 red 是 “无法导入 `ai_rank_play_candidates`”。但我接手当前工作区时，这两个目标文件里已经存在部分 Task 1 改动，同时 `ai_strategy.py` 被错误编码写坏，导致实际 red 更早发生在模块导入阶段。以下按真实工作区状态记录。
+    # ♥5 (ID=9), ♦10 (ID=31), ♣K (ID=42)
+    false_fifty_k = detect_card_type([9, 31, 42])
+    assert false_fifty_k is not None
+    assert false_fifty_k.card_type == CardType.FIFTY_K_FALSE
 
-### Red
+def test_fifty_k_can_beat():
+    true_play = detect_card_type([8, 28, 40])
+    false_play = detect_card_type([9, 31, 42])
+    single_play = detect_card_type([0])  # 单张3
+    bomb_play = detect_card_type([0, 1, 2, 3])  # 3333 炸弹
 
-命令：
-
-```powershell
-D:\ProgramData\miniconda3\envs\hmp_ai\python.exe -m pytest backend/tests/test_ai_strategy.py::test_ai_rank_play_candidates_orders_by_douzero_score -q
+    # 验证压制关系：
+    # 假510K大过单张
+    assert can_beat(false_play, single_play)
+    # 真510K大过假510K
+    assert can_beat(true_play, false_play)
+    # 炸弹大过真510K
+    assert can_beat(bomb_play, true_play)
+    # 假510K压不过炸弹
+    assert not can_beat(false_play, bomb_play)
 ```
 
-结果：
+### 2.2 修改主逻辑 `backend/app/domain/game/card_type.py`
+主要修改点包含：
+1. 在 `CardType` 枚举中新增 `FIFTY_K_TRUE = "真五十K"` 和 `FIFTY_K_FALSE = "假五十K"`。
+2. 在 `detect_card_type` 中，当牌张数 $n == 3$ 时，判断其是否点数构成为 5, 10, K（点数分别对应 5、10、K 的 `rank` 编码 2, 7, 10）。如果是同花则为 `CardType.FIFTY_K_TRUE`，否则为 `CardType.FIFTY_K_FALSE`。
+3. 在 `can_beat` 中，加入 510K 相关的压制权重关系：
+   - 压制链条为 `ROCKET`（王炸）> `BOMB`（炸弹）> `FIFTY_K_TRUE` > `FIFTY_K_FALSE` > 普通牌型。
+   - 若两手牌同为真 510K 或同为假 510K，判定为“要不起”（返回 `False`）。
 
-```text
-ERROR collecting backend/tests/test_ai_strategy.py
-SyntaxError: invalid non-printable character U+E1EE
+修改的具体 Diff 如下：
+```diff
+@@ -23,6 +23,8 @@
+     ROCKET = "王炸"
+     FOUR_TWO_SINGLE = "四带二单"
+     FOUR_TWO_PAIR = "四带二对"
++    FIFTY_K_TRUE = "真五十K"
++    FIFTY_K_FALSE = "假五十K"
+
+
+ @dataclass
+@@ -70,6 +70,16 @@
+     if n == 2 and set(card_ids) == {52, 53}:
+         return CardPlay(CardType.ROCKET, main_rank=14, length=1, cards=card_ids)
+
++    # 510K 检测
++    if n == 3:
++        ranks = {Card.from_id(cid).rank for cid in card_ids}
++        if ranks == {2, 7, 10}:
++            suits = {Card.from_id(cid).suit for cid in card_ids}
++            if len(suits) == 1:
++                return CardPlay(CardType.FIFTY_K_TRUE, main_rank=0, length=1, cards=card_ids)
++            else:
++                return CardPlay(CardType.FIFTY_K_FALSE, main_rank=0, length=1, cards=card_ids)
++
+     # 按出现次数分组
+     count_groups = {}  # count -> [rank, ...]
+     for rank, count in rank_counts.items():
+@@ -190,7 +190,9 @@
+     规则：
+       1. 王炸压一切
+       2. 炸弹压非炸弹，大炸弹压小炸弹
+-      3. 相同牌型 + 相同长度 + 更大的 main_rank
++      3. 510K 相关的压制权重关系：ROCKET > BOMB > FIFTY_K_TRUE > FIFTY_K_FALSE > 普通牌型
++      4. 同为真 510K 或同为假 510K，判定为“要不起”（返回 False）
++      5. 相同牌型 + 相同长度 + 更大的 main_rank
+     """
+     # 王炸压一切
+     if current_play.card_type == CardType.ROCKET:
+@@ -197,13 +197,37 @@
+     if last_play.card_type == CardType.ROCKET:
+         return False
+
+-    # 炸弹 vs 非炸弹
+-    if current_play.card_type == CardType.BOMB and last_play.card_type != CardType.BOMB:
+-        return True
+-    if current_play.card_type != CardType.BOMB and last_play.card_type == CardType.BOMB:
+-        return False
+-
+-    # 相同牌型比较
++    # 炸弹相关比较
++    if current_play.card_type == CardType.BOMB:
++        if last_play.card_type == CardType.BOMB:
++            if current_play.length != last_play.length:
++                return False
++            return current_play.main_rank > last_play.main_rank
++        # 炸弹压真/假510K及普通牌型
++        return True
++    if last_play.card_type == CardType.BOMB:
++        # 当前不是王炸、炸弹，肯定压不过炸弹
++        return False
++
++    # 真五十K比较
++    if current_play.card_type == CardType.FIFTY_K_TRUE:
++        if last_play.card_type == CardType.FIFTY_K_TRUE:
++            return False
++        # 真五十K压假五十K及普通牌型
++        return True
++    if last_play.card_type == CardType.FIFTY_K_TRUE:
++        return False
++
++    # 假五十K比较
++    if current_play.card_type == CardType.FIFTY_K_FALSE:
++        if last_play.card_type == CardType.FIFTY_K_FALSE:
++            return False
++        # 假五十K压普通牌型
++        return True
++    if last_play.card_type == CardType.FIFTY_K_FALSE:
++        return False
++
++    # 相同牌型比较 (针对普通牌型)
+     if current_play.card_type != last_play.card_type:
+         return False
+     if current_play.length != last_play.length:
 ```
 
-结论：
+### 2.3 修改 `README.md`
+将新增的 510K 牌型说明更新至系统核心功能特性和领域层中，保持说明书与代码功能同步演进。
 
-- 失败已被稳定复现。
-- 根因不是断言失败，而是 `backend/app/domain/game/ai_strategy.py` 存在编码损坏，导致测试文件导入失败。
-
-### Green 1：排序测试通过
-
-命令：
-
-```powershell
-D:\ProgramData\miniconda3\envs\hmp_ai\python.exe -m pytest backend/tests/test_ai_strategy.py::test_ai_rank_play_candidates_orders_by_douzero_score -q
-```
-
-结果：
-
-```text
-.                                                                        [100%]
-1 passed in 13.67s
-```
-
-### Green 2：兜底测试通过
-
-命令：
-
-```powershell
-D:\ProgramData\miniconda3\envs\hmp_ai\python.exe -m pytest backend/tests/test_ai_strategy.py::test_ai_rank_play_candidates_falls_back_to_rule_engine_when_douzero_unavailable -q
-```
-
-结果：
-
-```text
-.                                                                        [100%]
-1 passed in 15.72s
-```
+---
 
 ## 3. 测试运行与结果
 
-全量 AI 策略测试命令：
+### 3.1 TDD 失败验证
+在未修改 `card_type.py` 前，运行测试命令：
+`D:\ProgramData\miniconda3\envs\hmp_ai\python.exe -m pytest backend/tests/test_fifty_k.py -v`
 
-```powershell
-D:\ProgramData\miniconda3\envs\hmp_ai\python.exe -m pytest backend/tests/test_ai_strategy.py -q
-```
-
-结果：
-
+测试输出失败日志：
 ```text
-.......................                                                  [100%]
-23 passed in 16.08s
+backend/tests/test_fifty_k.py::test_fifty_k_card_detection FAILED        [ 50%]
+backend/tests/test_fifty_k.py::test_fifty_k_can_beat FAILED              [100%]
+
+================================== FAILURES ===================================
+_________________________ test_fifty_k_card_detection _________________________
+
+    def test_fifty_k_card_detection():
+        true_fifty_k = detect_card_type([8, 28, 40])
+>       assert true_fifty_k is not None
+E       assert None is not None
+
+backend\tests\test_fifty_k.py:8: AssertionError
 ```
 
-## 4. 变更文件
+### 3.2 TDD 成功验证
+在完成 `card_type.py` 逻辑实现后，运行测试命令：
+`D:\ProgramData\miniconda3\envs\hmp_ai\python.exe -m pytest backend/tests/test_fifty_k.py -v`
 
-- `backend/app/domain/game/ai_strategy.py`
-- `backend/tests/test_ai_strategy.py`
+测试输出全部成功通过：
+```text
+backend/tests/test_fifty_k.py::test_fifty_k_card_detection PASSED        [ 50%]
+backend/tests/test_fifty_k.py::test_fifty_k_can_beat PASSED              [100%]
 
-## 5. 自查结论
+============================== 2 passed in 0.62s ==============================
+```
 
-自查项：
+### 3.3 全量回归测试
+为确保未造成任何牌型引擎功能回归，运行全量牌型检测单元测试：
+`D:\ProgramData\miniconda3\envs\hmp_ai\python.exe -m pytest backend/tests/test_card_type.py -v`
 
-1. 变更范围是否受控：是，仅落在任务允许的两个代码文件内。
-2. DouZero 排序是否为主路径：是，`ai_decide_play()` 现在优先读取 `ai_rank_play_candidates(..., limit=1)`。
-3. 旧规则是否只作为异常兜底：是，DouZero 不可用、报错或无候选时才回退 `_rule_decide_play()`。
-4. 是否保留后续任务所需边界：是，本任务只做候选排序，不触碰 app service / WebSocket / 前端。
-5. 是否完成验证：是，新增定点测试与整份 `test_ai_strategy.py` 均通过。
+测试输出 23 项测试全部成功通过：
+```text
+backend/tests/test_card_type.py::TestDetectCardType::test_single PASSED  [  4%]
+...
+backend/tests/test_card_type.py::TestCanBeat::test_different_length_straight_cannot_beat PASSED [100%]
 
-## 6. concerns
+============================= 23 passed in 0.80s ==============================
+```
 
-1. 当前工作区的 red 与 brief 中“预期 import 缺失”不一致，因为我接手时目标文件已经含有部分 Task 1 改动，但同时带入了编码损坏；我按真实状态修复并保留了任务要求的最终行为。
-2. `git diff --stat` 显示 `ai_strategy.py` 变更量较大，主要原因是修复了同一目标文件中已经存在的损坏内容并将 Task 1 改动重建到健康基线上，不涉及任务外文件。
+---
+
+## 4. 结论
+开发流程严格遵循 TDD 规范，代码结构清晰，测试覆盖完备。
+本项目状态：**DONE**。

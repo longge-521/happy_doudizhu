@@ -363,3 +363,63 @@ def test_game_over_event_does_not_require_cards_played_field():
             "all_hands": room.hands,
         }
     ]
+
+
+def test_fifty_k_action_events_keep_play_settlement_game_over_order():
+    room = make_calling_room(current_turn="human")
+    room.phase = GamePhase.SETTLING
+    result = {
+        "success": True,
+        "cards_played": [8, 28, 40],
+        "card_type": "fifty_k_true",
+        "remaining": 0,
+        "trick_settlement_event": {
+            "event": "trick_settled",
+            "trick_no": 3,
+            "winner_id": "human",
+            "trick_cards": [8, 28, 40],
+            "score_gained": 35,
+            "bean_changes": {"human": 350, "ai-1": -175, "ai-2": -175},
+            "bean_balances": {"human": 10350, "ai-1": 9825, "ai-2": 9825},
+            "current_scores": {"human": 35, "ai-1": 0, "ai-2": 0},
+        },
+        "game_over": True,
+        "winner": "human",
+        "winner_side": "individual",
+        "scores": {"human": 35, "ai-1": 0, "ai-2": 0},
+        "multiplier": 1,
+        "all_hands": room.hands,
+        "fifty_k_settlement": {"winner_id": "human"},
+    }
+
+    events = _distributed_action_events(
+        "play_cards", "human", result, room, "PLAYING"
+    )
+
+    assert [event["event"] for event in events] == [
+        "cards_played",
+        "trick_settled",
+        "game_over",
+    ]
+    assert events[-1]["fifty_k_settlement"] == {"winner_id": "human"}
+
+
+@pytest.mark.asyncio
+async def test_distributed_human_play_uses_application_action_completer(monkeypatch):
+    room = make_calling_room(current_turn="human")
+    room.phase = GamePhase.PLAYING
+    room.hands["human"] = [0, 1]
+    repo = RecordingRoomRepository(room)
+    service = GameAppService(repo)
+    service.complete_action = MagicMock(side_effect=lambda target_room, result: result)
+    app = make_app(service)
+    monkeypatch.setattr("app.infrastructure.config.settings.DISTRIBUTED_MODE", True)
+    monkeypatch.setattr("app.infrastructure.config.settings.INSTANCE_ID", "worker-1")
+
+    await dispatch_game_command(
+        app,
+        make_command("play_cards", "human", {"cards": [0]}),
+    )
+
+    service.complete_action.assert_called_once()
+    assert service.complete_action.call_args.args[0] is room

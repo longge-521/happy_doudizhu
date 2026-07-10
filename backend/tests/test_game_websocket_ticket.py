@@ -14,6 +14,7 @@ client = TestClient(app)
 @pytest.fixture
 def mock_game_service():
     service = AsyncMock()
+    service.get_room_state = AsyncMock(return_value=None)
     return service
 
 
@@ -78,7 +79,8 @@ async def test_game_websocket_authenticates_with_valid_ticket(monkeypatch):
         from starlette.websockets import WebSocketDisconnect
         # 因为我们 Mock 了所有的 WS handler 运行，所以它建立完连接会走内部流程
         # 我们这里通过与 websocket_connect 握手验证它是否通过了 auth 段
-        with client.websocket_connect("/ws/game/player_ticket_123?ticket=ticket-abc") as websocket:
+        client_local = TestClient(app)
+        with client_local.websocket_connect("/ws/game/player_ticket_123?ticket=ticket-abc") as websocket:
             pass
             
         mock_get.assert_called_once_with("game:ws_ticket:ticket-abc")
@@ -95,9 +97,10 @@ async def test_game_websocket_rejects_expired_or_invalid_ticket(monkeypatch):
         mock_get.return_value = None
         
         from starlette.websockets import WebSocketDisconnect
+        client_local = TestClient(app)
         with pytest.raises(WebSocketDisconnect) as exc_info:
-            with client.websocket_connect("/ws/game/player_ticket_123?ticket=ticket-invalid") as websocket:
-                pass
+            with client_local.websocket_connect("/ws/game/player_ticket_123?ticket=ticket-invalid") as websocket:
+                websocket.receive_text()
         assert exc_info.value.code == 1008
 
 
@@ -111,9 +114,10 @@ async def test_game_websocket_rejects_mismatched_player_ticket(monkeypatch):
         mock_get.return_value = b"another_player"
         
         from starlette.websockets import WebSocketDisconnect
+        client_local = TestClient(app)
         with pytest.raises(WebSocketDisconnect) as exc_info:
-            with client.websocket_connect("/ws/game/player_ticket_123?ticket=ticket-abc") as websocket:
-                pass
+            with client_local.websocket_connect("/ws/game/player_ticket_123?ticket=ticket-abc") as websocket:
+                websocket.receive_text()
         assert exc_info.value.code == 1008
 
 
@@ -125,7 +129,8 @@ async def test_game_websocket_rejects_raw_token_in_distributed_mode(monkeypatch)
     
     # 直接使用 auth_token 连接，在分布式生产模式下应该直接被拒绝并关闭
     from starlette.websockets import WebSocketDisconnect
+    client_local = TestClient(app)
     with pytest.raises(WebSocketDisconnect) as exc_info:
-        with client.websocket_connect("/ws/game/player_ticket_123?auth_token=some_token") as websocket:
-            pass
+        with client_local.websocket_connect("/ws/game/player_ticket_123?auth_token=some_token") as websocket:
+            websocket.receive_text()
     assert exc_info.value.code == 1008
