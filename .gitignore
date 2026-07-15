@@ -17,6 +17,8 @@ scratch/
 backend/log/
 backend/uploads/
 backend/temp_uploads/
+backend/app/domain/game/weights/fifty_k/
+backend/training_runs/
 
 # 前端构建与依赖残留
 frontend/dist/

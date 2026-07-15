@@ -62,6 +62,7 @@ class GameSettlementService:
                 "winner_id": fifty_k.get("winner_id"),
                 "final_multiplier": fifty_k.get("final_multiplier"),
                 "remaining_card_scores": fifty_k.get("remaining_card_scores", {}),
+                "penalty_adjusted_scores": fifty_k.get("penalty_adjusted_scores", {}),
                 "finish_base_changes": fifty_k.get("finish_base_changes", {}),
                 "remaining_card_changes": fifty_k.get("remaining_card_changes", {}),
             },

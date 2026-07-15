@@ -561,7 +561,7 @@ class GameRoom:
             elif rank == 7:  # '10'
                 return 10
             elif rank == 10:  # 'K'
-                return 10
+                return 20
         return 0
 
     def _close_fifty_k_trick(self, winner_id: str) -> Optional[dict]:
@@ -682,6 +682,12 @@ class GameRoom:
         # 赢家最终得分增加 S_rem
         self.scores[winner_id] = self.scores.get(winner_id, 0) + total_harvested
         harvested_scores[winner_id] = total_harvested
+        penalty_adjusted_scores = dict(self.scores)
+        for loser_id in remaining_card_scores:
+            penalty_adjusted_scores[loser_id] = (
+                penalty_adjusted_scores.get(loser_id, 0)
+                - remaining_card_scores.get(loser_id, 0)
+            )
 
         final_multiplier = int(self.multiplier)
         losers = [player.id for player in self.players if player.id != winner_id]
@@ -720,6 +726,7 @@ class GameRoom:
                 "final_multiplier": final_multiplier,
                 "harvested_scores": harvested_scores,
                 "remaining_card_scores": remaining_card_scores,
+                "penalty_adjusted_scores": penalty_adjusted_scores,
                 "trick_bean_changes": dict(self.cumulative_bean_changes),
                 "finish_base_changes": finish_base_changes,
                 "remaining_card_changes": remaining_card_changes,
