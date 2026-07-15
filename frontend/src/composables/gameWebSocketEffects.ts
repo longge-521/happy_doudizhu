@@ -87,6 +87,12 @@ export function playCardPresentationEffects(
   } else if (play.kind === 'triple_two') {
     playSound('playCard')
     setTimeout(() => playSound('three_two', playerId), 100)
+  } else if (play.kind === 'four_two_single') {
+    playSound('playCard')
+    setTimeout(() => playSound('four_two_single', playerId), 100)
+  } else if (play.kind === 'four_two_pair') {
+    playSound('playCard')
+    setTimeout(() => playSound('four_two_pair', playerId), 100)
   } else {
     playSound('playCard', playerId)
   }

@@ -26,12 +26,15 @@ export type SoundName =
   | 'bomb'
   | 'fifty_k_true'
   | 'fifty_k_false'
+  | 'club_three_first'
   | 'rocket'
   | 'airplane'
   | 'straight'
   | 'double_straight'
   | 'three_one'
   | 'three_two'
+  | 'four_two_single'
+  | 'four_two_pair'
   | 'jiabei'
   | 'bujiabei'
   | 'superDouble'
@@ -611,6 +614,18 @@ export function useSoundEngine() {
   /** 获取叫分人声音频文件名 */
   function getCallVoicePath(name: SoundName, genderFolder: string): string {
     switch (name) {
+      case 'fifty_k_true': {
+        const gender = genderFolder.includes('female') ? 'female' : 'male'
+        return `fifty_k/${gender}/true_510k.mp3`
+      }
+      case 'fifty_k_false': {
+        const gender = genderFolder.includes('female') ? 'female' : 'male'
+        return `fifty_k/${gender}/510k.mp3`
+      }
+      case 'club_three_first': {
+        const gender = genderFolder.includes('female') ? 'female' : 'male'
+        return `fifty_k/${gender}/club_three_first.mp3`
+      }
       case 'callLandlord': return `${genderFolder}jiaodizhu.ogg`
       case 'robLandlord': return `${genderFolder}qiangdizhu_1.ogg`
       case 'skipCall': return `${genderFolder}bujiao.ogg`
@@ -623,6 +638,8 @@ export function useSoundEngine() {
       case 'double_straight': return `${genderFolder}continuous_pair.ogg`
       case 'three_one': return `${genderFolder}three_with_one.ogg`
       case 'three_two': return `${genderFolder}three_with_one_pair.ogg`
+      case 'four_two_single': return `${genderFolder}four_with_two.ogg`
+      case 'four_two_pair': return `${genderFolder}four_with_two_pair.ogg`
       case 'mingpai': return `${genderFolder}mingpai.ogg`
       case 'jiabei': {
         const ext = genderFolder.includes('female') ? 'mp3' : 'ogg'
@@ -677,13 +694,6 @@ export function useSoundEngine() {
     }
 
     // 1. 本地合成的即时音效 (发牌、点击、倒计时)
-    if (name === 'fifty_k_true' || name === 'fifty_k_false') {
-      const spoken = name === 'fifty_k_true' ? '真510K' : '510K'
-      if (!playSpeechSynthesis(spoken, getSpeechGender(playerId))) {
-        playLocalPlayCard(ctx, sfxGain)
-      }
-      return
-    }
 
     if (name === 'dealCard') {
       playLocalDealCard(ctx, sfxGain)
@@ -751,7 +761,7 @@ export function useSoundEngine() {
         if (name === 'redeal') relativePath = 'female_voice/chupai_3.ogg'
       }
 
-      const isLocalAudio = name === 'jiabei' || name === 'bujiabei' || name === 'superDouble' || name === 'gameWin' || name === 'gameLose'
+      const isLocalAudio = name === 'jiabei' || name === 'bujiabei' || name === 'superDouble' || name === 'gameWin' || name === 'gameLose' || name === 'fifty_k_true' || name === 'fifty_k_false' || name === 'club_three_first'
       fileUrl = isLocalAudio
         ? `/static/audio/${relativePath}`
         : `${BASE_CDN_URL}${relativePath}`

@@ -36,6 +36,8 @@ class MockWebSocket {
 describe('useGameWebSocket', () => {
   beforeEach(() => {
     vi.useFakeTimers()
+    playSoundMock.mockClear()
+    playQuickChatVoiceMock.mockClear()
     MockWebSocket.instances = []
     vi.stubGlobal('WebSocket', MockWebSocket)
     setActivePinia(createPinia())
@@ -100,7 +102,7 @@ describe('useGameWebSocket', () => {
     socket.onmessage?.(new MessageEvent('message', {
       data: JSON.stringify({
         event: 'game_start',
-        room_id: 'room-510k',
+        room_id: 'room-510k-state',
         hand: [8, 28, 40],
         current_turn: 'p1',
         turn_deadline: 123,
@@ -120,7 +122,6 @@ describe('useGameWebSocket', () => {
   })
 
   it('announces the club-three starter when a fifty-k game begins', async () => {
-    playQuickChatVoiceMock.mockClear()
     const playerStore = usePlayerStore()
     playerStore.playerId = 'p1'
     playerStore.authToken = 'token'
@@ -131,7 +132,7 @@ describe('useGameWebSocket', () => {
     socket.onmessage?.(new MessageEvent('message', {
       data: JSON.stringify({
         event: 'game_start',
-        room_id: 'room-510k',
+        room_id: 'room-510k-announce',
         hand: [2, 8, 28],
         current_turn: 'p1',
         phase: 'PLAYING',
@@ -140,7 +141,136 @@ describe('useGameWebSocket', () => {
       }),
     }))
 
-    expect(playQuickChatVoiceMock).toHaveBeenCalledWith('梅花3先出', 'p1', -1)
+    vi.advanceTimersByTime(2200)
+
+    expect(playSoundMock).toHaveBeenCalledWith('club_three_first', 'p1')
+    expect(playQuickChatVoiceMock).not.toHaveBeenCalled()
+  })
+
+  it('announces the club-three starter only once for duplicate game_start events in the same room', () => {
+    const playerStore = usePlayerStore()
+    playerStore.playerId = 'p1'
+    playerStore.authToken = 'token'
+    const { connect } = useGameWebSocket()
+    connect()
+    const socket = MockWebSocket.instances[0]!
+    const event = new MessageEvent('message', {
+      data: JSON.stringify({
+        event: 'game_start',
+        room_id: 'room-510k-duplicate',
+        hand: [2, 8, 28],
+        current_turn: 'p1',
+        phase: 'PLAYING',
+        play_mode: 'fifty_k',
+        players: [],
+      }),
+    })
+
+    socket.onmessage?.(event)
+    socket.onmessage?.(event)
+
+    vi.advanceTimersByTime(2200)
+
+    expect(playSoundMock).toHaveBeenCalledTimes(1)
+    expect(playSoundMock).toHaveBeenCalledWith('club_three_first', 'p1')
+  })
+
+  it('does not announce the club-three starter when a classic game begins', () => {
+    const playerStore = usePlayerStore()
+    playerStore.playerId = 'p1'
+    playerStore.authToken = 'token'
+    const { connect } = useGameWebSocket()
+    connect()
+    const socket = MockWebSocket.instances[0]!
+
+    socket.onmessage?.(new MessageEvent('message', {
+      data: JSON.stringify({
+        event: 'game_start',
+        room_id: 'room-classic',
+        hand: [2, 8, 28],
+        current_turn: 'p1',
+        phase: 'CALLING',
+        play_mode: 'classic',
+        players: [],
+      }),
+    }))
+
+    expect(playSoundMock).not.toHaveBeenCalledWith('club_three_first', expect.anything())
+    expect(playQuickChatVoiceMock).not.toHaveBeenCalled()
+  })
+
+  it('does not announce the same fifty-k room again after an explicit disconnect', () => {
+    const playerStore = usePlayerStore()
+    playerStore.playerId = 'p1'
+    playerStore.authToken = 'token'
+    const { connect, disconnect } = useGameWebSocket()
+    const event = new MessageEvent('message', {
+      data: JSON.stringify({
+        event: 'game_start',
+        room_id: 'room-510k-disconnect',
+        hand: [2, 8, 28],
+        current_turn: 'p1',
+        phase: 'PLAYING',
+        play_mode: 'fifty_k',
+        players: [],
+      }),
+    })
+
+    connect()
+    MockWebSocket.instances[0]!.onmessage?.(event)
+    vi.advanceTimersByTime(2200)
+    disconnect()
+    connect()
+    MockWebSocket.instances[1]!.onmessage?.(event)
+    vi.advanceTimersByTime(2200)
+
+    expect(playSoundMock).toHaveBeenCalledTimes(1)
+    expect(playSoundMock).toHaveBeenCalledWith('club_three_first', 'p1')
+  })
+
+  it('does not announce the club-three starter from a reconnected state snapshot', () => {
+    const playerStore = usePlayerStore()
+    playerStore.playerId = 'p1'
+    playerStore.authToken = 'token'
+    const { connect } = useGameWebSocket()
+    connect()
+
+    MockWebSocket.instances[0]!.onmessage?.(new MessageEvent('message', {
+      data: JSON.stringify({
+        event: 'reconnected',
+        room_id: 'room-510k-reconnected',
+        hand: [2, 8, 28],
+        current_turn: 'p1',
+        phase: 'PLAYING',
+        play_mode: 'fifty_k',
+        players: [],
+      }),
+    }))
+
+    expect(playSoundMock).not.toHaveBeenCalledWith('club_three_first', expect.anything())
+  })
+
+  it('does not announce the club-three starter when a no-shuffle game begins', () => {
+    const playerStore = usePlayerStore()
+    playerStore.playerId = 'p1'
+    playerStore.authToken = 'token'
+    const { connect } = useGameWebSocket()
+    connect()
+
+    MockWebSocket.instances[0]!.onmessage?.(new MessageEvent('message', {
+      data: JSON.stringify({
+        event: 'game_start',
+        room_id: 'room-no-shuffle',
+        hand: [2, 8, 28],
+        current_turn: 'p1',
+        phase: 'CALLING',
+        play_mode: 'no_shuffle',
+        players: [],
+      }),
+    }))
+
+    expect(playSoundMock).not.toHaveBeenCalledWith('club_three_first', expect.anything())
+    expect(playQuickChatVoiceMock).not.toHaveBeenCalled()
   })
 
   it('applies authoritative balances from trick settlement', async () => {

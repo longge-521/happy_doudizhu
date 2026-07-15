@@ -35,6 +35,20 @@ let stateSyncTimer: number | null = null
 let lastServerEventAt = 0
 let isConnecting = false
 
+const MAX_ANNOUNCED_FIFTY_K_ROOMS = 128
+const announcedFiftyKRoomIds = new Set<string>()
+
+function markFiftyKRoomAnnounced(roomId: string): boolean {
+  if (announcedFiftyKRoomIds.has(roomId)) return false
+
+  announcedFiftyKRoomIds.add(roomId)
+  if (announcedFiftyKRoomIds.size > MAX_ANNOUNCED_FIFTY_K_ROOMS) {
+    const oldestRoomId = announcedFiftyKRoomIds.values().next().value
+    if (oldestRoomId) announcedFiftyKRoomIds.delete(oldestRoomId)
+  }
+  return true
+}
+
 type BaseRoomStateEvent<TEvent extends string> = {
   event: TEvent
   room_state?: RoomStatePayload
@@ -283,6 +297,7 @@ export function useGameWebSocket() {
         startStateSyncTimer()
         const gameStore = useGameStore()
         gameStore.wsConnected = true
+        gameStore.errorMsg = ''
         debugLog('WebSocket: Connected successfully')
       }
 
@@ -308,7 +323,13 @@ export function useGameWebSocket() {
         debugLog('WebSocket: Connection closed', event.code, event.reason)
         if (event.code === 1008) {
           manuallyClosed = true
-          gameStore.errorMsg = event.reason || '登录状态已失效，请重新登录'
+          let friendlyReason = '登录状态已失效，请重新登录'
+          if (event.reason === 'DuplicateLogin') {
+            friendlyReason = '您的账号在其他地方登录，当前连接已被断开'
+          } else if (event.reason) {
+            friendlyReason = event.reason
+          }
+          gameStore.errorMsg = friendlyReason
           console.warn('WebSocket: Auth rejected, stop reconnecting')
           return
         }
@@ -388,7 +409,7 @@ export function useGameWebSocket() {
         gameStore.gamePhase = 'IDLE'
         break
       case 'game_start': {
-        const { startBgm, playQuickChatVoice } = useSoundEngine()
+        const { startBgm, playQuickChatVoice, playSound } = useSoundEngine()
         startBgm('game')
         if (gameOverTimer) {
           clearTimeout(gameOverTimer)
@@ -411,8 +432,16 @@ export function useGameWebSocket() {
             isSelf: p.is_self,
           }))
         }
-        if (data.play_mode === 'fifty_k' && data.current_turn) {
-          void playQuickChatVoice('梅花3先出', data.current_turn, -1)
+        const targetRoomId = data.room_id || gameStore.roomId
+        if (
+          data.play_mode === 'fifty_k'
+          && data.current_turn
+          && targetRoomId
+          && markFiftyKRoomAnnounced(targetRoomId)
+        ) {
+          setTimeout(() => {
+            void playSound('club_three_first', data.current_turn)
+          }, 2200)
         }
         break
       }

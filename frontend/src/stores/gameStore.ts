@@ -136,6 +136,7 @@ export const useGameStore = defineStore('game', () => {
   const scores = ref<Record<string, number>>({})
   const beanBalances = ref<Record<string, number>>({})
   const cumulativeBeanChanges = ref<Record<string, number>>({})
+  const isDealing = ref(false)
 
   const isMyTurn = computed(() => {
     const playerStore = usePlayerStore()
@@ -251,6 +252,7 @@ export const useGameStore = defineStore('game', () => {
     scores.value = {}
     beanBalances.value = {}
     cumulativeBeanChanges.value = {}
+    isDealing.value = false
   }
 
   return {
@@ -259,7 +261,7 @@ export const useGameStore = defineStore('game', () => {
     callRound, callScores, firstBidder, landlord, settlement, errorMsg, isMyTurn, playerActions, playerPlayedCards,
     allPlayedCards, baseScore, doublingChoices, showAllHands, showGameOverBanner, showWinnerBanner, gameOverTitle,
     showRedealNotice, activeEffect, showCardsPlayers, showCardsAvailableMultiplier, awaitingLandlordShow,
-    aiHintCandidates, aiHintSource, autoPlayPlayers, playMode, scores, beanBalances, cumulativeBeanChanges,
+    aiHintCandidates, aiHintSource, autoPlayPlayers, playMode, scores, beanBalances, cumulativeBeanChanges, isDealing,
     toggleCard, clearSelection, selectCards, setAiHintCandidates, clearAiHintCandidates, setAutoPlayPlayer,
     updateFromRoomState, reset,
   }
