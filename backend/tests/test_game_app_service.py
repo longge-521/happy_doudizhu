@@ -9,6 +9,12 @@ def _install_torch_stub():
     if "torch" in sys.modules:
         return
 
+    try:
+        import torch  # noqa: F401
+        return
+    except ImportError:
+        pass
+
     class _FakeModule:
         def __init__(self, *args, **kwargs):
             pass
@@ -49,6 +55,12 @@ def _install_torch_stub():
 def _install_douzero_adapter_stub():
     if "app.domain.game.douzero_adapter" in sys.modules:
         return
+
+    try:
+        import app.domain.game.douzero_adapter  # noqa: F401
+        return
+    except ImportError:
+        pass
 
     adapter_module = ModuleType("app.domain.game.douzero_adapter")
     adapter_module.card_id_to_douzero = lambda card_id: card_id
@@ -235,6 +247,31 @@ async def test_get_ai_play_hints_returns_ranked_candidates(service, mock_repo):
 
     assert result["candidates"] == [[0, 1, 2, 3], [0]]
     assert result["source"] == "douzero"
+
+
+@pytest.mark.asyncio
+async def test_get_fifty_k_ai_play_hints_reports_model_source_when_model_is_ready(service, mock_repo):
+    room = GameRoom.create(
+        "room_fifty_k_hint",
+        [
+            Player(id="p1", nickname="玩家1"),
+            Player(id="p2", nickname="玩家2"),
+            Player(id="p3", nickname="玩家3"),
+        ],
+    )
+    room.play_mode = "fifty_k"
+    room.phase = GamePhase.PLAYING
+    room.current_turn = "p1"
+    room.hands = {"p1": [8, 28, 40], "p2": [0], "p3": [4]}
+    mock_repo.get_player_room.return_value = "room_fifty_k_hint"
+    mock_repo.get_room.return_value = room
+
+    with patch("app.application.game.game_app_service.ai_rank_play_candidates", return_value=[[8, 28, 40]]):
+        with patch("app.application.game.game_app_service.fifty_k_manager") as manager:
+            manager.is_available.return_value = True
+            result = await service.get_ai_play_hints("p1")
+
+    assert result["source"] == "fifty_k_model"
 
 
 @pytest.mark.asyncio

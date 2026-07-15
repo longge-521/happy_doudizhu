@@ -1,6 +1,6 @@
 <!-- frontend/src/components/HandCards.vue -->
 <script setup lang="ts">
-import { ref, onUnmounted, watch } from 'vue'
+import { ref, onUnmounted, watch, computed } from 'vue'
 import { useGameStore } from '@/stores/gameStore'
 import { useSoundEngine } from '@/composables/useSoundEngine'
 import { debugLog } from '@/utils/debugLog'
@@ -22,7 +22,10 @@ const currentIndex = ref(-1)
 
 // 动态点亮计数器（用于发牌横向平滑点亮）
 const visibleCount = ref(0)
-const isDealing = ref(false)
+const isDealing = computed({
+  get: () => gameStore.isDealing,
+  set: (val) => { gameStore.isDealing = val }
+})
 let animateTimer = ref<ReturnType<typeof window.setInterval> | null>(null)
 let isDealingTimeout = ref<ReturnType<typeof window.setTimeout> | null>(null)
 let hasAnimatedInThisDeal = false
@@ -57,8 +60,8 @@ watch(() => props.cards, (newCards) => {
     return
   }
 
-  // 判定是否应当触发流式发牌：处于 CALLING 阶段，且在此局中尚未触发过发牌动画
-  const shouldAnimate = gameStore.gamePhase === 'CALLING' && !hasAnimatedInThisDeal
+  // 判定是否应当触发流式发牌：处于 CALLING 阶段（普通玩法）或 PLAYING 阶段且为五十K玩法，且在此局中尚未触发过发牌动画
+  const shouldAnimate = (gameStore.gamePhase === 'CALLING' || (gameStore.gamePhase === 'PLAYING' && gameStore.playMode === 'fifty_k')) && !hasAnimatedInThisDeal
 
   debugLog('[DEBUG] HandCards cards updated:', {
     cardsCount: newCards.length,
@@ -81,10 +84,11 @@ watch(() => props.cards, (newCards) => {
         i++
       } else {
         clearAnimateTimer()
+        const delay = gameStore.playMode === 'fifty_k' ? 2000 : 500
         isDealingTimeout.value = window.setTimeout(() => {
           isDealing.value = false
           isDealingTimeout.value = null
-        }, 500)
+        }, delay)
       }
     }, 120) // 每 120ms 发一张牌
   } else {

@@ -206,7 +206,7 @@ describe('useSoundEngine quick chat voice', () => {
     expect(sources[0]!.start).toHaveBeenCalledWith(0)
   })
 
-  test('speaks dedicated 510K voice names without fetching bomb audio', async () => {
+  test('loads female and male dedicated 510K clips without browser speech synthesis', async () => {
     const speak = vi.fn()
     const fetchMock = vi.fn()
 
@@ -225,10 +225,13 @@ describe('useSoundEngine quick chat voice', () => {
       destination = {}
 
       createGain = vi.fn(() => ({ gain: { value: 0 }, connect: vi.fn() }))
+      createBufferSource = vi.fn(() => ({ buffer: null, connect: vi.fn(), start: vi.fn() }))
+      decodeAudioData = vi.fn(async () => ({} as AudioBuffer))
       resume = vi.fn(async () => {})
     }
 
     vi.stubGlobal('AudioContext', MockAudioContext)
+    fetchMock.mockResolvedValue({ arrayBuffer: async () => new ArrayBuffer(1) })
     vi.stubGlobal('fetch', fetchMock)
     vi.stubGlobal('SpeechSynthesisUtterance', MockSpeechSynthesisUtterance)
     Object.defineProperty(window, 'speechSynthesis', {
@@ -245,10 +248,74 @@ describe('useSoundEngine quick chat voice', () => {
     const { useSoundEngine } = await import('../useSoundEngine')
     const engine = useSoundEngine()
 
+    const clips = [
+      ['fifty_k_true', 'true_510k'],
+      ['fifty_k_false', '510k'],
+      ['club_three_first', 'club_three_first'],
+    ] as const
+
+    for (const gender of ['female', 'male'] as const) {
+      engine.setVoiceGender(gender)
+      for (const [soundName] of clips) {
+        await engine.playSound(soundName, 'p2')
+      }
+    }
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(
+      ['female', 'male'].flatMap(gender =>
+        clips.map(([, fileName]) => `/static/audio/fifty_k/${gender}/${fileName}.mp3`),
+      ),
+    )
+    expect(speak).not.toHaveBeenCalled()
+  })
+
+  test('does not use browser speech synthesis when a local 510K WAV fetch fails', async () => {
+    const speak = vi.fn()
+    const createParam = () => ({
+      setValueAtTime: vi.fn(),
+      linearRampToValueAtTime: vi.fn(),
+      exponentialRampToValueAtTime: vi.fn(),
+    })
+    const createOscillator = () => ({
+      type: 'sine',
+      frequency: createParam(),
+      connect: vi.fn(),
+      start: vi.fn(),
+      stop: vi.fn(),
+    })
+
+    class MockAudioContext {
+      state: AudioContextState = 'running'
+      currentTime = 0
+      destination = {}
+
+      createGain = vi.fn(() => ({ gain: { value: 0, ...createParam() }, connect: vi.fn() }))
+      createOscillator = vi.fn(createOscillator)
+      resume = vi.fn(async () => {})
+    }
+
+    vi.stubGlobal('AudioContext', MockAudioContext)
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('WAV unavailable')))
+    vi.stubGlobal('SpeechSynthesisUtterance', class {})
+    Object.defineProperty(window, 'speechSynthesis', {
+      value: {
+        getVoices: vi.fn(() => []),
+        speak,
+        cancel: vi.fn(),
+        speaking: false,
+        pending: false,
+      },
+      configurable: true,
+    })
+
+    const { useSoundEngine } = await import('../useSoundEngine')
+    const engine = useSoundEngine()
+    engine.setVoiceGender('female')
+
     await engine.playSound('fifty_k_true', 'p2')
     await engine.playSound('fifty_k_false', 'p2')
+    await engine.playSound('club_three_first', 'p2')
 
-    expect(speak.mock.calls.map(call => call[0].text)).toEqual(['真510K', '510K'])
-    expect(fetchMock).not.toHaveBeenCalled()
+    expect(speak).not.toHaveBeenCalled()
   })
 })

@@ -8,6 +8,11 @@ from collections import Counter
 from dataclasses import dataclass, field
 from app.domain.game.douzero_model import douzero_manager
 from app.domain.game.douzero_adapter import card_id_to_douzero, douzero_to_card_ids, get_obs_for_douzero
+from app.domain.game.fifty_k_model import fifty_k_manager
+from app.domain.game.fifty_k_search import (
+    choose_fifty_k_endgame_action,
+    should_search_fifty_k_endgame,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +34,12 @@ class AIContext:
     other_players_min_remaining: int = 18  # 其他对手最小剩余手牌数
     player_remaining: Dict[str, int] = field(default_factory=dict)
     current_trick_score: int = 0  # 桌面累计分值
+
+    current_multiplier: int = 1
+    pass_count: int = 0
+    unseen_cards: List[int] = field(default_factory=list)
+    current_scores: Dict[str, int] = field(default_factory=dict)
+    trick_no: int = 0
 
     def __post_init__(self):
         if self.play_history is None:
@@ -140,9 +151,13 @@ def build_ai_context(room, ai_id: str) -> AIContext:
                 elif rank == 7:  # '10'
                     return 10
                 elif rank == 10:  # 'K'
-                    return 10
+                    return 20
             return 0
         current_trick_score = sum(get_score(cid) for cid in room.current_trick_cards)
+
+    known_cards = set(room.hands.get(ai_id, []))
+    known_cards.update(getattr(room, "all_played_cards", []))
+    unseen_cards = [card_id for card_id in range(54) if card_id not in known_cards]
 
     return AIContext(
         ai_id=ai_id,
@@ -160,6 +175,14 @@ def build_ai_context(room, ai_id: str) -> AIContext:
         other_players_min_remaining=other_players_min_remaining,
         player_remaining=player_remaining,
         current_trick_score=current_trick_score,
+        current_multiplier=int(getattr(room, "multiplier", 1)),
+        pass_count=int(getattr(room, "pass_count", 0)),
+        unseen_cards=unseen_cards,
+        current_scores={
+            player_id: int(getattr(room, "scores", {}).get(player_id, 0))
+            for player_id in player_ids
+        },
+        trick_no=int(getattr(room, "trick_no", 0)),
     )
 
 
@@ -782,6 +805,64 @@ def _dedupe_candidates(candidates: List[List[int]]) -> List[List[int]]:
     return result
 
 
+def _choose_immediate_next_player_block(
+    hand: List[int],
+    legal_actions: List[List[int]],
+    ranked_actions: List[List[int]],
+    last_play: Optional[CardPlay],
+    ctx: AIContext,
+) -> Optional[List[int]]:
+    """阻止立即下家用最后一张牌跟单张出完，只依赖公开信息。"""
+    if last_play is None or last_play.card_type != CardType.SINGLE:
+        return None
+    if not ctx.player_ids or ctx.ai_id not in ctx.player_ids:
+        return None
+
+    ai_index = ctx.player_ids.index(ctx.ai_id)
+    next_player_id = ctx.player_ids[(ai_index + 1) % len(ctx.player_ids)]
+    if ctx.player_remaining.get(next_player_id) != 1:
+        return None
+
+    legal_non_pass = [action for action in legal_actions if action]
+    if not legal_non_pass:
+        return None
+
+    legal_keys = {tuple(sorted(action)) for action in legal_non_pass}
+    for action in ranked_actions:
+        if len(action) == len(hand) and tuple(sorted(action)) in legal_keys:
+            return action
+
+    single_actions = []
+    special_actions = []
+    special_cost = {
+        CardType.FIFTY_K_FALSE: 0,
+        CardType.BOMB: 1,
+        CardType.FIFTY_K_TRUE: 2,
+        CardType.ROCKET: 3,
+    }
+    for action in legal_non_pass:
+        play = detect_card_type(action, play_mode="fifty_k")
+        if play is None:
+            continue
+        if play.card_type == CardType.SINGLE:
+            single_actions.append((play.main_rank, action))
+        elif play.card_type in special_cost:
+            special_actions.append((special_cost[play.card_type], play.main_rank, action))
+
+    highest_unseen_rank = max(
+        (Card.from_id(card_id).rank for card_id in ctx.unseen_cards),
+        default=-1,
+    )
+    safe_singles = [item for item in single_actions if item[0] >= highest_unseen_rank]
+    if safe_singles:
+        return max(safe_singles, key=lambda item: (item[0], item[1]))[1]
+    if special_actions:
+        return min(special_actions, key=lambda item: (item[0], item[1], item[2]))[2]
+    if single_actions:
+        return max(single_actions, key=lambda item: (item[0], item[1]))[1]
+    return None
+
+
 def _rule_decide_play(
     hand: List[int],
     last_play: Optional[CardPlay],
@@ -815,12 +896,77 @@ def ai_rank_play_candidates(
     must_play: bool,
     ctx: AIContext,
     limit: int = 12,
+    room=None,
 ) -> List[List[int]]:
     if not hand:
         return []
 
     try:
         is_fifty_k = (ctx and getattr(ctx, "play_mode", "classic") == "fifty_k")
+        if is_fifty_k:
+            legal_actions = generate_legal_actions_dz(hand, last_play, must_play, play_mode="fifty_k")
+            if not legal_actions:
+                return []
+            rule_ranked = _rank_fifty_k_rule_actions(hand, legal_actions, last_play, ctx)
+            ranked = rule_ranked
+            if fifty_k_manager.is_available():
+                try:
+                    model_ranked = fifty_k_manager.rank_actions(
+                        hand,
+                        rule_ranked,
+                        last_play,
+                        ctx,
+                    )
+                    ranked = _dedupe_candidates(
+                        model_ranked + rule_ranked
+                    )
+                except Exception as exc:
+                    logger.warning("510K 模型推理失败，使用规则 AI: %s", exc)
+            if not fifty_k_manager.is_available():
+                ranked = rule_ranked
+
+            block_action = _choose_immediate_next_player_block(
+                hand,
+                legal_actions,
+                ranked,
+                last_play,
+                ctx,
+            )
+            if block_action is not None:
+                ranked = _dedupe_candidates([block_action] + ranked)
+
+            if (
+                block_action is None
+                and fifty_k_manager.is_available()
+                and room is not None
+                and should_search_fifty_k_endgame(room, ctx.ai_id)
+            ):
+                def rank_search_actions(search_room, search_player_id):
+                    search_hand = search_room.hands[search_player_id]
+                    search_last_play = search_room.last_play.card_play
+                    search_actions = generate_legal_actions_dz(
+                        search_hand,
+                        search_last_play,
+                        search_last_play is None,
+                        play_mode="fifty_k",
+                    )
+                    search_ctx = build_ai_context(search_room, search_player_id)
+                    return _rank_fifty_k_rule_actions(
+                        search_hand,
+                        search_actions,
+                        search_last_play,
+                        search_ctx,
+                    )
+
+                searched_action = choose_fifty_k_endgame_action(
+                    room,
+                    ctx.ai_id,
+                    ranked,
+                    rank_search_actions,
+                )
+                ranked = _dedupe_candidates([searched_action] + ranked)
+            return ranked[:limit]
+
         if not is_fifty_k and ctx and ctx.play_history is not None and douzero_manager.is_available():
             legal_actions = generate_legal_actions_dz(hand, last_play, must_play)
             if not legal_actions:
@@ -857,14 +1003,168 @@ def ai_rank_play_candidates(
     return [fallback] if fallback else ([] if must_play else [[]])
 
 
+def _rank_fifty_k_rule_actions(
+    hand: List[int],
+    actions: List[List[int]],
+    last_play: Optional[CardPlay],
+    ctx: AIContext,
+) -> List[List[int]]:
+    """模型未就绪时的确定性 510K 候选排序，不以固定炸弹阈值替代决策。"""
+    hand_counts = Counter(Card.from_id(card_id).rank for card_id in hand)
+    has_multi_card_candidate = any(len(action) > 1 for action in actions)
+    special_types = {
+        CardType.BOMB,
+        CardType.ROCKET,
+        CardType.FIFTY_K_TRUE,
+        CardType.FIFTY_K_FALSE,
+    }
+    response_plays = [
+        detect_card_type(action, play_mode="fifty_k")
+        for action in actions
+        if action
+    ]
+    has_regular_response = any(
+        play is not None and play.card_type not in special_types
+        for play in response_plays
+    )
+    has_special_response = any(
+        play is not None and play.card_type in special_types
+        for play in response_plays
+    )
+
+    def score_card_points(cards: List[int]) -> int:
+        points = 0
+        for card_id in cards:
+            rank = Card.from_id(card_id).rank
+            if rank == 2:
+                points += 5
+            elif rank == 7:
+                points += 10
+            elif rank == 10:
+                points += 20
+        return points
+
+    def remaining_after_action(action: List[int]) -> List[int]:
+        remaining_cards = list(hand)
+        for card_id in action:
+            if card_id in remaining_cards:
+                remaining_cards.remove(card_id)
+        return remaining_cards
+
+    def estimated_remaining_hands(cards: List[int]) -> int:
+        if not cards:
+            return 0
+        plan = _decompose_hand(cards, play_mode="fifty_k")
+        return plan.hand_count + len(plan.bombs)
+
+    def action_score(action: List[int]) -> tuple:
+        if not action:
+            if last_play is not None and has_regular_response:
+                return (-100.0, 0, 0)
+            if (
+                last_play is not None
+                and has_special_response
+                and ctx.other_players_min_remaining <= 3
+            ):
+                return (-50.0, 0, 0)
+            # 只有特殊牌才能压制且对手尚未听牌时，允许保留炸弹。
+            return (-5.0, 0, 0)
+
+        play = detect_card_type(action, play_mode="fifty_k")
+        if play is None:
+            return (-10000, 0, 0)
+
+        remaining = len(hand) - len(action)
+        remaining_cards = remaining_after_action(action)
+        score = 10000.0 if remaining == 0 else 0.0
+        score += len(action) * 2 + ctx.current_trick_score * 2
+        score -= estimated_remaining_hands(remaining_cards) * 4.0
+        if play.card_type in (CardType.FIFTY_K_TRUE, CardType.FIFTY_K_FALSE):
+            score -= 20 if remaining else 0
+        elif play.card_type in (CardType.BOMB, CardType.ROCKET):
+            score -= 15 if remaining else 0
+        elif play.card_type == CardType.SINGLE:
+            rank = Card.from_id(action[0]).rank
+            if hand_counts[rank] >= 2:
+                score -= 8
+            if rank in (2, 7, 10):
+                score -= 5
+            if last_play is None and remaining:
+                score -= max(0, rank - 10) * 2.0
+
+        if play.card_type in (CardType.TRIPLE_ONE, CardType.TRIPLE_TWO):
+            wing_cards = [
+                card_id
+                for card_id in action
+                if Card.from_id(card_id).rank != play.main_rank
+            ]
+            wing_rank = min(
+                (Card.from_id(card_id).rank for card_id in wing_cards),
+                default=0,
+            )
+            if play.card_type == CardType.TRIPLE_TWO:
+                # 对子本身通常仍是一手完整牌，不能仅因本次多出一张就优先消耗。
+                score -= 6.0 + wing_rank * 0.25
+            else:
+                score -= wing_rank * 0.05
+
+        if (
+            hand_counts.get(play.main_rank, 0) == 4
+            and play.card_type not in (CardType.BOMB, CardType.ROCKET)
+            and remaining
+        ):
+            # 四带二和从四张中拆三张都属于拆炸弹；只有直接跑完时免除此成本。
+            score -= 35.0
+
+        # 听牌压力是连续因素，不再以“剩 3 张就必炸”的硬阈值替代决策。
+        opponent_pressure = max(0, 5 - ctx.other_players_min_remaining) * 3
+        if play.card_type in (CardType.BOMB, CardType.ROCKET, CardType.FIFTY_K_TRUE, CardType.FIFTY_K_FALSE):
+            score += opponent_pressure
+            if last_play and last_play.card_type in (CardType.FIFTY_K_TRUE, CardType.FIFTY_K_FALSE):
+                # 特殊牌正在夺取牌权时，能压住它的特殊牌或炸弹更有即时价值。
+                score += 10
+        if ctx.other_players_min_remaining <= 2:
+            if len(action) > 1 and play.card_type not in (
+                CardType.BOMB,
+                CardType.ROCKET,
+                CardType.FIFTY_K_TRUE,
+                CardType.FIFTY_K_FALSE,
+            ):
+                # 对手只剩一两张时，优先用其无法跟上的对子、顺子等牌型夺回出牌权。
+                score += 30
+            else:
+                score += play.main_rank * 1.5
+        elif ctx.current_trick_score == 0:
+            score -= play.main_rank * 0.1
+        remaining_score_points = score_card_points(remaining_cards)
+        if (
+            remaining_score_points
+            and last_play is None
+            and not has_multi_card_candidate
+        ):
+            penalty_weight = 0.1
+            if remaining <= 5:
+                penalty_weight = 0.2
+            elif ctx.other_players_min_remaining <= 5:
+                penalty_weight = 0.3
+            score -= remaining_score_points * penalty_weight
+        return (score, -play.main_rank, -len(action))
+
+    return sorted(actions, key=action_score, reverse=True)
+
+
 def _should_use_bomb(hand: List[int], plan: HandPlan, ctx: AIContext) -> bool:
     """炸弹使用判定"""
     if not plan.bombs:
         return False
 
-    # 510K模式下，当桌面分值 >= 10 时，强制返回 True 引导炸弹介入抢分
-    if getattr(ctx, "play_mode", "classic") == "fifty_k" and getattr(ctx, "current_trick_score", 0) >= 10:
-        return True
+    # 510K 的炸弹选择由候选价值排序统一处理；此处只保留终局直接跑完判定。
+    if getattr(ctx, "play_mode", "classic") == "fifty_k":
+        return len(hand) <= 5 and plan.hand_count <= 1
+    else:
+        # 经典/不洗牌模式下的封堵地主
+        if ctx.role != "landlord" and ctx.landlord_remaining <= 3:
+            return True
 
     # 1. 封堵对手：在 510K 模式下，有任何其他对手的手牌数 <= 3 张，必须予以封堵轰炸
     if getattr(ctx, "play_mode", "classic") == "fifty_k":
@@ -886,7 +1186,13 @@ def _should_use_bomb(hand: List[int], plan: HandPlan, ctx: AIContext) -> bool:
     return False
 
 
-def generate_legal_actions_dz(hand: List[int], last_play: Optional[CardPlay], must_play: bool) -> List[List[int]]:
+def generate_legal_actions_dz(
+    hand: List[int],
+    last_play: Optional[CardPlay],
+    must_play: bool,
+    *,
+    play_mode: str = "classic",
+) -> List[List[int]]:
     from collections import Counter
     from itertools import combinations
 
@@ -1014,17 +1320,43 @@ def generate_legal_actions_dz(hand: List[int], last_play: Optional[CardPlay], mu
     for act_dz in candidates_dz:
         card_ids = douzero_to_card_ids(act_dz, hand)
         if card_ids:
-            play = detect_card_type(card_ids)
+            play = detect_card_type(card_ids, play_mode=play_mode)
             if play is not None:
                 if last_play is None:
                     legal_actions.append(card_ids)
-                elif can_beat(play, last_play):
+                elif can_beat(play, last_play, play_mode=play_mode):
                     legal_actions.append(card_ids)
+
+    if play_mode == "fifty_k":
+        cards_by_rank = {
+            2: [card_id for card_id in hand if Card.from_id(card_id).rank == 2],
+            7: [card_id for card_id in hand if Card.from_id(card_id).rank == 7],
+            10: [card_id for card_id in hand if Card.from_id(card_id).rank == 10],
+        }
+
+        def append_if_playable(card_ids: List[int]) -> None:
+            play = detect_card_type(card_ids, play_mode=play_mode)
+            if play is not None and (
+                last_play is None or can_beat(play, last_play, play_mode=play_mode)
+            ):
+                legal_actions.append(card_ids)
+
+        # 5、10、K 的花色会决定能否保留或组成真 510K；不能只保留
+        # DouZero 映射时选中的第一张实体牌。
+        for scored_cards in cards_by_rank.values():
+            for size in range(1, min(3, len(scored_cards)) + 1):
+                for card_group in combinations(scored_cards, size):
+                    append_if_playable(list(card_group))
+
+        for card_5 in cards_by_rank[2]:
+            for card_10 in cards_by_rank[7]:
+                for card_k in cards_by_rank[10]:
+                    append_if_playable([card_5, card_10, card_k])
 
     if not must_play and last_play is not None:
         legal_actions.append([])
 
-    return legal_actions
+    return _dedupe_candidates(legal_actions)
 
 
 def ai_decide_play(
@@ -1032,6 +1364,7 @@ def ai_decide_play(
     last_play: Optional[CardPlay],
     must_play: bool,
     ctx: Optional[AIContext] = None,
+    room=None,
 ) -> Optional[List[int]]:
     """
     AI 决策出牌入口函数。
@@ -1057,7 +1390,31 @@ def ai_decide_play(
             is_last_play_landlord=False,
         )
 
-    ranked = ai_rank_play_candidates(hand, last_play, must_play, ctx, limit=1)
+    if ctx.play_mode == "fifty_k" and room is None:
+        legal_actions = generate_legal_actions_dz(
+            hand,
+            last_play,
+            must_play,
+            play_mode="fifty_k",
+        )
+        rule_ranked = _rank_fifty_k_rule_actions(
+            hand,
+            legal_actions,
+            last_play,
+            ctx,
+        )
+        if rule_ranked:
+            return rule_ranked[0] or None
+        return _rule_decide_play(hand, last_play, must_play, ctx)
+
+    ranked = ai_rank_play_candidates(
+        hand,
+        last_play,
+        must_play,
+        ctx,
+        limit=1,
+        room=room,
+    )
     if ranked:
         best = ranked[0]
         return best if best else None

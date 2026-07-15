@@ -49,8 +49,8 @@ def test_fifty_k_score_values_and_room_round_trip():
 
     assert room._get_card_score(8) == 5
     assert room._get_card_score(28) == 10
-    assert room._get_card_score(40) == 10
-    assert sum(room._get_card_score(card_id) for card_id in range(54)) == 100
+    assert room._get_card_score(40) == 20
+    assert sum(room._get_card_score(card_id) for card_id in range(54)) == 140
 
     room.scores = {"p1": 35, "p2": 0, "p3": 0}
     room.current_trick_cards = [8, 28, 40]
@@ -125,10 +125,10 @@ async def test_fifty_k_trick_settle_realtime_bean_update():
     
     # 验证大住结算
     assert room.pass_count == 0
-    assert room.scores["p1"] == 25
+    assert room.scores["p1"] == 35
     assert "trick_settlement" in res3
     assert res3["trick_settlement"]["winner_id"] == "p1"
-    assert res3["trick_settlement"]["score_gained"] == 25
+    assert res3["trick_settlement"]["score_gained"] == 35
     assert res3["trick_settlement"]["trick_cards"] == [8, 28, 40]
 
     # 2. 验证 GameAppService 里的金豆划拨与广播
@@ -174,7 +174,7 @@ async def test_fifty_k_trick_settle_realtime_bean_update():
             evt = res_pass2["trick_settlement_event"]
             assert evt["event"] == "trick_settled"
             assert evt["winner_id"] == "p1"
-            assert evt["score_gained"] == 25
+            assert evt["score_gained"] == 35
             assert evt["bean_changes"]["p1"] == 250
             assert evt["bean_changes"]["p2"] == -125
             assert evt["bean_changes"]["p3"] == -125
@@ -220,6 +220,11 @@ async def test_fifty_k_game_over_harvest():
     assert fk_settle["harvested_scores"]["p1"] == 15
     assert fk_settle["harvested_scores"]["p2"] == -5
     assert fk_settle["harvested_scores"]["p3"] == -10
+    assert fk_settle["penalty_adjusted_scores"] == {
+        "p1": 65,
+        "p2": 25,
+        "p3": -5,
+    }
 
     # 2. 验证 GameAppService 里的金豆收割、排位星数结算与广播
     # 重新初始化 room 为出牌前状态
@@ -358,6 +363,69 @@ def test_fifty_k_ai_lead_keeps_a_complete_straight():
     candidates = ai_rank_play_candidates([0, 4, 8, 12, 16, 40], None, True, ctx)
 
     assert candidates[0] == [0, 4, 8, 12, 16]
+
+
+def test_fifty_k_ai_lead_keeps_control_cards_and_sheds_small_junk_single():
+    from app.domain.game.ai_strategy import AIContext, ai_rank_play_candidates
+
+    ctx = AIContext(
+        ai_id="p1", role="landlord", landlord_id="p1", teammate_id=None,
+        landlord_remaining=3, teammate_remaining=0, last_play_from=None,
+        is_last_play_teammate=False, is_last_play_landlord=False,
+        play_mode="fifty_k",
+        other_players_min_remaining=4,
+    )
+
+    candidates = ai_rank_play_candidates([0, 28, 48], None, True, ctx)
+
+    assert candidates[0] == [0]
+
+
+def test_fifty_k_ai_leads_triple_with_small_single_before_large_pair():
+    from app.domain.game.ai_strategy import (
+        AIContext,
+        _rank_fifty_k_rule_actions,
+        generate_legal_actions_dz,
+    )
+
+    hand = [4, 5, 6, 0, 44, 45]  # 444、单3、对A
+    ctx = AIContext(
+        ai_id="p1", role="landlord", landlord_id="p1", teammate_id=None,
+        landlord_remaining=len(hand), teammate_remaining=0,
+        last_play_from=None, is_last_play_teammate=False,
+        is_last_play_landlord=False, play_mode="fifty_k",
+        other_players_min_remaining=10,
+    )
+    actions = generate_legal_actions_dz(hand, None, True, play_mode="fifty_k")
+
+    ranked = _rank_fifty_k_rule_actions(hand, actions, None, ctx)
+
+    assert set(ranked[0]) == {0, 4, 5, 6}
+
+
+def test_fifty_k_ai_does_not_lead_four_k_with_two_large_pairs_when_not_running_out():
+    from app.domain.game.ai_strategy import (
+        AIContext,
+        _rank_fifty_k_rule_actions,
+        generate_legal_actions_dz,
+    )
+    from app.domain.game.card_type import CardType, detect_card_type
+
+    hand = [40, 41, 42, 43, 44, 45, 48, 49, 0]  # K炸、对A、对2、单3
+    ctx = AIContext(
+        ai_id="p1", role="landlord", landlord_id="p1", teammate_id=None,
+        landlord_remaining=len(hand), teammate_remaining=0,
+        last_play_from=None, is_last_play_teammate=False,
+        is_last_play_landlord=False, play_mode="fifty_k",
+        other_players_min_remaining=10,
+    )
+    actions = generate_legal_actions_dz(hand, None, True, play_mode="fifty_k")
+
+    ranked = _rank_fifty_k_rule_actions(hand, actions, None, ctx)
+    first_play = detect_card_type(ranked[0], play_mode="fifty_k")
+
+    assert first_play is not None
+    assert first_play.card_type != CardType.FOUR_TWO_PAIR
 
 
 def test_fifty_k_ai_follows_with_standalone_single_before_splitting_pair():
@@ -572,7 +640,7 @@ def test_fifty_k_ai_high_score_unlimit_big_cards():
     assert cards_high == [48]
 
 
-def test_fifty_k_ai_giant_score_force_bomb():
+def test_fifty_k_ai_uses_bomb_only_when_trick_value_justifies_it():
     from app.domain.game.ai_strategy import build_ai_context, ai_decide_play
     from app.domain.game.card_type import detect_card_type
     p1 = Player(id="p1", nickname="Player1")
@@ -724,8 +792,3 @@ def test_fifty_k_ai_leads_biggest_card_when_opponent_danger():
 
     # 验证 AI 顶牌出大牌 2，绝对不能放手小牌 4
     assert cards == [48]
-
-
-
-
-

@@ -1100,7 +1100,7 @@ watch(
       </transition>
 
       <!-- 閺夌儐鍠栭崺宀勬嚊椤忓嫮绠掗柛鎰－閻°儵寮崜浣圭暠闁哄啫鐖奸幐鎾诲磹閹烘洦鍚€闁哄啯婀圭粭宀€鎮扮仦钘壭楅梻鍫涘灪濠?-->
-      <div v-if="gameStore.isMyTurn && !showDoublingPanel" class="action-bar-row">
+      <div v-if="gameStore.isMyTurn && !showDoublingPanel && !gameStore.isDealing" class="action-bar-row">
         <!-- 闁告瑯鍋勫﹢瀛樼▔婵犳碍鈻夋繛鍫濈仛濡炲倿鏌﹂悢娲诲悁闁哄啳娉涘▍?-->
         <!-- 闁告瑯鍋勫﹢瀛樼▔婵犳碍鈻夋繛鍫濈仛濡炲倿鏌﹂悢娲诲悁闁哄啳娉涘▍?-->
         <div v-if="gameStore.gamePhase === 'CALLING' && gameStore.playMode !== 'fifty_k'" class="turn-alarm-clock">

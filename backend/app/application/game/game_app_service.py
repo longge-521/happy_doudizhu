@@ -6,6 +6,7 @@ import logging
 from typing import Optional, List, Dict
 from app.domain.game.room import GameRoom, Player, GamePhase
 from app.domain.game.ai_strategy import ai_decide_call, ai_decide_play, ai_rank_play_candidates, build_ai_context
+from app.domain.game.fifty_k_model import fifty_k_manager
 from app.infrastructure.redis_game_repository import RedisGameRepository
 from app.infrastructure.database.session import transactional_session
 from app.application.game.settlement_service import GameSettlementService
@@ -403,8 +404,10 @@ class GameAppService:
         last_cp = room.last_play.card_play
         must_play = room.last_play.player is None
         ctx = build_ai_context(room, player_id)
-        candidates = ai_rank_play_candidates(hand, last_cp, must_play, ctx)
-        source = "fifty_k_rule" if room.play_mode == "fifty_k" else "douzero"
+        candidates = ai_rank_play_candidates(hand, last_cp, must_play, ctx, room=room)
+        source = "douzero"
+        if room.play_mode == "fifty_k":
+            source = "fifty_k_model" if fifty_k_manager.is_available() else "fifty_k_rule"
         return {"candidates": candidates, "source": source, "room": room}
 
     async def set_auto_play(self, player_id: str, enabled: bool) -> dict:
@@ -436,7 +439,9 @@ class GameAppService:
         last_cp = room.last_play.card_play
         must_play = room.last_play.player is None
         ctx = build_ai_context(room, player_id)
-        candidates = ai_rank_play_candidates(hand, last_cp, must_play, ctx, limit=1)
+        candidates = ai_rank_play_candidates(
+            hand, last_cp, must_play, ctx, limit=1, room=room
+        )
         cards = candidates[0] if candidates else None
 
         if cards:
@@ -531,7 +536,7 @@ class GameAppService:
             must_play = (room.last_play.player is None)
             ctx = build_ai_context(room, ai_id)
             # 使用 AI 策略决策出牌 (包含 DouZero 神经网络与规则引擎降级逻辑)
-            cards = ai_decide_play(hand, last_cp, must_play, ctx)
+            cards = ai_decide_play(hand, last_cp, must_play, ctx, room=room)
             if cards:
                 result = room.play_cards(ai_id, cards)
             else:
