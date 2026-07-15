@@ -1166,6 +1166,15 @@ def _should_use_bomb(hand: List[int], plan: HandPlan, ctx: AIContext) -> bool:
         if ctx.role != "landlord" and ctx.landlord_remaining <= 3:
             return True
 
+    # 1. 封堵对手：在 510K 模式下，有任何其他对手的手牌数 <= 3 张，必须予以封堵轰炸
+    if getattr(ctx, "play_mode", "classic") == "fifty_k":
+        if getattr(ctx, "other_players_min_remaining", 18) <= 3:
+            return True
+    else:
+        # 经典/不洗牌模式下的封堵地主
+        if ctx.role != "landlord" and ctx.landlord_remaining <= 3:
+            return True
+
     # 2. 终结局：自己手牌 <= 5 张，炸完之后剩余牌能一手出完
     if len(hand) <= 5 and plan.hand_count <= 1:
         return True
